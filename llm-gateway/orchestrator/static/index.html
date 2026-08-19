@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Engine | LLM Router</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <span class="pulse-ring"></span>
+                    <span class="pulse-dot active"></span>
+                </div>
+                <div>
+                    <h1>Antigravity Engine</h1>
+                    <p class="subtitle">High-Performance Async LLM Router & MCP Gateway</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="metric-badge">
+                    <span class="metric-label">Jobs</span>
+                    <span class="metric-value" id="metric-jobs">0</span>
+                </div>
+                <div class="metric-badge">
+                    <span class="metric-label">Streams</span>
+                    <span class="metric-value" id="metric-streams">0</span>
+                </div>
+                <div class="system-badge" id="system-badge-container">
+                    <span id="system-status">Initializing...</span>
+                </div>
+                <button class="btn-primary" onclick="refreshAll()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    Sync
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <main class="grid-container">
+            
+            <!-- Section 1: Capability Pools -->
+            <section class="card pool-card full-width">
+                <div class="card-header">
+                    <div class="header-title">
+                        <h2>⚡ Capability Pools</h2>
+                        <span class="badge badge-subtle">Routing Engine</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="pool-grid" id="pools-list">
+                        <div class="skeleton">Lade Capability Pools...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section 2: Endpoint Registry -->
+            <section class="card endpoint-card full-width">
+                <div class="card-header">
+                    <div class="header-title">
+                        <h2>🖥️ Endpoint Registry</h2>
+                        <span class="badge badge-subtle">Inference Backends</span>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn-primary" onclick="openDockerAddModal()" style="background: linear-gradient(135deg, #3b82f6, #8b5cf6);">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                            Docker hinzufügen
+                        </button>
+                        <button class="btn-secondary" onclick="openEndpointModal()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                            Manuell hinzufügen
+                        </button>
+                        <button class="btn-ghost" onclick="openDockerPoolModal()" title="Docker Whitelist verwalten">
+                            ⚙️ Pool
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="endpoint-grid" id="endpoints-list">
+                        <div class="skeleton">Lade Endpoints...</div>
+                    </div>
+                </div>
+            </section>
+            
+        </main>
+    </div>
+
+    <!-- Add Endpoint Modal -->
+    <div id="endpoint-modal" class="modal-overlay hidden">
+        <div class="modal-card glass-panel">
+            <div class="modal-header">
+                <h3>Neuen Endpoint registrieren</h3>
+                <button class="btn-icon" onclick="closeEndpointModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label for="ep-history">Aus Historie wiederherstellen (Presets)</label>
+                    <select id="ep-history" onchange="applyHistoryPreset()">
+                        <option value="">-- Historie leer --</option>
+                    </select>
+                </div>
+                <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin-bottom: 12px;">
+
+                <div class="form-group">
+                    <label for="ep-id">Endpoint ID (eindeutig)</label>
+                    <input type="text" id="ep-id" placeholder="z.B. ollama-gpu-2">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ep-name">Anzeigename</label>
+                        <input type="text" id="ep-name" placeholder="Ollama Server 2">
+                    </div>
+                    <div class="form-group">
+                        <label for="ep-schema">API Schema</label>
+                        <select id="ep-schema">
+                            <option value="openai">OpenAI Compatible</option>
+                            <option value="ollama">Ollama Native</option>
+                            <option value="litellm">LiteLLM</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="ep-url">Base URL</label>
+                    <input type="text" id="ep-url" placeholder="http://192.168.x.x:11434">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ep-caps">Capabilities (Komma-getrennt)</label>
+                        <input type="text" id="ep-caps" placeholder="fast, embeddings, reasoning">
+                    </div>
+                    <div class="form-group">
+                        <label for="ep-concurrency">Max Concurrency (Slots)</label>
+                        <input type="number" id="ep-concurrency" value="2" min="1" max="100">
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ep-priority">Priorität (kleiner = höher)</label>
+                        <input type="number" id="ep-priority" value="5" min="1" max="99">
+                    </div>
+                    <div class="form-group">
+                        <label for="ep-type">Typ</label>
+                        <select id="ep-type" onchange="toggleDockerDropdown()">
+                            <option value="unmanaged">Unmanaged (Netzwerk)</option>
+                            <option value="managed">Managed (Docker)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row hidden" id="docker-container-row">
+                    <div class="form-group">
+                        <label for="ep-docker-container">Docker Container (Whitelist)</label>
+                        <select id="ep-docker-container">
+                            <option value="">Bitte zuerst Docker-Pool verwalten</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button class="btn-ghost" onclick="closeEndpointModal()">Abbrechen</button>
+                    <button class="btn-primary" id="btn-save-endpoint" onclick="saveEndpoint()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                        Registrieren
+                    </button>
+                </div>
+                <div id="endpoint-status-msg" class="status-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Docker Pool Modal -->
+    <div id="docker-pool-modal" class="modal-overlay hidden">
+        <div class="modal-card glass-panel" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>Docker Pool verwalten (LLM Whitelist)</h3>
+                <button class="btn-icon" onclick="closeDockerPoolModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">
+                    Wähle hier die Container aus, die Inferenz-Engines (LLMs) sind. Diese tauchen dann beim Anlegen von Endpunkten als Auswahl auf.
+                </p>
+                <div id="docker-list-container" style="max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.2); border: 1px solid var(--surface-border); border-radius: 8px; padding: 10px;">
+                    <div class="skeleton">Lade Host-Container...</div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-ghost" onclick="closeDockerPoolModal()">Abbrechen</button>
+                    <button class="btn-primary" onclick="saveDockerWhitelist()">Speichern</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Docker Add Modal -->
+    <div id="docker-add-modal" class="modal-overlay hidden">
+        <div class="modal-card glass-panel" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>Docker Container als Endpoint hinzufügen</h3>
+                <button class="btn-icon" onclick="closeDockerAddModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="quick-docker-select">Container auswählen</label>
+                    <select id="quick-docker-select" onchange="onQuickDockerSelected()">
+                        <option value="">Lade Container...</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="quick-ep-name">Anzeigename</label>
+                    <input type="text" id="quick-ep-name" placeholder="z.B. vLLM Engine">
+                </div>
+
+                <div class="form-group">
+                    <label for="quick-ep-url">Base URL</label>
+                    <input type="text" id="quick-ep-url" placeholder="http://llm-gw-vllm:8100/v1">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="quick-ep-schema">API Schema</label>
+                        <select id="quick-ep-schema">
+                            <option value="openai">OpenAI Compatible</option>
+                            <option value="ollama">Ollama Native</option>
+                            <option value="litellm">LiteLLM</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="quick-ep-caps">Capabilities</label>
+                        <input type="text" id="quick-ep-caps" value="fast, reasoning" placeholder="fast, reasoning">
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button class="btn-ghost" onclick="closeDockerAddModal()">Abbrechen</button>
+                    <button class="btn-primary" id="btn-quick-add" onclick="saveQuickDockerEndpoint()">
+                        ➕ Endpoint Erstellen
+                    </button>
+                </div>
+                <div id="quick-docker-status-msg" class="status-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=3"></script>
+</body>
+</html>

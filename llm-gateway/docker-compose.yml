@@ -1,0 +1,217 @@
+# LLM Gateway
+# ==============================================
+# Docker-basierter LLM-Endpunkt mit Tier-Routing,
+# Modell-Management und Dashboard.
+#
+# Services:
+#   vllm        - vLLM auf AMD R9700 Pro (32GB, RDNA 4, ROCm)
+#   lm-studio   - LM Studio Container mit Web-UI & REST API (Vulkan / DRI)
+#   litellm     - LiteLLM Proxy / Router
+#   orchestrator- Control Plane & Web Dashboard
+
+services:
+  # ============================================
+  # vLLM — Primärer Inferenz-Server (ROCm)
+  # ============================================
+  vllm:
+    image: rocm/vllm-dev:rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0
+    container_name: llm-gw-vllm
+    privileged: true
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+    ipc: host
+    network_mode: host
+    shm_size: "8g"
+    volumes:
+      - ${HF_CACHE_DIR:-./models}:/root/.cache/huggingface
+      - ${LM_STUDIO_MODELS_DIR:-/home/daniel/.lmstudio/models}:/lmstudio-models:ro
+    environment:
+      - VLLM_ROCM_USE_AITER=0
+      - VLLM_LOGGING_LEVEL=INFO
+      # WICHTIG FÜR RDNA 4 (R9700): Weist ROCm an, den GFX12-Instruktionssatz zu nutzen
+      - HSA_OVERRIDE_GFX_VERSION=12.0.0
+      - PYTORCH_ROC_ALLOC_CONF=max_split_size_mb:512
+    entrypoint: ["vllm", "serve"]
+    command: >
+      --model ${VLLM_MODEL:-bartowski/Qwen2.5-Coder-32B-Instruct-GGUF:Q4_K_M}
+      --tokenizer ${VLLM_TOKENIZER:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      --hf-config-path ${VLLM_HF_CONFIG:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      --dtype float16
+      --host 0.0.0.0
+      --port 8100
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-16384}
+      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.85}
+      --enforce-eager
+      --tensor-parallel-size 1
+      --generation-config auto
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 10
+    restart: unless-stopped
+    profiles:
+      - vllm-only
+      - full
+
+  # ============================================
+  # LM Studio — Desktop Web UI & OpenAI REST API
+  # ============================================
+  lm-studio:
+    image: lscr.io/linuxserver/lm-studio:latest
+    container_name: llm-gw-lmstudio
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Berlin
+      - AUTO_GPU=true
+    volumes:
+      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/config/.lmstudio
+      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/home/daniel/.lmstudio
+    ports:
+      - "${LMSTUDIO_API_PORT:-1234}:1234"
+      - "${LMSTUDIO_WEB_PORT:-3002}:3001"
+    shm_size: "4gb"
+    profiles:
+      - full
+      - lmstudio-only
+      - lmstudio
+
+  # ============================================
+  # LiteLLM Proxy — Routing & API Gateway
+  # ============================================
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: llm-gw-litellm
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./litellm-config:/app/config
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OLLAMA_RX6700_URL=${OLLAMA_RX6700_URL}
+      - OLLAMA_MACBOOK_URL=${OLLAMA_MACBOOK_URL}
+      - LMSTUDIO_URL=${LMSTUDIO_URL:-http://host.docker.internal:1234}
+    command: --config /app/config/config.yaml --port 4000
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # ============================================
+  # Orchestrator — Dashboard + Management API
+  # ============================================
+  orchestrator:
+    build: ./orchestrator
+    container_name: llm-gw-orchestrator
+    ports:
+      - "9000:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./litellm-config:/litellm-config
+      - ./orchestrator:/app
+      - ${LM_STUDIO_MODELS_DIR:-/home/daniel/.lmstudio/models}:/lmstudio-models:ro
+    environment:
+      - VLLM_URL=http://host.docker.internal:8100
+      - LMSTUDIO_URL=http://host.docker.internal:1234
+      - LMSTUDIO_WEB_PORT=3002
+      - LITELLM_URL=http://litellm:4000
+      - LITELLM_CONFIG_PATH=/litellm-config/config.yaml
+      - DOCKER_VLLM_CONTAINER=llm-gw-vllm
+      - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
+      - LMSTUDIO_MODELS_PATH=/lmstudio-models
+      - OLLAMA_ROUTER_URL=http://ollama:11434
+    depends_on:
+      - litellm
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # ============================================
+  # Ollama — Embeddings (CPU Backend)
+  # ============================================
+  ollama-cpu:
+    image: ollama/ollama
+    container_name: llm-gw-ollama-cpu
+    restart: unless-stopped
+    volumes:
+      - openbrain_ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 10s
+    profiles:
+      - full
+
+  # ============================================
+  # Ollama — Embeddings (GPU Backend - ROCm)
+  # ============================================
+  ollama-gpu:
+    image: ollama/ollama:rocm
+    container_name: llm-gw-ollama-gpu
+    restart: unless-stopped
+    volumes:
+      - openbrain_ollama:/root/.ollama
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"
+      - "991"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 10s
+    profiles:
+      - full
+
+  # ============================================
+  # Ollama Router — CPU/GPU Switcher (Deno)
+  # ============================================
+  ollama:
+    build:
+      context: ./ollama-router
+      dockerfile: Dockerfile
+    container_name: llm-gw-ollama-router
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      CPU_URL: http://ollama-cpu:11434
+      GPU_URL: http://ollama-gpu:11434
+    depends_on:
+      ollama-cpu:
+        condition: service_healthy
+      ollama-gpu:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "deno", "eval", "const r = await fetch('http://localhost:11434/_router/mode'); if (!r.ok) throw new Error();"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    profiles:
+      - full
+
+volumes:
+  openbrain_ollama:
+    external: true
+    name: openbrain_openbrain_ollama

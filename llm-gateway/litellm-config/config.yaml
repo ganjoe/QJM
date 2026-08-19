@@ -1,0 +1,7 @@
+model_list:
+- model_name: fast
+  litellm_params:
+    model: openai/RedHatAI/Muse-Glimmer-30B-FP8-block
+    api_base: http://host.docker.internal:8100/v1
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
