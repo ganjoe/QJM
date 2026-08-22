@@ -1,24 +1,23 @@
 #!/bin/bash
 # ==============================================================================
-# LLM Gateway - Restart Script
-# 
-# Startet alle Container neu und wendet lokale Code-Änderungen an (z.B. im
-# Orchestrator), ohne externe Images (wie vLLM oder Ollama) neu herunterzuladen.
+# LLM Gateway - Restart Script (Switchyard + DSH + LM Studio + Dashboard)
 # ==============================================================================
 
 cd "$(dirname "$0")" || exit 1
 
-echo "🔄 Stoppe bestehende Container..."
-docker compose --profile full down
+echo "🔄 Stoppe bestehende Container & Orphans..."
+docker compose down --remove-orphans
+docker stop llm-gw-litellm llm-gw-orchestrator 2>/dev/null || true
+docker rm llm-gw-litellm llm-gw-orchestrator 2>/dev/null || true
 
-echo "🏗️ Baue lokale Images neu (falls sich Code geändert hat)..."
-# --build erzwingt das Bauen lokaler Dockerfiles (Orchestrator, Ollama-Router)
-# Ohne --pull werden keine neuen Versionen von Basis-Images heruntergeladen!
-docker compose --profile full build
+echo "🏗️ Baue lokale Images (Switchyard, DSH, Dashboard)..."
+docker compose build switchyard dsh dashboard
 
-echo "🚀 Starte alle Services..."
-docker compose --profile full up -d
+echo "🚀 Starte Kern-Services (Switchyard, DSH, LM Studio, Dashboard)..."
+docker compose up -d --remove-orphans switchyard dsh lm-studio dashboard
 
 echo ""
 echo "✅ Restart abgeschlossen!"
-echo "Dashboard: http://localhost:9000"
+echo "Switchyard Router:    http://10.20.0.23:4000/v1"
+echo "DeepSeek Harness UI:  http://10.20.0.23:3080"
+echo "Dashboard Control:    http://10.20.0.23:9000"

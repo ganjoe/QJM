@@ -1,0 +1,97 @@
+schema_version = 1
+
+# =============================================================================
+# NVIDIA NeMo Switchyard - Routing Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. LLM Clients (Backend Providers)
+# -----------------------------------------------------------------------------
+
+[llm_clients.lmstudio]
+format = "openai_chat"
+base_url = "http://host.docker.internal:1234/v1"
+
+[llm_clients.gemini]
+format = "openai_chat"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key_env = "GEMINI_API_KEY"
+
+[llm_clients.ollama]
+format = "openai_chat"
+base_url = "http://host.docker.internal:11434/v1"
+
+# -----------------------------------------------------------------------------
+# 2. Targets (Available Models on Clients)
+# -----------------------------------------------------------------------------
+
+[targets.local_model]
+id = "default"
+llm_client = "lmstudio"
+
+[targets.gemini_flash]
+id = "gemini-2.5-flash"
+llm_client = "gemini"
+
+[targets.gemini_pro]
+id = "gemini-2.5-pro"
+llm_client = "gemini"
+
+[targets.ollama_embed]
+id = "nomic-embed-text"
+llm_client = "ollama"
+
+# -----------------------------------------------------------------------------
+# 3. Routes (Exposed Model IDs for Clients / Agents)
+# -----------------------------------------------------------------------------
+
+# Passthrough to local LM Studio model
+[routes.local]
+id = "local"
+type = "passthrough"
+target = "local_model"
+
+# Passthrough to Gemini Flash
+[routes.gemini_flash]
+id = "gemini-2.5-flash"
+type = "passthrough"
+target = "gemini_flash"
+
+# Passthrough to Gemini Pro
+[routes.gemini_pro]
+id = "gemini-2.5-pro"
+type = "passthrough"
+target = "gemini_pro"
+
+# Embeddings Route (Ollama nomic-embed-text)
+[routes.nomic_embed]
+id = "nomic-embed-text"
+type = "passthrough"
+target = "ollama_embed"
+
+[routes.embeddings_alias]
+id = "embeddings"
+type = "passthrough"
+target = "ollama_embed"
+
+# Aliases for generic agent capabilities
+[routes.fast]
+id = "fast"
+type = "passthrough"
+target = "gemini_flash"
+
+[routes.reasoning]
+id = "reasoning"
+type = "passthrough"
+target = "gemini_pro"
+
+# Smart classifier route: routes simple tasks to local LM Studio or flash, complex to pro
+[routes.auto]
+id = "auto"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "gemini_flash"
+weak_target = "local_model"
+strong_target = "gemini_pro"
+base_threshold = 0.5
+threshold_step = 0.1

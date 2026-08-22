@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QJM Control Plane | Switchyard & Docker Manager</title>
+    <link rel="stylesheet" href="/static/style.css?v=5">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <span class="pulse-ring"></span>
+                    <span class="pulse-dot active"></span>
+                </div>
+                <div>
+                    <h1>QJM Control Plane</h1>
+                    <p class="subtitle">Hardware Resource & Docker Backend Management</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="metric-badge">
+                    <span class="metric-label">CPU</span>
+                    <span class="metric-value" id="header-cpu">--%</span>
+                </div>
+                <div class="metric-badge">
+                    <span class="metric-label">RAM</span>
+                    <span class="metric-value" id="header-ram">--%</span>
+                </div>
+                <div class="metric-badge" id="header-vram-badge">
+                    <span class="metric-label">VRAM</span>
+                    <span class="metric-value" id="header-vram">--%</span>
+                </div>
+                <div class="system-badge online" id="system-badge-container">
+                    <span id="system-status">Switchyard Online</span>
+                </div>
+                <button class="btn-primary" onclick="refreshDashboard()" id="btn-sync">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    Refresh
+                </button>
+            </div>
+        </header>
+
+        <!-- Quick Access Banner -->
+        <div class="quick-banner">
+            <div class="quick-title">⚡ Quick Access:</div>
+            <div class="quick-links">
+                <a href="http://10.20.0.23:3080" target="_blank" class="quick-link dsh">
+                    <span class="dot"></span> DeepSeek Harness UI (Port 3080)
+                </a>
+                <a href="http://10.20.0.23:3002" target="_blank" class="quick-link lmstudio">
+                    <span class="dot"></span> LM Studio Web GUI (Port 3002)
+                </a>
+                <a href="http://10.20.0.23:4000/v1/models" target="_blank" class="quick-link switchyard">
+                    <span class="dot"></span> Switchyard API (Port 4000)
+                </a>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <main class="grid-container">
+            
+            <!-- Section 1: Hardware & System Telemetry -->
+            <section class="card full-width">
+                <div class="card-header">
+                    <div class="header-title">
+                        <h2>📊 Hardware & VRAM Telemetrie</h2>
+                        <span class="badge badge-subtle">Host System Metrics</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-header">
+                                <span class="stat-name">CPU Auslastung</span>
+                                <span class="stat-val" id="stat-cpu-val">0%</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill" id="stat-cpu-bar" style="width: 0%;"></div>
+                            </div>
+                            <span class="stat-sub" id="stat-cpu-cores">-- Kerne</span>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-header">
+                                <span class="stat-name">Arbeitsspeicher (RAM)</span>
+                                <span class="stat-val" id="stat-ram-val">0 GB</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill" id="stat-ram-bar" style="width: 0%;"></div>
+                            </div>
+                            <span class="stat-sub" id="stat-ram-sub">0 / 0 GB (0%)</span>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-header">
+                                <span class="stat-name">GPU VRAM Speicher</span>
+                                <span class="stat-val" id="stat-vram-val">0 MB</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill purple" id="stat-vram-bar" style="width: 0%;"></div>
+                            </div>
+                            <span class="stat-sub" id="stat-vram-sub">AMD Radeon GPU</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section 2: Docker LLM Backends & Containers -->
+            <section class="card full-width">
+                <div class="card-header">
+                    <div class="header-title">
+                        <h2>🐳 Docker Backend & Ressourcen-Verwaltung</h2>
+                        <span class="badge badge-subtle">Container Lifecycle & VRAM Freigabe</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="containers-grid" id="containers-list">
+                        <div class="skeleton">Lade Docker Container...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section 3: Switchyard Routing & Active Models -->
+            <section class="card full-width">
+                <div class="card-header">
+                    <div class="header-title">
+                        <h2>🔀 NVIDIA NeMo Switchyard Routen</h2>
+                        <span class="badge badge-subtle">Aktive OpenAI-kompatible Modell-Endpunkte</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="routes-grid" id="routes-list">
+                        <div class="skeleton">Lade Switchyard Routen...</div>
+                    </div>
+                </div>
+            </section>
+            
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/app.js?v=5"></script>
+</body>
+</html>

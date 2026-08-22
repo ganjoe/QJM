@@ -1,17 +1,124 @@
 # LLM Gateway
 # ==============================================
-# Docker-basierter LLM-Endpunkt mit Tier-Routing,
-# Modell-Management und Dashboard.
+# Docker-basierter LLM-Endpunkt mit NVIDIA NeMo Switchyard Router,
+# Modell-Management, DeepSeek Harness Web-UI und Dashboard Control Plane.
 #
 # Services:
-#   vllm        - vLLM auf AMD R9700 Pro (32GB, RDNA 4, ROCm)
-#   lm-studio   - LM Studio Container mit Web-UI & REST API (Vulkan / DRI)
-#   litellm     - LiteLLM Proxy / Router
-#   orchestrator- Control Plane & Web Dashboard
+#   switchyard      - NVIDIA NeMo Switchyard Proxy / Router (Port 4000)
+#   dsh             - DeepSeek Harness Agent Runtime & Web-UI (Port 3080)
+#   lm-studio       - LM Studio Container mit Web-UI & REST API (Vulkan / DRI)
+#   dashboard       - Control Plane & Hardware/Docker Management (Port 9000)
+#   vllm            - (Optional) vLLM auf AMD ROCm (Profile: vllm)
+#   ollama-*        - (Optional) Ollama CPU/GPU Embeddings (Profile: ollama)
 
 services:
   # ============================================
-  # vLLM — Primärer Inferenz-Server (ROCm)
+  # Switchyard — NVIDIA NeMo LLM Router / Proxy
+  # ============================================
+  switchyard:
+    build:
+      context: ./switchyard
+      dockerfile: Dockerfile
+    image: llm-gw-switchyard:latest
+    container_name: llm-gw-switchyard
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./switchyard-config:/config
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - CONFIG_PATH=/config/routes.toml
+      - PORT=4000
+      - HOST=0.0.0.0
+    restart: unless-stopped
+
+  # ============================================
+  # DeepSeek Harness (dsh) — Agent Web-UI & Runtime
+  # ============================================
+  dsh:
+    build:
+      context: ./deepseek-harness
+      dockerfile: Dockerfile
+    image: llm-gw-dsh:latest
+    container_name: llm-gw-dsh
+    ports:
+      - "3080:3080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./dsh-config:/root/.config/dsh
+      - ./dsh-config:/root/.dsh
+      - ${DSH_WORKSPACE_DIR:-/home/daniel}:/workspace
+    environment:
+      - PORT=3080
+      - HOST=0.0.0.0
+      - SWITCHYARD_URL=http://switchyard:4000/v1
+    depends_on:
+      - switchyard
+    restart: unless-stopped
+
+  # ============================================
+  # LM Studio — Desktop Web UI & OpenAI REST API
+  # ============================================
+  lm-studio:
+    image: lscr.io/linuxserver/lm-studio:latest
+    container_name: llm-gw-lmstudio
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Berlin
+      - AUTO_GPU=true
+    volumes:
+      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/config/.lmstudio
+      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/home/daniel/.lmstudio
+    ports:
+      - "${LMSTUDIO_API_PORT:-1234}:1234"
+      - "${LMSTUDIO_WEB_PORT:-3002}:3001"
+    shm_size: "4gb"
+
+  # ============================================
+  # Dashboard — Control Plane & Hardware/Docker Manager
+  # ============================================
+  dashboard:
+    build: ./dashboard
+    image: llm-gw-dashboard:latest
+    container_name: llm-gw-dashboard
+    ports:
+      - "9000:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./switchyard-config:/switchyard-config
+      - ./dashboard:/app
+      - ${LM_STUDIO_MODELS_DIR:-/home/daniel/.lmstudio/models}:/lmstudio-models:ro
+    environment:
+      - SWITCHYARD_URL=http://switchyard:4000
+      - SWITCHYARD_CONFIG_PATH=/switchyard-config/routes.toml
+      - LMSTUDIO_URL=http://host.docker.internal:1234
+      - LMSTUDIO_WEB_PORT=3002
+      - VLLM_URL=http://host.docker.internal:8100
+      - OLLAMA_ROUTER_URL=http://ollama:11434
+      - DOCKER_SWITCHYARD_CONTAINER=llm-gw-switchyard
+      - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
+      - DOCKER_VLLM_CONTAINER=llm-gw-vllm
+      - DOCKER_DSH_CONTAINER=llm-gw-dsh
+      - LMSTUDIO_MODELS_PATH=/lmstudio-models
+    depends_on:
+      - switchyard
+    restart: unless-stopped
+
+  # ============================================
+  # (Optional) vLLM — Inferenz-Server (ROCm)
   # ============================================
   vllm:
     image: rocm/vllm-dev:rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0
@@ -55,94 +162,11 @@ services:
       retries: 10
     restart: unless-stopped
     profiles:
-      - vllm-only
+      - vllm
       - full
 
   # ============================================
-  # LM Studio — Desktop Web UI & OpenAI REST API
-  # ============================================
-  lm-studio:
-    image: lscr.io/linuxserver/lm-studio:latest
-    container_name: llm-gw-lmstudio
-    restart: unless-stopped
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Europe/Berlin
-      - AUTO_GPU=true
-    volumes:
-      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/config/.lmstudio
-      - ${LMSTUDIO_HOST_DIR:-/home/daniel/.lmstudio}:/home/daniel/.lmstudio
-    ports:
-      - "${LMSTUDIO_API_PORT:-1234}:1234"
-      - "${LMSTUDIO_WEB_PORT:-3002}:3001"
-    shm_size: "4gb"
-    profiles:
-      - full
-      - lmstudio-only
-      - lmstudio
-
-  # ============================================
-  # LiteLLM Proxy — Routing & API Gateway
-  # ============================================
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    container_name: llm-gw-litellm
-    ports:
-      - "4000:4000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./litellm-config:/app/config
-    environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - OLLAMA_RX6700_URL=${OLLAMA_RX6700_URL}
-      - OLLAMA_MACBOOK_URL=${OLLAMA_MACBOOK_URL}
-      - LMSTUDIO_URL=${LMSTUDIO_URL:-http://host.docker.internal:1234}
-    command: --config /app/config/config.yaml --port 4000
-    restart: unless-stopped
-    profiles:
-      - full
-
-  # ============================================
-  # Orchestrator — Dashboard + Management API
-  # ============================================
-  orchestrator:
-    build: ./orchestrator
-    container_name: llm-gw-orchestrator
-    ports:
-      - "9000:9000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./litellm-config:/litellm-config
-      - ./orchestrator:/app
-      - ${LM_STUDIO_MODELS_DIR:-/home/daniel/.lmstudio/models}:/lmstudio-models:ro
-    environment:
-      - VLLM_URL=http://host.docker.internal:8100
-      - LMSTUDIO_URL=http://host.docker.internal:1234
-      - LMSTUDIO_WEB_PORT=3002
-      - LITELLM_URL=http://litellm:4000
-      - LITELLM_CONFIG_PATH=/litellm-config/config.yaml
-      - DOCKER_VLLM_CONTAINER=llm-gw-vllm
-      - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
-      - LMSTUDIO_MODELS_PATH=/lmstudio-models
-      - OLLAMA_ROUTER_URL=http://ollama:11434
-    depends_on:
-      - litellm
-    restart: unless-stopped
-    profiles:
-      - full
-
-  # ============================================
-  # Ollama — Embeddings (CPU Backend)
+  # (Optional) Ollama — Embeddings (CPU Backend)
   # ============================================
   ollama-cpu:
     image: ollama/ollama
@@ -157,10 +181,11 @@ services:
       retries: 15
       start_period: 10s
     profiles:
+      - ollama
       - full
 
   # ============================================
-  # Ollama — Embeddings (GPU Backend - ROCm)
+  # (Optional) Ollama — Embeddings (GPU Backend - ROCm)
   # ============================================
   ollama-gpu:
     image: ollama/ollama:rocm
@@ -181,10 +206,11 @@ services:
       retries: 15
       start_period: 10s
     profiles:
+      - ollama
       - full
 
   # ============================================
-  # Ollama Router — CPU/GPU Switcher (Deno)
+  # (Optional) Ollama Router — CPU/GPU Switcher (Deno)
   # ============================================
   ollama:
     build:
@@ -209,6 +235,7 @@ services:
       retries: 5
       start_period: 5s
     profiles:
+      - ollama
       - full
 
 volumes:
