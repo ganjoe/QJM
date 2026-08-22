@@ -31,7 +31,8 @@ class TelemetryCollector:
         self.timeout = httpx.Timeout(1.0, connect=0.3)
 
     def get_gpu_telemetry(self) -> Optional[GPUStats]:
-        """Reads AMD GPU VRAM and utilization from sysfs or defaults."""
+        """Reads AMD GPU VRAM and utilization from sysfs. Picks the GPU with the most VRAM (discrete card)."""
+        best_vram_total = 0
         vram_used_mb = None
         vram_total_mb = None
         vram_percent = None
@@ -40,35 +41,34 @@ class TelemetryCollector:
         gpu_name = "AMD Radeon GPU"
 
         try:
-            # Check sysfs for AMD GPU VRAM info (card0 or card1)
-            for card_path in glob.glob("/sys/class/drm/card[0-9]/device"):
+            for card_path in sorted(glob.glob("/sys/class/drm/card[0-9]/device")):
                 vram_used_file = os.path.join(card_path, "mem_info_vram_used")
                 vram_total_file = os.path.join(card_path, "mem_info_vram_total")
                 gpu_busy_file = os.path.join(card_path, "gpu_busy_percent")
 
-                if os.path.exists(vram_used_file) and os.path.exists(vram_total_file):
+                if os.path.exists(vram_total_file):
                     try:
-                        with open(vram_used_file, "r") as f:
-                            used_bytes = int(f.read().strip())
-                            vram_used_mb = round(used_bytes / (1024 * 1024), 1)
                         with open(vram_total_file, "r") as f:
                             total_bytes = int(f.read().strip())
+
+                        # Always prefer the GPU with the most VRAM (discrete > iGPU)
+                        if total_bytes > best_vram_total:
+                            best_vram_total = total_bytes
                             vram_total_mb = round(total_bytes / (1024 * 1024), 1)
-                        if vram_total_mb and vram_total_mb > 0:
-                            vram_percent = round((vram_used_mb / vram_total_mb) * 100, 1)
+
+                            if os.path.exists(vram_used_file):
+                                with open(vram_used_file, "r") as f:
+                                    used_bytes = int(f.read().strip())
+                                    vram_used_mb = round(used_bytes / (1024 * 1024), 1)
+
+                            if vram_total_mb and vram_total_mb > 0:
+                                vram_percent = round(((vram_used_mb or 0) / vram_total_mb) * 100, 1)
+
+                            if os.path.exists(gpu_busy_file):
+                                with open(gpu_busy_file, "r") as f:
+                                    gpu_util = float(f.read().strip())
                     except Exception:
                         pass
-
-                if os.path.exists(gpu_busy_file):
-                    try:
-                        with open(gpu_busy_file, "r") as f:
-                            gpu_util = float(f.read().strip())
-                    except Exception:
-                        pass
-
-                # If found valid VRAM stats, break
-                if vram_total_mb is not None:
-                    break
         except Exception as e:
             logger.debug(f"Could not read GPU sysfs: {e}")
 

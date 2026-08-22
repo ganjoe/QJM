@@ -3,149 +3,525 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QJM Control Plane | Switchyard & Docker Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=5">
+    <title>QJM Control Plane | Switchyard & Docker Suite</title>
+    <link rel="stylesheet" href="/static/style.css?v=6">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="glass-bg"></div>
     <div class="app-container">
-        <!-- Header -->
+        
+        <!-- Compact Top Header -->
         <header class="header">
-            <div class="logo-area">
-                <div class="logo-icon">
-                    <span class="pulse-ring"></span>
-                    <span class="pulse-dot active"></span>
+            <div class="header-left">
+                <div class="logo-area">
+                    <div class="pulse-dot active"></div>
+                    <div class="title-group">
+                        <h1>QJM Control Plane</h1>
+                        <span class="version-tag">Switchyard Hub</span>
+                    </div>
                 </div>
-                <div>
-                    <h1>QJM Control Plane</h1>
-                    <p class="subtitle">Hardware Resource & Docker Backend Management</p>
-                </div>
+
+                <!-- Navigation Tabs -->
+                <nav class="nav-tabs">
+                    <button class="nav-tab active" data-tab="tab-routes">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                        Routen & Tiers
+                    </button>
+                    <button class="nav-tab" data-tab="tab-toml">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                        TOML Editor
+                    </button>
+                    <button class="nav-tab" data-tab="tab-playground">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        Route Tester
+                    </button>
+                    <button class="nav-tab" data-tab="tab-stats">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                        Live Stats
+                    </button>
+                    <button class="nav-tab" data-tab="tab-system">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                        Hardware & Docker
+                    </button>
+                </nav>
             </div>
-            <div class="header-actions">
-                <div class="metric-badge">
-                    <span class="metric-label">CPU</span>
-                    <span class="metric-value" id="header-cpu">--%</span>
+
+            <!-- Compact Header Telemetry Pills -->
+            <div class="header-right">
+                <div class="mini-pill" title="CPU Auslastung">
+                    <span class="pill-label">CPU</span>
+                    <span class="pill-val" id="header-cpu">--%</span>
                 </div>
-                <div class="metric-badge">
-                    <span class="metric-label">RAM</span>
-                    <span class="metric-value" id="header-ram">--%</span>
+                <div class="mini-pill" title="RAM Auslastung">
+                    <span class="pill-label">RAM</span>
+                    <span class="pill-val" id="header-ram">--%</span>
                 </div>
-                <div class="metric-badge" id="header-vram-badge">
-                    <span class="metric-label">VRAM</span>
-                    <span class="metric-value" id="header-vram">--%</span>
+                <div class="mini-pill purple" id="header-vram-pill" title="GPU VRAM">
+                    <span class="pill-label">VRAM</span>
+                    <span class="pill-val" id="header-vram">--%</span>
                 </div>
-                <div class="system-badge online" id="system-badge-container">
-                    <span id="system-status">Switchyard Online</span>
+                <div class="status-pill online" id="switchyard-status-pill">
+                    <span class="status-dot"></span>
+                    <span id="switchyard-status-text">Port 4000</span>
                 </div>
-                <button class="btn-primary" onclick="refreshDashboard()" id="btn-sync">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                    Refresh
+                <button class="btn-compact primary" onclick="refreshDashboard()" title="Aktualisieren">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                 </button>
             </div>
         </header>
 
-        <!-- Quick Access Banner -->
-        <div class="quick-banner">
-            <div class="quick-title">⚡ Quick Access:</div>
-            <div class="quick-links">
-                <a href="http://10.20.0.23:3080" target="_blank" class="quick-link dsh">
-                    <span class="dot"></span> DeepSeek Harness UI (Port 3080)
+        <!-- Quick Links Sub-bar -->
+        <div class="quick-bar">
+            <span class="quick-title">⚡ Quick Port Links:</span>
+            <div class="quick-items">
+                <a href="http://localhost:3080" target="_blank" class="quick-btn dsh">
+                    <span class="dot"></span> DSH Agent UI (:3080)
                 </a>
-                <a href="http://10.20.0.23:3002" target="_blank" class="quick-link lmstudio">
-                    <span class="dot"></span> LM Studio Web GUI (Port 3002)
+                <a href="http://localhost:3002" target="_blank" class="quick-btn lmstudio">
+                    <span class="dot"></span> LM Studio GUI (:3002)
                 </a>
-                <a href="http://10.20.0.23:4000/v1/models" target="_blank" class="quick-link switchyard">
-                    <span class="dot"></span> Switchyard API (Port 4000)
+                <a href="http://localhost:4000/v1/models" target="_blank" class="quick-btn switchyard">
+                    <span class="dot"></span> Switchyard Models (:4000)
                 </a>
+                <button class="quick-btn reload-sy" onclick="triggerSwitchyardReload()">
+                    🔄 Hot-Reload Switchyard
+                </button>
             </div>
         </div>
 
-        <!-- Main Grid -->
-        <main class="grid-container">
+        <!-- Tab Content Areas -->
+        <main class="main-content">
             
-            <!-- Section 1: Hardware & System Telemetry -->
-            <section class="card full-width">
-                <div class="card-header">
-                    <div class="header-title">
-                        <h2>📊 Hardware & VRAM Telemetrie</h2>
-                        <span class="badge badge-subtle">Host System Metrics</span>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="stats-grid">
-                        <div class="stat-box">
-                            <div class="stat-header">
-                                <span class="stat-name">CPU Auslastung</span>
-                                <span class="stat-val" id="stat-cpu-val">0%</span>
+            <!-- TAB 1: ROUTING HUB -->
+            <div class="tab-pane active" id="tab-routes">
+                <div class="pane-grid-2">
+                    <!-- Left: Routes & Tiers Table -->
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="head-title">
+                                <h2>🔀 Aktive Routen & Tiers</h2>
+                                <span class="badge" id="routes-count">0 Routen</span>
                             </div>
-                            <div class="progress-bar-bg">
-                                <div class="progress-bar-fill" id="stat-cpu-bar" style="width: 0%;"></div>
-                            </div>
-                            <span class="stat-sub" id="stat-cpu-cores">-- Kerne</span>
+                            <button class="btn-compact accent" onclick="openCreateRouteModal()">+ Neue Route</button>
                         </div>
-                        <div class="stat-box">
-                            <div class="stat-header">
-                                <span class="stat-name">Arbeitsspeicher (RAM)</span>
-                                <span class="stat-val" id="stat-ram-val">0 GB</span>
-                            </div>
-                            <div class="progress-bar-bg">
-                                <div class="progress-bar-fill" id="stat-ram-bar" style="width: 0%;"></div>
-                            </div>
-                            <span class="stat-sub" id="stat-ram-sub">0 / 0 GB (0%)</span>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-header">
-                                <span class="stat-name">GPU VRAM Speicher</span>
-                                <span class="stat-val" id="stat-vram-val">0 MB</span>
-                            </div>
-                            <div class="progress-bar-bg">
-                                <div class="progress-bar-fill purple" id="stat-vram-bar" style="width: 0%;"></div>
-                            </div>
-                            <span class="stat-sub" id="stat-vram-sub">AMD Radeon GPU</span>
+                        <div class="card-content dense-table-wrap">
+                            <table class="compact-table" id="routes-table">
+                                <thead>
+                                    <tr>
+                                        <th>Route / ID</th>
+                                        <th>Typ & Strategie</th>
+                                        <th>Target / Resolver</th>
+                                        <th style="width: 70px;">Aktion</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="routes-table-body">
+                                    <tr><td colspan="4" class="muted">Lade Routen...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                </div>
-            </section>
 
-            <!-- Section 2: Docker LLM Backends & Containers -->
-            <section class="card full-width">
-                <div class="card-header">
-                    <div class="header-title">
-                        <h2>🐳 Docker Backend & Ressourcen-Verwaltung</h2>
-                        <span class="badge badge-subtle">Container Lifecycle & VRAM Freigabe</span>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="containers-grid" id="containers-list">
-                        <div class="skeleton">Lade Docker Container...</div>
-                    </div>
-                </div>
-            </section>
+                    <!-- Right Column: Targets & LLM Clients -->
+                    <div class="col-stack">
+                        <!-- Targets Card -->
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="head-title">
+                                    <h2>🎯 Targets (Modelle)</h2>
+                                    <span class="badge" id="targets-count">0 Targets</span>
+                                </div>
+                                <button class="btn-compact accent" onclick="openCreateTargetModal()">+ Target</button>
+                            </div>
+                            <div class="card-content dense-table-wrap">
+                                <table class="compact-table" id="targets-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Target Key</th>
+                                            <th>Upstream Model ID</th>
+                                            <th>Client</th>
+                                            <th style="width: 50px;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="targets-table-body">
+                                        <tr><td colspan="4" class="muted">Lade Targets...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
 
-            <!-- Section 3: Switchyard Routing & Active Models -->
-            <section class="card full-width">
-                <div class="card-header">
-                    <div class="header-title">
-                        <h2>🔀 NVIDIA NeMo Switchyard Routen</h2>
-                        <span class="badge badge-subtle">Aktive OpenAI-kompatible Modell-Endpunkte</span>
+                        <!-- LLM Clients Card -->
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="head-title">
+                                    <h2>🔌 Upstream Clients (Backends)</h2>
+                                    <span class="badge" id="clients-count">0 Clients</span>
+                                </div>
+                                <button class="btn-compact accent" onclick="openCreateClientModal()">+ Client</button>
+                            </div>
+                            <div class="card-content dense-table-wrap">
+                                <table class="compact-table" id="clients-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Client Key</th>
+                                            <th>Format</th>
+                                            <th>Base URL</th>
+                                            <th>Auth Env</th>
+                                            <th style="width: 50px;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="clients-table-body">
+                                        <tr><td colspan="5" class="muted">Lade Clients...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="card-body">
-                    <div class="routes-grid" id="routes-list">
-                        <div class="skeleton">Lade Switchyard Routen...</div>
+            </div>
+
+            <!-- TAB 2: RAW TOML EDITOR -->
+            <div class="tab-pane" id="tab-toml">
+                <div class="card full-h">
+                    <div class="card-head">
+                        <div class="head-title">
+                            <h2>📝 Switchyard routes.toml Live Editor</h2>
+                            <span class="badge">Echtzeit-Validierung & Hot-Reload</span>
+                        </div>
+                        <div class="head-actions">
+                            <button class="btn-compact" onclick="loadRawToml()">Verwerfen / Neu laden</button>
+                            <button class="btn-compact primary" onclick="saveRawToml()">💾 Speichern & Anwenden</button>
+                        </div>
+                    </div>
+                    <div class="card-content editor-wrap">
+                        <textarea id="toml-code-editor" spellcheck="false" placeholder="Lade routes.toml..."></textarea>
+                        <div class="editor-footer" id="toml-status">Status: Bereit</div>
                     </div>
                 </div>
-            </section>
-            
+            </div>
+
+            <!-- TAB 3: ROUTE TESTER PLAYGROUND -->
+            <div class="tab-pane" id="tab-playground">
+                <div class="pane-grid-2">
+                    <!-- Left: Request Setup -->
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>🧪 Route Request Generator</h2>
+                        </div>
+                        <div class="card-content form-dense">
+                            <div class="form-row">
+                                <label for="test-route-select">Ziel-Route:</label>
+                                <select id="test-route-select" class="form-input">
+                                    <option value="auto">auto (Classifier)</option>
+                                    <option value="reasoning">reasoning (Gemini 3.1 Pro)</option>
+                                    <option value="fast">fast (Gemini 3.6 Flash)</option>
+                                    <option value="lite">lite (Gemini 3.5 Flash-Lite)</option>
+                                    <option value="local">local (LM Studio GPU)</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label for="test-prompt">Prompt / Nachricht:</label>
+                                <textarea id="test-prompt" class="form-input form-textarea" rows="4">Erkläre mir in 2 kurzen Sätzen, was NVIDIA Switchyard macht.</textarea>
+                            </div>
+                            <div class="form-row">
+                                <label for="test-max-tokens">Max Tokens:</label>
+                                <input type="number" id="test-max-tokens" class="form-input" value="500" style="width: 100px;">
+                            </div>
+                            <button class="btn-compact primary" id="btn-send-test" onclick="runRouteTest()">
+                                🚀 Test-Anfrage senden
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Right: Response Analysis -->
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="head-title">
+                                <h2>📡 Antwort & Latenz-Analyse</h2>
+                                <span class="badge" id="test-latency-badge">0 ms</span>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div class="test-meta-grid" id="test-meta-grid">
+                                <div class="meta-box"><span class="meta-lbl">Status:</span> <span id="test-status-val" class="meta-val">--</span></div>
+                                <div class="meta-box"><span class="meta-lbl">Routed Backend:</span> <span id="test-model-val" class="meta-val">--</span></div>
+                                <div class="meta-box"><span class="meta-lbl">Latenz:</span> <span id="test-latency-val" class="meta-val">--</span></div>
+                            </div>
+                            <div class="response-box" id="test-response-output">
+                                <span class="muted">Klicke auf "Test-Anfrage senden", um die Route zu testen...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 4: LIVE TRAFFIC & STATS -->
+            <div class="tab-pane" id="tab-stats">
+                <div class="pane-grid-2">
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="head-title">
+                                <h2>📊 Switchyard Request & Traffic Stats</h2>
+                                <span class="badge" id="stats-online-badge">Live</span>
+                            </div>
+                            <button class="btn-compact danger" onclick="resetSwitchyardStats()">Statistiken zurücksetzen</button>
+                        </div>
+                        <div class="card-content">
+                            <div class="stats-cards-grid" id="stats-summary-grid">
+                                <div class="stat-mini-box">
+                                    <span class="sm-lbl">Total Requests</span>
+                                    <span class="sm-val" id="stats-total-req">0</span>
+                                </div>
+                                <div class="stat-mini-box">
+                                    <span class="sm-lbl">Erfolgreich (200)</span>
+                                    <span class="sm-val green" id="stats-success-req">0</span>
+                                </div>
+                                <div class="stat-mini-box">
+                                    <span class="sm-lbl">Fehler / Retries</span>
+                                    <span class="sm-val red" id="stats-error-req">0</span>
+                                </div>
+                            </div>
+                            <div class="dense-table-wrap" style="margin-top: 10px;">
+                                <table class="compact-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Route Name</th>
+                                            <th>Requests</th>
+                                            <th>Avg Latenz</th>
+                                            <th>Fehler</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="stats-routes-body">
+                                        <tr><td colspan="4" class="muted">Keine Verkehrsdaten vorhanden.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>🌐 Switchyard /v1/models Modell-Katalog</h2>
+                        </div>
+                        <div class="card-content dense-table-wrap">
+                            <table class="compact-table">
+                                <thead>
+                                    <tr>
+                                        <th>Modell ID</th>
+                                        <th>Owner</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="active-models-body">
+                                    <tr><td colspan="3" class="muted">Lade Modelle...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 5: HARDWARE & DOCKER -->
+            <div class="tab-pane" id="tab-system">
+                <div class="col-stack">
+                    <!-- Hardware Row -->
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>📊 Hardware & VRAM Telemetrie</h2>
+                        </div>
+                        <div class="card-content">
+                            <div class="stats-grid">
+                                <div class="stat-box">
+                                    <div class="stat-header">
+                                        <span class="stat-name">CPU Auslastung</span>
+                                        <span class="stat-val" id="stat-cpu-val">0%</span>
+                                    </div>
+                                    <div class="progress-bar-bg">
+                                        <div class="progress-bar-fill" id="stat-cpu-bar" style="width: 0%;"></div>
+                                    </div>
+                                    <span class="stat-sub" id="stat-cpu-cores">-- Kerne</span>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-header">
+                                        <span class="stat-name">Arbeitsspeicher (RAM)</span>
+                                        <span class="stat-val" id="stat-ram-val">0 GB</span>
+                                    </div>
+                                    <div class="progress-bar-bg">
+                                        <div class="progress-bar-fill" id="stat-ram-bar" style="width: 0%;"></div>
+                                    </div>
+                                    <span class="stat-sub" id="stat-ram-sub">0 / 0 GB</span>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-header">
+                                        <span class="stat-name">GPU VRAM Speicher</span>
+                                        <span class="stat-val" id="stat-vram-val">0 MB</span>
+                                    </div>
+                                    <div class="progress-bar-bg">
+                                        <div class="progress-bar-fill purple" id="stat-vram-bar" style="width: 0%;"></div>
+                                    </div>
+                                    <span class="stat-sub" id="stat-vram-sub">AMD Radeon GPU</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Docker Containers Row -->
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>🐳 Docker Container & VRAM Steuerung</h2>
+                        </div>
+                        <div class="card-content">
+                            <div class="containers-grid" id="containers-list">
+                                <div class="skeleton">Lade Docker Container...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
-    <!-- Notification Toast -->
+    <!-- MODAL: Create/Edit Route -->
+    <div id="modal-route" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3 id="modal-route-title">Route erstellen</h3>
+                <button class="modal-close" onclick="closeModal('modal-route')">&times;</button>
+            </div>
+            <div class="modal-body form-dense">
+                <div class="form-row">
+                    <label>Routen-ID / Key:</label>
+                    <input type="text" id="route-key-input" class="form-input" placeholder="z.B. reasoning oder mein-tier">
+                </div>
+                <div class="form-row">
+                    <label>Strategie / Typ:</label>
+                    <select id="route-type-select" class="form-input" onchange="toggleRouteTypeFields()">
+                        <option value="passthrough">⚡ Passthrough (Direkte Weiterleitung)</option>
+                        <option value="llm_classifier">🧠 LLM Classifier (Schiedsrichter-Router)</option>
+                        <option value="fallback">🔄 Fallback Chain (Ausweichkette)</option>
+                        <option value="weighted">⚖️ Weighted (Lastverteilung)</option>
+                    </select>
+                </div>
+
+                <!-- Passthrough Fields -->
+                <div id="field-passthrough" class="type-fields">
+                    <div class="form-row">
+                        <label>Ziel-Target:</label>
+                        <select id="route-target-select" class="form-input"></select>
+                    </div>
+                </div>
+
+                <!-- Classifier Fields -->
+                <div id="field-classifier" class="type-fields hidden">
+                    <div class="form-row">
+                        <label>Schiedsrichter-Target (Judge):</label>
+                        <select id="route-clf-target-select" class="form-input"></select>
+                    </div>
+                    <div class="form-row">
+                        <label>Schwaches Target (Default/Günstig):</label>
+                        <select id="route-weak-target-select" class="form-input"></select>
+                    </div>
+                    <div class="form-row">
+                        <label>Starkes Target (Komplex/Pro):</label>
+                        <select id="route-strong-target-select" class="form-input"></select>
+                    </div>
+                    <div class="form-row flex-row">
+                        <div>
+                            <label>Base Threshold (0.0-1.0):</label>
+                            <input type="number" id="route-base-thresh" class="form-input" step="0.1" value="0.5">
+                        </div>
+                        <div>
+                            <label>Threshold Step:</label>
+                            <input type="number" id="route-step-thresh" class="form-input" step="0.05" value="0.1">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Fallback Fields -->
+                <div id="field-fallback" class="type-fields hidden">
+                    <div class="form-row">
+                        <label>Targets Kette (kommagetrennt, geordnet):</label>
+                        <input type="text" id="route-fallback-targets" class="form-input" placeholder="local_model, gemini_36_flash">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <button class="btn-compact" onclick="closeModal('modal-route')">Abbrechen</button>
+                <button class="btn-compact primary" onclick="submitRouteForm()">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Create/Edit Target -->
+    <div id="modal-target" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3 id="modal-target-title">Target (Modell) anlegen</h3>
+                <button class="modal-close" onclick="closeModal('modal-target')">&times;</button>
+            </div>
+            <div class="modal-body form-dense">
+                <div class="form-row">
+                    <label>Target Key (intern):</label>
+                    <input type="text" id="target-key-input" class="form-input" placeholder="z.B. gemini_31_pro">
+                </div>
+                <div class="form-row">
+                    <label>Upstream Model ID:</label>
+                    <input type="text" id="target-id-input" class="form-input" placeholder="z.B. gemini-3.1-pro-preview">
+                </div>
+                <div class="form-row">
+                    <label>Upstream Client Backend:</label>
+                    <select id="target-client-select" class="form-input"></select>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <button class="btn-compact" onclick="closeModal('modal-target')">Abbrechen</button>
+                <button class="btn-compact primary" onclick="submitTargetForm()">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Create/Edit Client -->
+    <div id="modal-client" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3 id="modal-client-title">Client Backend anlegen</h3>
+                <button class="modal-close" onclick="closeModal('modal-client')">&times;</button>
+            </div>
+            <div class="modal-body form-dense">
+                <div class="form-row">
+                    <label>Client Key:</label>
+                    <input type="text" id="client-key-input" class="form-input" placeholder="z.B. gemini oder ollama">
+                </div>
+                <div class="form-row">
+                    <label>Format:</label>
+                    <select id="client-format-select" class="form-input">
+                        <option value="openai_chat">openai_chat (Standard)</option>
+                        <option value="openai_completion">openai_completion</option>
+                        <option value="anthropic">anthropic</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Base URL:</label>
+                    <input type="text" id="client-url-input" class="form-input" placeholder="http://host.docker.internal:1234/v1">
+                </div>
+                <div class="form-row">
+                    <label>API Key Environment Variable (optional):</label>
+                    <input type="text" id="client-env-input" class="form-input" placeholder="GEMINI_API_KEY">
+                </div>
+            </div>
+            <div class="modal-foot">
+                <button class="btn-compact" onclick="closeModal('modal-client')">Abbrechen</button>
+                <button class="btn-compact primary" onclick="submitClientForm()">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
     <div id="toast" class="toast hidden"></div>
 
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=6"></script>
 </body>
 </html>

@@ -1,38 +1,21 @@
 schema_version = 1
 
-# =============================================================================
-# NVIDIA NeMo Switchyard - Routing Configuration
-# Gemini 3.1 Pro Preview, 3.6 Flash, 3.5 Lite + LM Studio GPU + Ollama CPU
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# 1. LLM Clients (Backend Providers)
-# -----------------------------------------------------------------------------
-
-# Local LM Studio (AMD GPU DRI/Vulkan)
 [llm_clients.lmstudio]
 format = "openai_chat"
 base_url = "http://host.docker.internal:1234/v1"
 
-# Google AI Studio Direct (Via Sanitizer Proxy)
 [llm_clients.gemini]
 format = "openai_chat"
 base_url = "http://dashboard:9000/api/gemini/v1"
 
-# Local Ollama (CPU Embeddings)
 [llm_clients.ollama]
 format = "openai_chat"
 base_url = "http://host.docker.internal:11434/v1"
-
-# -----------------------------------------------------------------------------
-# 2. Targets (Available Models on Clients)
-# -----------------------------------------------------------------------------
 
 [targets.local_model]
 id = "default"
 llm_client = "lmstudio"
 
-# --- Gemini 3.x Live Targets ---
 [targets.gemini_31_pro]
 id = "gemini-3.1-pro-preview"
 llm_client = "gemini"
@@ -49,22 +32,15 @@ llm_client = "gemini"
 id = "gemini-3.5-flash"
 llm_client = "gemini"
 
-# --- Ollama Embeddings ---
 [targets.ollama_embed]
 id = "nomic-embed-text"
 llm_client = "ollama"
 
-# -----------------------------------------------------------------------------
-# 3. Categorized Routes & Tiers
-# -----------------------------------------------------------------------------
-
-# --- Category: Local Hardware ---
 [routes.local]
 id = "local"
 type = "passthrough"
 target = "local_model"
 
-# --- Category: High-End Reasoning Tier (Gemini 3.1 Pro) ---
 [routes.reasoning]
 id = "reasoning"
 type = "passthrough"
@@ -75,7 +51,6 @@ id = "pro"
 type = "passthrough"
 target = "gemini_31_pro"
 
-# --- Category: High-Speed Workhorse Tier (Gemini 3.6 Flash) ---
 [routes.fast]
 id = "fast"
 type = "passthrough"
@@ -86,13 +61,11 @@ id = "flash"
 type = "passthrough"
 target = "gemini_36_flash"
 
-# --- Category: Ultra-Lite Tier (Gemini 3.5 Flash-Lite) ---
 [routes.lite]
 id = "lite"
 type = "passthrough"
 target = "gemini_35_lite"
 
-# --- Direct Model IDs ---
 [routes.gemini_31_pro_preview]
 id = "gemini-3.1-pro-preview"
 type = "passthrough"
@@ -128,7 +101,6 @@ id = "gemini-3.5-flash"
 type = "passthrough"
 target = "gemini_35_flash"
 
-# --- Embeddings Routes ---
 [routes.nomic_embed]
 id = "nomic-embed-text"
 type = "passthrough"
@@ -139,7 +111,6 @@ id = "embeddings"
 type = "passthrough"
 target = "ollama_embed"
 
-# --- Dynamic Classifier Route (Auto Tier) ---
 [routes.auto]
 id = "auto"
 type = "llm_classifier"

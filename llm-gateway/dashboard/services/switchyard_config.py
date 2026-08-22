@@ -1,6 +1,7 @@
 import os
 import logging
 from typing import Any, Optional
+from services.docker_client import docker_manager
 
 try:
     import tomllib
@@ -12,88 +13,11 @@ try:
 except ImportError:
     tomli_w = None
 
-logger = logging.getLogger("orchestrator.switchyard_config")
-
-DEFAULT_ROUTES_TOML = """schema_version = 1
-
-[llm_clients.lmstudio]
-format = "openai_chat"
-base_url = "http://host.docker.internal:1234/v1"
-
-[llm_clients.gemini]
-format = "openai_chat"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-api_key_env = "GEMINI_API_KEY"
-
-[llm_clients.ollama]
-format = "openai_chat"
-base_url = "http://host.docker.internal:11434/v1"
-
-[targets.local_model]
-id = "default"
-llm_client = "lmstudio"
-
-[targets.gemini_flash]
-id = "gemini-2.5-flash"
-llm_client = "gemini"
-
-[targets.gemini_pro]
-id = "gemini-2.5-pro"
-llm_client = "gemini"
-
-[targets.ollama_embed]
-id = "nomic-embed-text"
-llm_client = "ollama"
-
-[routes.local]
-id = "local"
-type = "passthrough"
-target = "local_model"
-
-[routes.gemini_flash]
-id = "gemini-2.5-flash"
-type = "passthrough"
-target = "gemini_flash"
-
-[routes.gemini_pro]
-id = "gemini-2.5-pro"
-type = "passthrough"
-target = "gemini_pro"
-
-[routes.nomic_embed]
-id = "nomic-embed-text"
-type = "passthrough"
-target = "ollama_embed"
-
-[routes.embeddings_alias]
-id = "embeddings"
-type = "passthrough"
-target = "ollama_embed"
-
-[routes.fast]
-id = "fast"
-type = "passthrough"
-target = "gemini_flash"
-
-[routes.reasoning]
-id = "reasoning"
-type = "passthrough"
-target = "gemini_pro"
-
-[routes.auto]
-id = "auto"
-type = "llm_classifier"
-mode = "capability"
-classifier_target = "gemini_flash"
-weak_target = "local_model"
-strong_target = "gemini_pro"
-base_threshold = 0.5
-threshold_step = 0.1
-"""
+logger = logging.getLogger("dashboard.switchyard_config")
 
 
 class SwitchyardConfigManager:
-    """Manages the routes.toml configuration file for NVIDIA NeMo Switchyard."""
+    """Manages the routes.toml configuration file and control operations for NVIDIA NeMo Switchyard."""
 
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path or os.getenv(
@@ -103,8 +27,8 @@ class SwitchyardConfigManager:
     def read_config(self) -> dict[str, Any]:
         """Reads and parses the routes.toml configuration file."""
         if not os.path.exists(self.config_path):
-            logger.warning("Config file not found at %s. Creating default.", self.config_path)
-            self._write_raw_toml(DEFAULT_ROUTES_TOML)
+            logger.warning("Config file not found at %s.", self.config_path)
+            return {}
 
         try:
             with open(self.config_path, "rb") as f:
@@ -113,103 +37,186 @@ class SwitchyardConfigManager:
             logger.error("Failed to parse config %s: %s", self.config_path, e)
             return {}
 
-    def get_routes(self) -> list[dict[str, Any]]:
-        """Returns a list of all configured routes."""
-        config = self.read_config()
-        routes_dict = config.get("routes", {})
-        routes_list = []
-        for key, details in routes_dict.items():
-            routes_list.append({
-                "key": key,
-                "id": details.get("id", key),
-                "type": details.get("type", "passthrough"),
-                "target": details.get("target"),
-                "classifier_target": details.get("classifier_target"),
-                "weak_target": details.get("weak_target"),
-                "strong_target": details.get("strong_target"),
-            })
-        return routes_list
+    def read_raw_toml(self) -> str:
+        """Returns the raw TOML string."""
+        if not os.path.exists(self.config_path):
+            return ""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.error("Failed to read raw toml %s: %s", self.config_path, e)
+            return ""
 
-    def get_targets(self) -> list[dict[str, Any]]:
-        """Returns a list of all configured targets (models)."""
-        config = self.read_config()
-        targets_dict = config.get("targets", {})
-        targets_list = []
-        for key, details in targets_dict.items():
-            targets_list.append({
-                "key": key,
-                "id": details.get("id", key),
-                "llm_client": details.get("llm_client"),
-            })
-        return targets_list
+    def validate_and_write_raw_toml(self, content: str) -> tuple[bool, str]:
+        """Validates TOML syntax and writes raw file."""
+        try:
+            # Parse to validate syntax
+            parsed = tomllib.loads(content)
+            if not isinstance(parsed, dict):
+                return False, "Invalid TOML structure: Root must be a table."
+        except Exception as e:
+            return False, f"TOML Syntax Error: {str(e)}"
 
+        success = self._write_raw_toml(content)
+        if success:
+            return True, "Config successfully saved."
+        return False, "Failed to write file to disk."
+
+    # --- Client Management ---
     def get_clients(self) -> list[dict[str, Any]]:
-        """Returns a list of all configured LLM provider clients."""
         config = self.read_config()
         clients_dict = config.get("llm_clients", {})
-        clients_list = []
+        res = []
         for key, details in clients_dict.items():
-            clients_list.append({
+            res.append({
                 "key": key,
-                "format": details.get("format"),
-                "base_url": details.get("base_url"),
-                "api_key_env": details.get("api_key_env"),
+                "format": details.get("format", "openai_chat"),
+                "base_url": details.get("base_url", ""),
+                "api_key_env": details.get("api_key_env", ""),
             })
-        return clients_list
+        return res
 
-    def update_route_target(self, route_id: str, new_target: str) -> bool:
-        """Updates the target of an existing passthrough route."""
+    def save_client(self, key: str, data: dict[str, Any]) -> bool:
         config = self.read_config()
-        routes = config.setdefault("routes", {})
-
-        target_key = None
-        for key, r in routes.items():
-            if r.get("id") == route_id or key == route_id:
-                target_key = key
-                break
-
-        if target_key:
-            routes[target_key]["target"] = new_target
-            return self._write_config(config)
-
-        # If not found, create new passthrough route
-        routes[route_id] = {
-            "id": route_id,
-            "type": "passthrough",
-            "target": new_target,
+        clients = config.setdefault("llm_clients", {})
+        clients[key] = {
+            "format": data.get("format", "openai_chat"),
+            "base_url": data.get("base_url", ""),
         }
+        if data.get("api_key_env"):
+            clients[key]["api_key_env"] = data["api_key_env"]
         return self._write_config(config)
 
-    def delete_route(self, route_id: str) -> bool:
-        """Deletes a route by id or key."""
+    def delete_client(self, key: str) -> bool:
         config = self.read_config()
-        routes = config.get("routes", {})
-        target_key = None
-        for key, r in routes.items():
-            if r.get("id") == route_id or key == route_id:
-                target_key = key
-                break
-
-        if target_key and target_key in routes:
-            del routes[target_key]
+        clients = config.get("llm_clients", {})
+        if key in clients:
+            del clients[key]
             return self._write_config(config)
         return False
 
+    # --- Target Management ---
+    def get_targets(self) -> list[dict[str, Any]]:
+        config = self.read_config()
+        targets_dict = config.get("targets", {})
+        res = []
+        for key, details in targets_dict.items():
+            res.append({
+                "key": key,
+                "id": details.get("id", key),
+                "llm_client": details.get("llm_client", ""),
+            })
+        return res
+
+    def save_target(self, key: str, data: dict[str, Any]) -> bool:
+        config = self.read_config()
+        targets = config.setdefault("targets", {})
+        targets[key] = {
+            "id": data.get("id", key),
+            "llm_client": data.get("llm_client", ""),
+        }
+        return self._write_config(config)
+
+    def delete_target(self, key: str) -> bool:
+        config = self.read_config()
+        targets = config.get("targets", {})
+        if key in targets:
+            del targets[key]
+            return self._write_config(config)
+        return False
+
+    # --- Route Management ---
+    def get_routes(self) -> list[dict[str, Any]]:
+        config = self.read_config()
+        routes_dict = config.get("routes", {})
+        res = []
+        for key, details in routes_dict.items():
+            r = {
+                "key": key,
+                "id": details.get("id", key),
+                "type": details.get("type", "passthrough"),
+            }
+            if r["type"] == "passthrough":
+                r["target"] = details.get("target", "")
+            elif r["type"] == "llm_classifier":
+                r["mode"] = details.get("mode", "capability")
+                r["classifier_target"] = details.get("classifier_target", "")
+                r["weak_target"] = details.get("weak_target", "")
+                r["strong_target"] = details.get("strong_target", "")
+                r["base_threshold"] = details.get("base_threshold", 0.5)
+                r["threshold_step"] = details.get("threshold_step", 0.1)
+            elif r["type"] == "fallback":
+                r["targets"] = details.get("targets", [])
+            elif r["type"] in ("weighted", "load_balance"):
+                r["weights"] = details.get("weights", {})
+            res.append(r)
+        return res
+
+    def save_route(self, key: str, data: dict[str, Any]) -> bool:
+        config = self.read_config()
+        routes = config.setdefault("routes", {})
+        
+        rtype = data.get("type", "passthrough")
+        entry: dict[str, Any] = {
+            "id": data.get("id", key),
+            "type": rtype,
+        }
+
+        if rtype == "passthrough":
+            entry["target"] = data.get("target", "")
+        elif rtype == "llm_classifier":
+            entry["mode"] = data.get("mode", "capability")
+            entry["classifier_target"] = data.get("classifier_target", "")
+            entry["weak_target"] = data.get("weak_target", "")
+            entry["strong_target"] = data.get("strong_target", "")
+            entry["base_threshold"] = float(data.get("base_threshold", 0.5))
+            entry["threshold_step"] = float(data.get("threshold_step", 0.1))
+        elif rtype == "fallback":
+            targets = data.get("targets", [])
+            if isinstance(targets, str):
+                targets = [t.strip() for t in targets.split(",") if t.strip()]
+            entry["targets"] = targets
+        elif rtype in ("weighted", "load_balance"):
+            entry["weights"] = data.get("weights", {})
+
+        routes[key] = entry
+        return self._write_config(config)
+
+    def delete_route(self, key: str) -> bool:
+        config = self.read_config()
+        routes = config.get("routes", {})
+        if key in routes:
+            del routes[key]
+            return self._write_config(config)
+        # Search by id
+        for k, v in list(routes.items()):
+            if v.get("id") == key:
+                del routes[k]
+                return self._write_config(config)
+        return False
+
+    async def reload_switchyard(self) -> dict[str, Any]:
+        """Restarts the switchyard container."""
+        try:
+            success, msg = await docker_manager.restart_container("llm-gw-switchyard")
+            return {"success": success, "message": msg}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    # --- Internal Persistence ---
     def _write_config(self, config: dict[str, Any]) -> bool:
-        """Serializes and writes the config dict to routes.toml."""
         if tomli_w is not None:
             try:
                 os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
                 with open(self.config_path, "wb") as f:
                     tomli_w.dump(config, f)
-                logger.info("Successfully wrote updated Switchyard config to %s", self.config_path)
+                logger.info("Saved config to %s", self.config_path)
                 return True
             except Exception as e:
-                logger.error("Failed to write toml config %s: %s", self.config_path, e)
+                logger.error("Failed to write toml config: %s", e)
                 return False
-        else:
-            logger.error("tomli_w library is not installed, cannot dump TOML")
-            return False
+        return False
 
     def _write_raw_toml(self, content: str) -> bool:
         try:
@@ -218,7 +225,7 @@ class SwitchyardConfigManager:
                 f.write(content)
             return True
         except Exception as e:
-            logger.error("Failed to write raw toml to %s: %s", self.config_path, e)
+            logger.error("Failed to write raw toml: %s", e)
             return False
 
 
