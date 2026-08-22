@@ -2,21 +2,24 @@ schema_version = 1
 
 # =============================================================================
 # NVIDIA NeMo Switchyard - Routing Configuration
+# Gemini 3.1 Pro Preview, 3.6 Flash, 3.5 Lite + LM Studio GPU + Ollama CPU
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 1. LLM Clients (Backend Providers)
 # -----------------------------------------------------------------------------
 
+# Local LM Studio (AMD GPU DRI/Vulkan)
 [llm_clients.lmstudio]
 format = "openai_chat"
 base_url = "http://host.docker.internal:1234/v1"
 
+# Google AI Studio Direct (Via Sanitizer Proxy)
 [llm_clients.gemini]
 format = "openai_chat"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-api_key_env = "GEMINI_API_KEY"
+base_url = "http://dashboard:9000/api/gemini/v1"
 
+# Local Ollama (CPU Embeddings)
 [llm_clients.ollama]
 format = "openai_chat"
 base_url = "http://host.docker.internal:11434/v1"
@@ -29,41 +32,103 @@ base_url = "http://host.docker.internal:11434/v1"
 id = "default"
 llm_client = "lmstudio"
 
-[targets.gemini_flash]
-id = "gemini-2.5-flash"
+# --- Gemini 3.x Live Targets ---
+[targets.gemini_31_pro]
+id = "gemini-3.1-pro-preview"
 llm_client = "gemini"
 
-[targets.gemini_pro]
-id = "gemini-2.5-pro"
+[targets.gemini_36_flash]
+id = "gemini-3.6-flash"
 llm_client = "gemini"
 
+[targets.gemini_35_lite]
+id = "gemini-3.5-flash-lite"
+llm_client = "gemini"
+
+[targets.gemini_35_flash]
+id = "gemini-3.5-flash"
+llm_client = "gemini"
+
+# --- Ollama Embeddings ---
 [targets.ollama_embed]
 id = "nomic-embed-text"
 llm_client = "ollama"
 
 # -----------------------------------------------------------------------------
-# 3. Routes (Exposed Model IDs for Clients / Agents)
+# 3. Categorized Routes & Tiers
 # -----------------------------------------------------------------------------
 
-# Passthrough to local LM Studio model
+# --- Category: Local Hardware ---
 [routes.local]
 id = "local"
 type = "passthrough"
 target = "local_model"
 
-# Passthrough to Gemini Flash
-[routes.gemini_flash]
-id = "gemini-2.5-flash"
+# --- Category: High-End Reasoning Tier (Gemini 3.1 Pro) ---
+[routes.reasoning]
+id = "reasoning"
 type = "passthrough"
-target = "gemini_flash"
+target = "gemini_31_pro"
 
-# Passthrough to Gemini Pro
-[routes.gemini_pro]
-id = "gemini-2.5-pro"
+[routes.pro]
+id = "pro"
 type = "passthrough"
-target = "gemini_pro"
+target = "gemini_31_pro"
 
-# Embeddings Route (Ollama nomic-embed-text)
+# --- Category: High-Speed Workhorse Tier (Gemini 3.6 Flash) ---
+[routes.fast]
+id = "fast"
+type = "passthrough"
+target = "gemini_36_flash"
+
+[routes.flash]
+id = "flash"
+type = "passthrough"
+target = "gemini_36_flash"
+
+# --- Category: Ultra-Lite Tier (Gemini 3.5 Flash-Lite) ---
+[routes.lite]
+id = "lite"
+type = "passthrough"
+target = "gemini_35_lite"
+
+# --- Direct Model IDs ---
+[routes.gemini_31_pro_preview]
+id = "gemini-3.1-pro-preview"
+type = "passthrough"
+target = "gemini_31_pro"
+
+[routes.gemini_31_pro]
+id = "gemini-3.1-pro"
+type = "passthrough"
+target = "gemini_31_pro"
+
+[routes.gemini_3_pro_alias]
+id = "gemini-3-pro"
+type = "passthrough"
+target = "gemini_31_pro"
+
+[routes.gemini_36_flash]
+id = "gemini-3.6-flash"
+type = "passthrough"
+target = "gemini_36_flash"
+
+[routes.gemini_3_flash_alias]
+id = "gemini-3-flash"
+type = "passthrough"
+target = "gemini_36_flash"
+
+[routes.gemini_35_lite]
+id = "gemini-3.5-flash-lite"
+type = "passthrough"
+target = "gemini_35_lite"
+
+[routes.gemini_35_flash]
+id = "gemini-3.5-flash"
+type = "passthrough"
+target = "gemini_35_flash"
+
+# --- Embeddings Routes ---
 [routes.nomic_embed]
 id = "nomic-embed-text"
 type = "passthrough"
@@ -74,24 +139,13 @@ id = "embeddings"
 type = "passthrough"
 target = "ollama_embed"
 
-# Aliases for generic agent capabilities
-[routes.fast]
-id = "fast"
-type = "passthrough"
-target = "gemini_flash"
-
-[routes.reasoning]
-id = "reasoning"
-type = "passthrough"
-target = "gemini_pro"
-
-# Smart classifier route: routes simple tasks to local LM Studio or flash, complex to pro
+# --- Dynamic Classifier Route (Auto Tier) ---
 [routes.auto]
 id = "auto"
 type = "llm_classifier"
 mode = "capability"
-classifier_target = "gemini_flash"
+classifier_target = "gemini_36_flash"
 weak_target = "local_model"
-strong_target = "gemini_pro"
+strong_target = "gemini_31_pro"
 base_threshold = 0.5
 threshold_step = 0.1

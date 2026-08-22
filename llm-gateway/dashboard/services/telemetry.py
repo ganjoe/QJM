@@ -12,7 +12,7 @@ try:
 except ImportError:
     psutil = None
 
-logger = logging.getLogger("orchestrator.telemetry")
+logger = logging.getLogger("dashboard.telemetry")
 
 
 class TelemetryCollector:
@@ -21,12 +21,13 @@ class TelemetryCollector:
         self.vllm_url = os.getenv("VLLM_URL", "http://host.docker.internal:8100")
         self.lmstudio_url = os.getenv("LMSTUDIO_URL", "http://host.docker.internal:1234")
         self.lmstudio_web_port = os.getenv("LMSTUDIO_WEB_PORT", "3002")
-        self.ollama_local_url = os.getenv("OLLAMA_ROUTER_URL", "http://ollama:11434")
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
         self.dsh_url = os.getenv("DSH_URL", "http://dsh:3080")
         self.vllm_container = os.getenv("DOCKER_VLLM_CONTAINER", "llm-gw-vllm")
         self.lmstudio_container = os.getenv("DOCKER_LMSTUDIO_CONTAINER", "llm-gw-lmstudio")
         self.switchyard_container = os.getenv("DOCKER_SWITCHYARD_CONTAINER", "llm-gw-switchyard")
         self.dsh_container = os.getenv("DOCKER_DSH_CONTAINER", "llm-gw-dsh")
+        self.ollama_container = os.getenv("DOCKER_OLLAMA_CONTAINER", "llm-gw-ollama")
         self.timeout = httpx.Timeout(1.0, connect=0.3)
 
     def get_gpu_telemetry(self) -> Optional[GPUStats]:
@@ -178,6 +179,17 @@ class TelemetryCollector:
             "web_ui_port": self.lmstudio_web_port,
             "type": "llm_backend",
             "container_status": lms_state.get("status", "stopped"),
+        })
+
+        # 4. Ollama (CPU Embeddings)
+        ollama_state = await docker_manager.get_container_status(self.ollama_container)
+        backends.append({
+            "id": "ollama",
+            "name": "Ollama (CPU Embeddings)",
+            "healthy": ollama_state.get("status") == "running",
+            "url": self.ollama_url,
+            "type": "embeddings",
+            "container_status": ollama_state.get("status", "stopped"),
         })
 
         return backends

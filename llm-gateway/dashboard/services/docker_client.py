@@ -13,10 +13,8 @@ KNOWN_LLM_CONTAINERS = [
     "llm-gw-dsh",
     "llm-gw-lmstudio",
     "llm-gw-dashboard",
+    "llm-gw-ollama",
     "llm-gw-vllm",
-    "llm-gw-ollama-cpu",
-    "llm-gw-ollama-gpu",
-    "llm-gw-ollama-router",
 ]
 
 

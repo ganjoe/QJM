@@ -1,4 +1,35 @@
-# Your patch layer for this dsh profile, applied after every bundle layer:
-# a top-level YAML array of loader patch entries (id-targeted config
-# overrides, disables, and insert lists; `!!js` expressions allowed).
-[]
+# ==============================================================================
+# DeepSeek Harness (dsh) - Cordis Configuration Patch
+# Pre-configured for NVIDIA NeMo Switchyard Gateway
+# Full Gemini 3.x & 2.5 Stack + LM Studio GPU + Ollama
+# ==============================================================================
+
+- id: model-provider-switchyard
+  insert:
+    llm-pi-ai:
+      defaultProvider: switchyard
+      defaultModel: auto
+      providers:
+        switchyard:
+          api: openai-completions
+          baseURL: http://switchyard:4000/v1
+          apiKeyEnv: OPENAI_API_KEY
+          models:
+            - id: auto
+              name: "⚡ Auto Classifier (Switchyard)"
+            - id: reasoning
+              name: "🧠 Reasoning Tier (Gemini 3.1 Pro)"
+            - id: fast
+              name: "🚀 Fast Workhorse (Gemini 3.6 Flash)"
+            - id: lite
+              name: "⚡ Ultra-Lite (Gemini 3.5 Flash-Lite)"
+            - id: local
+              name: "🖥️ Local GPU (LM Studio Vulkan)"
+            - id: gemini-3.1-pro
+              name: "🌟 Google Gemini 3.1 Pro (Flagship)"
+            - id: gemini-3.6-flash
+              name: "⚡ Google Gemini 3.6 Flash (High-Speed)"
+            - id: gemini-3.5-flash
+              name: "Google Gemini 3.5 Flash"
+            - id: gemini-3.5-flash-lite
+              name: "Google Gemini 3.5 Flash-Lite"

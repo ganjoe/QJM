@@ -1,11 +1,12 @@
 FROM node:22-bookworm-slim
 
-# Install system dependencies for agent tasks (git, curl, ca-certificates, python3)
+# Install system dependencies & socat for TCP bridge
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
     python3 \
+    socat \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -13,12 +14,12 @@ WORKDIR /app
 # Install DeepSeek Harness CLI & Web UI globally
 RUN npm install -g @deepseek-ai/dsh@latest
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Default workspace directory
 WORKDIR /workspace
 
 EXPOSE 3080
 
-ENV PORT=3080
-ENV HOST=0.0.0.0
-
-CMD ["dsh", "web", "--host", "0.0.0.0", "--port", "3080", "--no-open"]
+ENTRYPOINT ["/entrypoint.sh"]

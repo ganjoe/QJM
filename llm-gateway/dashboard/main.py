@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from routers import models, routing, backends, containers, system
+from routers import models, routing, backends, containers, system, gemini_proxy
 from services.switchyard_config import switchyard_config_manager
 from services.telemetry import telemetry_collector
 
@@ -46,6 +46,7 @@ app.include_router(system.router)
 app.include_router(routing.router)
 app.include_router(backends.router)
 app.include_router(models.router)
+app.include_router(gemini_proxy.router)
 
 # --- Static dashboard ---
 static_dir = os.path.join(os.path.dirname(__file__), "static")
