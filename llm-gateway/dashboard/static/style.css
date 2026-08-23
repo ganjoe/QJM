@@ -199,6 +199,22 @@ body {
     color: #b388ff;
 }
 
+.mini-pill.cyan .pill-val {
+    color: #00e5ff;
+}
+
+.mini-pill.orange .pill-val {
+    color: #ff7043;
+}
+
+.mini-pill.yellow .pill-val {
+    color: #ffd740;
+}
+
+.mini-pill.green .pill-val {
+    color: #00e676;
+}
+
 .status-pill {
     background: rgba(0, 230, 118, 0.1);
     border: 1px solid rgba(0, 230, 118, 0.3);
@@ -856,3 +872,256 @@ body {
 
 .toast.err { border-color: var(--danger); color: #ff8a80; }
 .toast.ok { border-color: var(--success); color: #b9f6ca; }
+
+/* ==========================================================================
+   MSI Afterburner Style Hardware Monitor Styles
+   ========================================================================== */
+.afterburner-panel {
+    border: 1px solid rgba(0, 229, 255, 0.2) !important;
+    box-shadow: 0 4px 24px -5px rgba(0, 0, 0, 0.7) !important;
+}
+
+.ab-tag {
+    font-size: 9px;
+    font-family: var(--font-mono);
+    background: rgba(0, 229, 255, 0.15);
+    color: var(--primary);
+    padding: 2px 6px;
+    border-radius: var(--radius-xs);
+    letter-spacing: 0.5px;
+    margin-left: 6px;
+    font-weight: 700;
+}
+
+.badge.purple {
+    background: rgba(124, 77, 255, 0.2);
+    color: #d1c4e9;
+    border: 1px solid rgba(124, 77, 255, 0.4);
+}
+
+.monitor-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ctrl-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.select-compact {
+    padding: 3px 6px !important;
+    font-size: 11px !important;
+    height: 26px !important;
+    background: rgba(0, 0, 0, 0.5) !important;
+    border: 1px solid var(--border-card) !important;
+    border-radius: var(--radius-xs) !important;
+    color: var(--text-main) !important;
+}
+
+.ab-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px !important;
+}
+
+/* Afterburner Top HUD Grid */
+.ab-hud-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+.ab-hud-box {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-card);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+    overflow: hidden;
+}
+
+.ab-hud-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+}
+
+.ab-hud-box.cyan::before { background: #00e5ff; }
+.ab-hud-box.orange::before { background: #ff7043; }
+.ab-hud-box.yellow::before { background: #ffca28; }
+.ab-hud-box.purple::before { background: #d500f9; }
+.ab-hud-box.green::before { background: #00e676; }
+
+.ab-hud-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+}
+
+.ab-hud-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+    font-family: var(--font-mono);
+}
+
+.ab-hud-val {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.ab-hud-box.cyan .ab-hud-val { color: #00e5ff; }
+.ab-hud-box.orange .ab-hud-val { color: #ff7043; }
+.ab-hud-box.yellow .ab-hud-val { color: #ffca28; }
+.ab-hud-box.purple .ab-hud-val { color: #e1bee7; }
+.ab-hud-box.green .ab-hud-val { color: #00e676; }
+
+.ab-hud-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.ab-hud-meta b {
+    color: #fff;
+}
+
+/* Stacked Channels */
+.ab-charts-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ab-channel-box {
+    background: rgba(10, 14, 22, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: border-color 0.2s ease;
+}
+
+.ab-channel-box:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.ab-channel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+.ch-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ch-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+}
+
+.ch-dot.cyan { background: #00e5ff; box-shadow: 0 0 6px #00e5ff; }
+.ch-dot.orange { background: #ff7043; box-shadow: 0 0 6px #ff7043; }
+.ch-dot.yellow { background: #ffca28; box-shadow: 0 0 6px #ffca28; }
+.ch-dot.purple { background: #d500f9; box-shadow: 0 0 6px #d500f9; }
+.ch-dot.green { background: #00e676; box-shadow: 0 0 6px #00e676; }
+
+.ch-title {
+    font-weight: 600;
+    color: var(--text-main);
+    font-size: 11px;
+}
+
+.ch-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.ch-stat {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.ch-stat b {
+    color: var(--text-muted);
+}
+
+.ch-cur {
+    font-weight: 700;
+    font-size: 12px;
+    padding: 1px 6px;
+    border-radius: var(--radius-xs);
+    background: rgba(0, 0, 0, 0.4);
+}
+
+.ch-cur.cyan { color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.3); }
+.ch-cur.orange { color: #ff7043; border: 1px solid rgba(255, 112, 67, 0.3); }
+.ch-cur.yellow { color: #ffca28; border: 1px solid rgba(255, 202, 40, 0.3); }
+.ch-cur.purple { color: #d500f9; border: 1px solid rgba(213, 0, 249, 0.3); }
+.ch-cur.green { color: #00e676; border: 1px solid rgba(0, 230, 118, 0.3); }
+
+.val-red { color: #ff1744 !important; }
+.val-orange { color: #ff7043 !important; }
+.val-cyan { color: #00e5ff !important; }
+.val-yellow { color: #ffca28 !important; }
+.val-purple { color: #d500f9 !important; }
+.val-green { color: #00e676 !important; }
+.val-blue { color: #2979ff !important; }
+
+.ab-canvas-wrap {
+    width: 100%;
+    height: 80px;
+    position: relative;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: var(--radius-xs);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    overflow: hidden;
+}
+
+.ab-canvas-wrap canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+/* Timeline Ruler */
+.ab-timeline-ruler {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    padding: 0 4px;
+    margin-top: 2px;
+}
+
+.ruler-live {
+    color: var(--success);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+}

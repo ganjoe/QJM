@@ -11,7 +11,10 @@ let editingClientKey = null;
 document.addEventListener("DOMContentLoaded", () => {
     initTabs();
     loadAllData();
-    setInterval(pollTelemetry, 3000);
+    startTelemetryPolling();
+    window.addEventListener("resize", () => {
+        redrawAllAfterburnerCharts();
+    });
 });
 
 // --- Tab Switching ---
@@ -30,6 +33,8 @@ function initTabs() {
                 loadRawToml();
             } else if (tab.dataset.tab === "tab-stats") {
                 loadSwitchyardStats();
+            } else if (tab.dataset.tab === "tab-system") {
+                setTimeout(redrawAllAfterburnerCharts, 50);
             }
         });
     });
@@ -555,48 +560,461 @@ async function resetSwitchyardStats() {
     }
 }
 
-// --- Telemetry & System ---
+// --- MSI Afterburner Hardware Monitor Engine ---
+let telemetryTimer = null;
+let telemetryIntervalMs = 2000;
+let historyMaxPoints = 60;
+
+// Metric History Buffers
+const monitorHistory = {
+    gpuUtil: [],
+    gpuTempEdge: [],
+    gpuTempHotspot: [],
+    gpuTempMem: [],
+    gpuPower: [],
+    gpuVramPct: [],
+    gpuVramUsedMb: [],
+    cpuUtil: [],
+    ramPct: []
+};
+
+// Min / Max / Avg Stats Accumulator
+const monitorStats = {
+    gpuUtil: { min: null, max: null, sum: 0, count: 0 },
+    gpuTemp: { min: null, max: null, sum: 0, count: 0 },
+    gpuPower: { min: null, max: null, sum: 0, count: 0 },
+    gpuVram: { min: null, max: null, sum: 0, count: 0 },
+    cpuUtil: { min: null, max: null, sum: 0, count: 0 }
+};
+
+function pushMonitorStat(metricKey, val) {
+    if (val === null || val === undefined || isNaN(val)) return;
+    const st = monitorStats[metricKey];
+    if (!st) return;
+    if (st.min === null || val < st.min) st.min = val;
+    if (st.max === null || val > st.max) st.max = val;
+    st.sum += val;
+    st.count += 1;
+}
+
+function resetMonitorStats() {
+    for (const k in monitorStats) {
+        monitorStats[k].min = null;
+        monitorStats[k].max = null;
+        monitorStats[k].sum = 0;
+        monitorStats[k].count = 0;
+    }
+    showToast("Min/Max/Avg Statistiken zurückgesetzt.");
+}
+
+function changeTelemetryInterval(val) {
+    const ms = parseInt(val, 10);
+    telemetryIntervalMs = ms;
+    startTelemetryPolling();
+    if (ms === 0) {
+        showToast("Hardware Monitor pausiert.");
+    } else {
+        showToast(`Intervall auf ${ms / 1000}s gesetzt.`);
+    }
+}
+
+function changeHistoryWindow(val) {
+    const sec = parseInt(val, 10);
+    historyMaxPoints = sec;
+    const rStart = document.getElementById("ruler-start");
+    const rMid = document.getElementById("ruler-mid");
+    if (rStart) rStart.innerText = `T - ${sec}s`;
+    if (rMid) rMid.innerText = `T - ${Math.round(sec / 2)}s`;
+    redrawAllAfterburnerCharts();
+    showToast(`Historie auf ${sec}s eingestellt.`);
+}
+
+function startTelemetryPolling() {
+    if (telemetryTimer) {
+        clearInterval(telemetryTimer);
+        telemetryTimer = null;
+    }
+    if (telemetryIntervalMs > 0) {
+        telemetryTimer = setInterval(pollTelemetry, telemetryIntervalMs);
+    }
+}
+
+async function pollTelemetry() {
+    await loadSystemTelemetry();
+}
+
+// --- Telemetry & System Update ---
 async function loadSystemTelemetry() {
     try {
         const res = await fetch("/api/system/metrics");
         if (!res.ok) return;
         const d = await res.json();
 
-        // Header pills
-        document.getElementById("header-cpu").innerText = `${d.cpu_percent}%`;
-        document.getElementById("header-ram").innerText = `${d.ram_percent}%`;
-        if (d.vram_percent !== undefined) {
-            document.getElementById("header-vram").innerText = `${d.vram_percent}%`;
+        // 1. Update Header Telemetry Pills
+        const hCpu = document.getElementById("header-cpu");
+        const hRam = document.getElementById("header-ram");
+        const hGpu = document.getElementById("header-gpu");
+        const hTemp = document.getElementById("header-temp");
+        const hPower = document.getElementById("header-power");
+        const hVram = document.getElementById("header-vram");
+
+        if (hCpu) hCpu.innerText = `${d.cpu_percent}%`;
+        if (hRam) hRam.innerText = `${d.ram_percent}%`;
+        if (hGpu) hGpu.innerText = d.gpu_util !== null ? `${d.gpu_util}%` : "--%";
+        if (hTemp) hTemp.innerText = d.gpu_temp !== null ? `${d.gpu_temp}°C` : "--°C";
+        if (hPower) hPower.innerText = d.gpu_power !== null ? `${d.gpu_power} W` : "-- W";
+        if (hVram) hVram.innerText = d.vram_percent !== null ? `${d.vram_percent}%` : "--%";
+
+        // 2. Update MSI Afterburner Top HUD Blocks
+        const hwName = document.getElementById("hw-gpu-model-name");
+        if (hwName && d.gpu_name) hwName.innerText = d.gpu_name;
+
+        // GPU Util HUD
+        const gpuVal = d.gpu_util !== null ? d.gpu_util : 0;
+        pushMonitorStat("gpuUtil", gpuVal);
+        const hudGpuVal = document.getElementById("hud-gpu-val");
+        const hudGpuMin = document.getElementById("hud-gpu-min");
+        const hudGpuMax = document.getElementById("hud-gpu-max");
+        const hudGpuAvg = document.getElementById("hud-gpu-avg");
+        if (hudGpuVal) hudGpuVal.innerText = `${gpuVal}%`;
+        if (hudGpuMin) hudGpuMin.innerText = `${monitorStats.gpuUtil.min || 0}%`;
+        if (hudGpuMax) hudGpuMax.innerText = `${monitorStats.gpuUtil.max || 0}%`;
+        if (hudGpuAvg) {
+            const avg = monitorStats.gpuUtil.count > 0 ? (monitorStats.gpuUtil.sum / monitorStats.gpuUtil.count).toFixed(0) : 0;
+            hudGpuAvg.innerText = `${avg}%`;
         }
 
-        // Hardware tab
-        const cpuVal = document.getElementById("stat-cpu-val");
-        const cpuBar = document.getElementById("stat-cpu-bar");
-        const cpuCores = document.getElementById("stat-cpu-cores");
-        if (cpuVal) cpuVal.innerText = `${d.cpu_percent}%`;
-        if (cpuBar) cpuBar.style.width = `${d.cpu_percent}%`;
-        if (cpuCores) cpuCores.innerText = `${d.cpu_count} Kerne`;
+        // GPU Temp HUD
+        const tempVal = d.gpu_temp !== null ? d.gpu_temp : 0;
+        pushMonitorStat("gpuTemp", tempVal);
+        const hudTempVal = document.getElementById("hud-temp-val");
+        const hudTempHotspot = document.getElementById("hud-temp-hotspot");
+        const hudTempMem = document.getElementById("hud-temp-mem");
+        const hudTempMax = document.getElementById("hud-temp-max");
+        if (hudTempVal) hudTempVal.innerText = `${tempVal}°C`;
+        if (hudTempHotspot) hudTempHotspot.innerText = `${d.gpu_temp_hotspot || tempVal}°C`;
+        if (hudTempMem) hudTempMem.innerText = d.gpu_temp_mem ? `${d.gpu_temp_mem}°C` : "--";
+        if (hudTempMax) hudTempMax.innerText = `${monitorStats.gpuTemp.max || 0}°C`;
 
-        const ramVal = document.getElementById("stat-ram-val");
-        const ramBar = document.getElementById("stat-ram-bar");
-        const ramSub = document.getElementById("stat-ram-sub");
-        if (ramVal) ramVal.innerText = `${d.ram_used_gb} GB`;
-        if (ramBar) ramBar.style.width = `${d.ram_percent}%`;
-        if (ramSub) ramSub.innerText = `${d.ram_used_gb} / ${d.ram_total_gb} GB (${d.ram_percent}%)`;
+        // GPU Power HUD
+        const powerVal = d.gpu_power !== null ? d.gpu_power : 0;
+        pushMonitorStat("gpuPower", powerVal);
+        const hudPowerVal = document.getElementById("hud-power-val");
+        const hudPowerCap = document.getElementById("hud-power-cap");
+        const hudPowerMax = document.getElementById("hud-power-max");
+        const hudPowerAvg = document.getElementById("hud-power-avg");
+        if (hudPowerVal) hudPowerVal.innerText = `${powerVal} W`;
+        if (hudPowerCap) hudPowerCap.innerText = d.gpu_power_cap ? `${d.gpu_power_cap} W` : "300 W";
+        if (hudPowerMax) hudPowerMax.innerText = `${monitorStats.gpuPower.max || 0} W`;
+        if (hudPowerAvg) {
+            const avg = monitorStats.gpuPower.count > 0 ? (monitorStats.gpuPower.sum / monitorStats.gpuPower.count).toFixed(0) : 0;
+            hudPowerAvg.innerText = `${avg} W`;
+        }
 
-        const vramVal = document.getElementById("stat-vram-val");
-        const vramBar = document.getElementById("stat-vram-bar");
-        const vramSub = document.getElementById("stat-vram-sub");
-        if (vramVal) vramVal.innerText = d.vram_used_mb ? `${d.vram_used_mb} MB` : "--";
-        if (vramBar) vramBar.style.width = `${d.vram_percent || 0}%`;
-        if (vramSub) vramSub.innerText = d.vram_total_mb ? `${d.vram_used_mb} / ${d.vram_total_mb} MB` : "AMD GPU";
+        // GPU VRAM HUD
+        const vramPct = d.vram_percent !== null ? d.vram_percent : 0;
+        pushMonitorStat("gpuVram", vramPct);
+        const hudVramVal = document.getElementById("hud-vram-val");
+        const hudVramUsed = document.getElementById("hud-vram-used");
+        const hudVramTotal = document.getElementById("hud-vram-total");
+        if (hudVramVal) hudVramVal.innerText = `${vramPct}%`;
+        if (hudVramUsed) hudVramUsed.innerText = d.vram_used_mb ? `${(d.vram_used_mb / 1024).toFixed(1)} GB` : "0 MB";
+        if (hudVramTotal) hudVramTotal.innerText = d.vram_total_mb ? `${(d.vram_total_mb / 1024).toFixed(1)} GB` : "32 GB";
+
+        // CPU & RAM HUD
+        const cpuVal = d.cpu_percent !== null ? d.cpu_percent : 0;
+        pushMonitorStat("cpuUtil", cpuVal);
+        const hudCpuVal = document.getElementById("hud-cpu-val");
+        const hudRamVal = document.getElementById("hud-ram-val");
+        const hudCpuCores = document.getElementById("hud-cpu-cores");
+        if (hudCpuVal) hudCpuVal.innerText = `${cpuVal}%`;
+        if (hudRamVal) hudRamVal.innerText = `${d.ram_used_gb} / ${d.ram_total_gb} GB`;
+        if (hudCpuCores) hudCpuCores.innerText = `${d.cpu_count} Kerne`;
+
+        // 3. Append to Rolling History Buffers
+        function pushHistory(arr, val) {
+            arr.push(val);
+            if (arr.length > historyMaxPoints) {
+                arr.shift();
+            }
+        }
+
+        pushHistory(monitorHistory.gpuUtil, gpuVal);
+        pushHistory(monitorHistory.gpuTempEdge, tempVal);
+        pushHistory(monitorHistory.gpuTempHotspot, d.gpu_temp_hotspot !== null ? d.gpu_temp_hotspot : tempVal);
+        pushHistory(monitorHistory.gpuTempMem, d.gpu_temp_mem !== null ? d.gpu_temp_mem : tempVal);
+        pushHistory(monitorHistory.gpuPower, powerVal);
+        pushHistory(monitorHistory.gpuVramPct, vramPct);
+        pushHistory(monitorHistory.gpuVramUsedMb, d.vram_used_mb || 0);
+        pushHistory(monitorHistory.cpuUtil, cpuVal);
+        pushHistory(monitorHistory.ramPct, d.ram_percent || 0);
+
+        // 4. Update Channel Text Readouts
+        // Channel 1: GPU
+        const gGpuCur = document.getElementById("g-gpu-cur");
+        const gGpuMin = document.getElementById("g-gpu-min");
+        const gGpuMax = document.getElementById("g-gpu-max");
+        const gGpuAvg = document.getElementById("g-gpu-avg");
+        if (gGpuCur) gGpuCur.innerText = `${gpuVal} %`;
+        if (gGpuMin) gGpuMin.innerText = `${monitorStats.gpuUtil.min || 0}`;
+        if (gGpuMax) gGpuMax.innerText = `${monitorStats.gpuUtil.max || 0}`;
+        if (gGpuAvg) {
+            const avg = monitorStats.gpuUtil.count > 0 ? (monitorStats.gpuUtil.sum / monitorStats.gpuUtil.count).toFixed(0) : 0;
+            gGpuAvg.innerText = `${avg}`;
+        }
+
+        // Channel 2: Temp
+        const gTempCur = document.getElementById("g-temp-cur");
+        const gTempMin = document.getElementById("g-temp-min");
+        const gTempMax = document.getElementById("g-temp-max");
+        const gTempHotspot = document.getElementById("g-temp-hotspot");
+        if (gTempCur) gTempCur.innerText = `${tempVal} °C`;
+        if (gTempMin) gTempMin.innerText = `${monitorStats.gpuTemp.min || 0}`;
+        if (gTempMax) gTempMax.innerText = `${monitorStats.gpuTemp.max || 0}`;
+        if (gTempHotspot) gTempHotspot.innerText = `${d.gpu_temp_hotspot || tempVal}`;
+
+        // Channel 3: Power
+        const gPwrCur = document.getElementById("g-pwr-cur");
+        const gPwrMin = document.getElementById("g-pwr-min");
+        const gPwrMax = document.getElementById("g-pwr-max");
+        const gPwrCap = document.getElementById("g-pwr-cap");
+        if (gPwrCur) gPwrCur.innerText = `${powerVal} W`;
+        if (gPwrMin) gPwrMin.innerText = `${monitorStats.gpuPower.min || 0}`;
+        if (gPwrMax) gPwrMax.innerText = `${monitorStats.gpuPower.max || 0}`;
+        if (gPwrCap && d.gpu_power_cap) gPwrCap.innerText = `${d.gpu_power_cap}`;
+
+        // Channel 4: VRAM
+        const gVramCur = document.getElementById("g-vram-cur");
+        const gVramMin = document.getElementById("g-vram-min");
+        const gVramMax = document.getElementById("g-vram-max");
+        const gVramTotal = document.getElementById("g-vram-total-info");
+        if (gVramCur) gVramCur.innerText = d.vram_used_mb ? `${(d.vram_used_mb / 1024).toFixed(1)} GB (${vramPct}%)` : `${vramPct}%`;
+        if (gVramMin) gVramMin.innerText = `${monitorStats.gpuVram.min || 0}`;
+        if (gVramMax) gVramMax.innerText = `${monitorStats.gpuVram.max || 0}`;
+        if (gVramTotal && d.vram_total_mb) gVramTotal.innerText = `Total: ${(d.vram_total_mb / 1024).toFixed(1)} GB`;
+
+        // Channel 5: CPU
+        const gCpuCur = document.getElementById("g-cpu-cur");
+        const gCpuMin = document.getElementById("g-cpu-min");
+        const gCpuMax = document.getElementById("g-cpu-max");
+        const gRamStat = document.getElementById("g-ram-stat");
+        if (gCpuCur) gCpuCur.innerText = `${cpuVal} %`;
+        if (gCpuMin) gCpuMin.innerText = `${monitorStats.cpuUtil.min || 0}`;
+        if (gCpuMax) gCpuMax.innerText = `${monitorStats.cpuUtil.max || 0}`;
+        if (gRamStat) gRamStat.innerText = `${d.ram_percent}% (${d.ram_used_gb} GB)`;
+
+        // 5. Redraw Canvas Charts
+        redrawAllAfterburnerCharts(d);
     } catch (e) {
         console.error("Telemetry error:", e);
     }
 }
 
-async function pollTelemetry() {
-    loadSystemTelemetry();
+// --- Canvas Chart Rendering Engine ---
+function redrawAllAfterburnerCharts(latestData = {}) {
+    // Channel 1: GPU Auslastung (0 - 100%)
+    drawAfterburnerCanvas("chart-gpu-util", [
+        {
+            data: monitorHistory.gpuUtil,
+            color: "#00e5ff",
+            fillColor: "rgba(0, 229, 255, 0.18)",
+            lineWidth: 2
+        }
+    ], { minVal: 0, maxVal: 100, unit: "%" });
+
+    // Channel 2: GPU Temperatur (0 - 110 °C)
+    drawAfterburnerCanvas("chart-gpu-temp", [
+        {
+            data: monitorHistory.gpuTempEdge,
+            color: "#ff7043",
+            fillColor: "rgba(255, 112, 67, 0.15)",
+            lineWidth: 2
+        },
+        {
+            data: monitorHistory.gpuTempHotspot,
+            color: "#ff1744",
+            lineWidth: 1.5,
+            dashed: true
+        }
+    ], { minVal: 20, maxVal: 105, unit: "°C" });
+
+    // Channel 3: GPU Leistung (0 - 380 W)
+    const powerCap = latestData.gpu_power_cap || 300;
+    const maxPowerScale = Math.max(powerCap + 50, 360);
+    drawAfterburnerCanvas("chart-gpu-power", [
+        {
+            data: monitorHistory.gpuPower,
+            color: "#ffca28",
+            fillColor: "rgba(255, 202, 40, 0.18)",
+            lineWidth: 2
+        }
+    ], {
+        minVal: 0,
+        maxVal: maxPowerScale,
+        unit: "W",
+        dashedLine: { val: powerCap, color: "rgba(255, 82, 82, 0.4)", label: "TDP" }
+    });
+
+    // Channel 4: GPU VRAM (0 - 100%)
+    drawAfterburnerCanvas("chart-gpu-vram", [
+        {
+            data: monitorHistory.gpuVramPct,
+            color: "#d500f9",
+            fillColor: "rgba(213, 0, 249, 0.16)",
+            lineWidth: 2
+        }
+    ], { minVal: 0, maxVal: 100, unit: "%" });
+
+    // Channel 5: CPU & RAM (0 - 100%)
+    drawAfterburnerCanvas("chart-cpu-util", [
+        {
+            data: monitorHistory.cpuUtil,
+            color: "#00e676",
+            fillColor: "rgba(0, 230, 118, 0.15)",
+            lineWidth: 2
+        },
+        {
+            data: monitorHistory.ramPct,
+            color: "#2979ff",
+            lineWidth: 1.5,
+            dashed: true
+        }
+    ], { minVal: 0, maxVal: 100, unit: "%" });
+}
+
+function drawAfterburnerCanvas(canvasId, seriesList, opts = {}) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    const parent = canvas.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const displayWidth = rect.width > 50 ? rect.width : 600;
+    const displayHeight = 80;
+
+    if (canvas.width !== Math.floor(displayWidth * dpr) || canvas.height !== Math.floor(displayHeight * dpr)) {
+        canvas.width = Math.floor(displayWidth * dpr);
+        canvas.height = Math.floor(displayHeight * dpr);
+        canvas.style.width = displayWidth + "px";
+        canvas.style.height = displayHeight + "px";
+    }
+
+    const ctx = canvas.getContext("2d");
+    ctx.resetTransform();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+    const padLeft = 8;
+    const padRight = 8;
+    const padTop = 6;
+    const padBottom = 6;
+    const chartW = displayWidth - padLeft - padRight;
+    const chartH = displayHeight - padTop - padBottom;
+
+    const minVal = opts.minVal !== undefined ? opts.minVal : 0;
+    const maxVal = opts.maxVal !== undefined ? opts.maxVal : 100;
+    const valRange = Math.max(maxVal - minVal, 1);
+
+    // Background Grid lines
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+
+    // 3 horizontal grid lines (25%, 50%, 75%)
+    for (let i = 1; i <= 3; i++) {
+        const y = padTop + (chartH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(padLeft + chartW, y);
+        ctx.stroke();
+    }
+
+    // Vertical time grid lines
+    const vSteps = 6;
+    for (let i = 1; i < vSteps; i++) {
+        const x = padLeft + (chartW * i) / vSteps;
+        ctx.beginPath();
+        ctx.moveTo(x, padTop);
+        ctx.lineTo(x, padTop + chartH);
+        ctx.stroke();
+    }
+
+    // Dashed reference line (e.g. TDP Power Cap)
+    if (opts.dashedLine && opts.dashedLine.val) {
+        const capY = padTop + chartH - ((opts.dashedLine.val - minVal) / valRange) * chartH;
+        if (capY >= padTop && capY <= padTop + chartH) {
+            ctx.strokeStyle = opts.dashedLine.color || "rgba(255, 82, 82, 0.5)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(padLeft, capY);
+            ctx.lineTo(padLeft + chartW, capY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+
+    // Draw each series
+    seriesList.forEach(series => {
+        const data = series.data;
+        if (!data || data.length === 0) return;
+
+        const points = [];
+        const stepX = chartW / Math.max(historyMaxPoints - 1, 1);
+        const offsetPoints = Math.max(0, historyMaxPoints - data.length);
+
+        for (let i = 0; i < data.length; i++) {
+            const rawVal = data[i];
+            const clampedVal = Math.max(minVal, Math.min(maxVal, rawVal));
+            const x = padLeft + (offsetPoints + i) * stepX;
+            const y = padTop + chartH - ((clampedVal - minVal) / valRange) * chartH;
+            points.push({ x, y });
+        }
+
+        if (points.length === 0) return;
+
+        // Area Gradient Fill under curve
+        if (series.fillColor) {
+            const grad = ctx.createLinearGradient(0, padTop, 0, padTop + chartH);
+            grad.addColorStop(0, series.fillColor);
+            grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, padTop + chartH);
+            points.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.lineTo(points[points.length - 1].x, padTop + chartH);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.fill();
+        }
+
+        // Line Stroke
+        ctx.strokeStyle = series.color;
+        ctx.lineWidth = series.lineWidth || 2;
+        ctx.shadowColor = series.color;
+        ctx.shadowBlur = 4;
+        ctx.setLineDash(series.dashed ? [4, 4] : []);
+
+        ctx.beginPath();
+        points.forEach((p, idx) => {
+            if (idx === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+        });
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.setLineDash([]);
+
+        // Current leading pulse point
+        const lastPt = points[points.length - 1];
+        if (lastPt) {
+            ctx.fillStyle = series.color;
+            ctx.beginPath();
+            ctx.arc(lastPt.x, lastPt.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
 }
 
 // --- Container Management ---

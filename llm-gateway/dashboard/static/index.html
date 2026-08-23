@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QJM Control Plane | Switchyard & Docker Suite</title>
-    <link rel="stylesheet" href="/static/style.css?v=6">
+    <link rel="stylesheet" href="/static/style.css?v=8">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -58,6 +58,18 @@
                 <div class="mini-pill" title="RAM Auslastung">
                     <span class="pill-label">RAM</span>
                     <span class="pill-val" id="header-ram">--%</span>
+                </div>
+                <div class="mini-pill cyan" id="header-gpu-pill" title="GPU Auslastung">
+                    <span class="pill-label">GPU</span>
+                    <span class="pill-val" id="header-gpu">--%</span>
+                </div>
+                <div class="mini-pill orange" id="header-temp-pill" title="GPU Temperatur">
+                    <span class="pill-label">TEMP</span>
+                    <span class="pill-val" id="header-temp">--°C</span>
+                </div>
+                <div class="mini-pill yellow" id="header-power-pill" title="GPU Leistungsaufnahme">
+                    <span class="pill-label">PWR</span>
+                    <span class="pill-val" id="header-power">-- W</span>
                 </div>
                 <div class="mini-pill purple" id="header-vram-pill" title="GPU VRAM">
                     <span class="pill-label">VRAM</span>
@@ -329,43 +341,203 @@
             <!-- TAB 5: HARDWARE & DOCKER -->
             <div class="tab-pane" id="tab-system">
                 <div class="col-stack">
-                    <!-- Hardware Row -->
-                    <div class="card">
+                    <!-- MSI Afterburner Style Hardware Monitor -->
+                    <div class="card afterburner-panel">
                         <div class="card-head">
-                            <h2>📊 Hardware & VRAM Telemetrie</h2>
+                            <div class="head-title">
+                                <h2>📈 Hardware Monitor <span class="ab-tag">MSI AFTERBURNER STYLE</span></h2>
+                                <span class="badge purple" id="hw-gpu-model-name">AMD Radeon GPU</span>
+                            </div>
+                            <div class="head-actions monitor-controls">
+                                <div class="ctrl-group" title="Aktualisierungsrate">
+                                    <span class="ctrl-label">Intervall:</span>
+                                    <select id="monitor-interval-select" class="form-input select-compact" onchange="changeTelemetryInterval(this.value)">
+                                        <option value="1000">1 Sek (Turbo)</option>
+                                        <option value="2000" selected>2 Sek (Optimal)</option>
+                                        <option value="3000">3 Sek</option>
+                                        <option value="5000">5 Sek</option>
+                                        <option value="0">Pausiert</option>
+                                    </select>
+                                </div>
+                                <div class="ctrl-group" title="Zeitfenster der Historie">
+                                    <span class="ctrl-label">Historie:</span>
+                                    <select id="monitor-window-select" class="form-input select-compact" onchange="changeHistoryWindow(this.value)">
+                                        <option value="60" selected>60 Sek</option>
+                                        <option value="120">120 Sek</option>
+                                        <option value="300">5 Min</option>
+                                    </select>
+                                </div>
+                                <button class="btn-compact" onclick="resetMonitorStats()" title="Min/Max/Avg zurücksetzen">
+                                    🔄 Reset Min/Max
+                                </button>
+                            </div>
                         </div>
-                        <div class="card-content">
-                            <div class="stats-grid">
-                                <div class="stat-box">
-                                    <div class="stat-header">
-                                        <span class="stat-name">CPU Auslastung</span>
-                                        <span class="stat-val" id="stat-cpu-val">0%</span>
+
+                        <div class="card-content ab-content">
+                            <!-- Afterburner Top HUD Metric Strips -->
+                            <div class="ab-hud-grid">
+                                <div class="ab-hud-box cyan">
+                                    <div class="ab-hud-header">
+                                        <span class="ab-hud-title">GPU AUSLASTUNG</span>
+                                        <span class="ab-hud-val" id="hud-gpu-val">0%</span>
                                     </div>
-                                    <div class="progress-bar-bg">
-                                        <div class="progress-bar-fill" id="stat-cpu-bar" style="width: 0%;"></div>
+                                    <div class="ab-hud-meta">
+                                        <span>Min: <b id="hud-gpu-min">0%</b></span>
+                                        <span>Avg: <b id="hud-gpu-avg">0%</b></span>
+                                        <span>Max: <b id="hud-gpu-max">0%</b></span>
                                     </div>
-                                    <span class="stat-sub" id="stat-cpu-cores">-- Kerne</span>
                                 </div>
-                                <div class="stat-box">
-                                    <div class="stat-header">
-                                        <span class="stat-name">Arbeitsspeicher (RAM)</span>
-                                        <span class="stat-val" id="stat-ram-val">0 GB</span>
+
+                                <div class="ab-hud-box orange">
+                                    <div class="ab-hud-header">
+                                        <span class="ab-hud-title">GPU TEMPERATUR</span>
+                                        <span class="ab-hud-val" id="hud-temp-val">0°C</span>
                                     </div>
-                                    <div class="progress-bar-bg">
-                                        <div class="progress-bar-fill" id="stat-ram-bar" style="width: 0%;"></div>
+                                    <div class="ab-hud-meta">
+                                        <span>Hotspot: <b id="hud-temp-hotspot">0°C</b></span>
+                                        <span>Mem: <b id="hud-temp-mem">--</b></span>
+                                        <span>Max: <b id="hud-temp-max">0°C</b></span>
                                     </div>
-                                    <span class="stat-sub" id="stat-ram-sub">0 / 0 GB</span>
                                 </div>
-                                <div class="stat-box">
-                                    <div class="stat-header">
-                                        <span class="stat-name">GPU VRAM Speicher</span>
-                                        <span class="stat-val" id="stat-vram-val">0 MB</span>
+
+                                <div class="ab-hud-box yellow">
+                                    <div class="ab-hud-header">
+                                        <span class="ab-hud-title">LEISTUNG (POWER)</span>
+                                        <span class="ab-hud-val" id="hud-power-val">0 W</span>
                                     </div>
-                                    <div class="progress-bar-bg">
-                                        <div class="progress-bar-fill purple" id="stat-vram-bar" style="width: 0%;"></div>
+                                    <div class="ab-hud-meta">
+                                        <span>TDP Limit: <b id="hud-power-cap">300 W</b></span>
+                                        <span>Max: <b id="hud-power-max">0 W</b></span>
+                                        <span>Avg: <b id="hud-power-avg">0 W</b></span>
                                     </div>
-                                    <span class="stat-sub" id="stat-vram-sub">AMD Radeon GPU</span>
                                 </div>
+
+                                <div class="ab-hud-box purple">
+                                    <div class="ab-hud-header">
+                                        <span class="ab-hud-title">GPU VRAM</span>
+                                        <span class="ab-hud-val" id="hud-vram-val">0%</span>
+                                    </div>
+                                    <div class="ab-hud-meta">
+                                        <span>Used: <b id="hud-vram-used">0 MB</b></span>
+                                        <span>Total: <b id="hud-vram-total">32 GB</b></span>
+                                    </div>
+                                </div>
+
+                                <div class="ab-hud-box green">
+                                    <div class="ab-hud-header">
+                                        <span class="ab-hud-title">CPU & RAM</span>
+                                        <span class="ab-hud-val" id="hud-cpu-val">0%</span>
+                                    </div>
+                                    <div class="ab-hud-meta">
+                                        <span>RAM: <b id="hud-ram-val">0 / 0 GB</b></span>
+                                        <span>Cores: <b id="hud-cpu-cores">--</b></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- MSI Afterburner Stacked Realtime Graph Channels -->
+                            <div class="ab-charts-stack">
+                                <!-- Channel 1: GPU Auslastung -->
+                                <div class="ab-channel-box">
+                                    <div class="ab-channel-head">
+                                        <div class="ch-left">
+                                            <span class="ch-dot cyan"></span>
+                                            <span class="ch-title">GPU Auslastung, %</span>
+                                        </div>
+                                        <div class="ch-right">
+                                            <span class="ch-stat">Min: <b id="g-gpu-min">0</b>%</span>
+                                            <span class="ch-stat">Max: <b id="g-gpu-max">0</b>%</span>
+                                            <span class="ch-stat">Avg: <b id="g-gpu-avg">0</b>%</span>
+                                            <span class="ch-cur cyan" id="g-gpu-cur">0 %</span>
+                                        </div>
+                                    </div>
+                                    <div class="ab-canvas-wrap">
+                                        <canvas id="chart-gpu-util" height="80"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Channel 2: GPU Temperatur -->
+                                <div class="ab-channel-box">
+                                    <div class="ab-channel-head">
+                                        <div class="ch-left">
+                                            <span class="ch-dot orange"></span>
+                                            <span class="ch-title">GPU Temperatur (Edge & Hotspot), °C</span>
+                                        </div>
+                                        <div class="ch-right">
+                                            <span class="ch-stat">Min: <b id="g-temp-min">0</b>°C</span>
+                                            <span class="ch-stat">Max: <b id="g-temp-max">0</b>°C</span>
+                                            <span class="ch-stat">Hotspot: <b id="g-temp-hotspot" class="val-red">0</b>°C</span>
+                                            <span class="ch-cur orange" id="g-temp-cur">0 °C</span>
+                                        </div>
+                                    </div>
+                                    <div class="ab-canvas-wrap">
+                                        <canvas id="chart-gpu-temp" height="80"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Channel 3: GPU Leistung (Watt) -->
+                                <div class="ab-channel-box">
+                                    <div class="ab-channel-head">
+                                        <div class="ch-left">
+                                            <span class="ch-dot yellow"></span>
+                                            <span class="ch-title">GPU Leistungsaufnahme (Power), W</span>
+                                        </div>
+                                        <div class="ch-right">
+                                            <span class="ch-stat">Min: <b id="g-pwr-min">0</b>W</span>
+                                            <span class="ch-stat">Max: <b id="g-pwr-max">0</b>W</span>
+                                            <span class="ch-stat">Cap: <b id="g-pwr-cap">300</b>W</span>
+                                            <span class="ch-cur yellow" id="g-pwr-cur">0 W</span>
+                                        </div>
+                                    </div>
+                                    <div class="ab-canvas-wrap">
+                                        <canvas id="chart-gpu-power" height="80"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Channel 4: GPU VRAM Auslastung -->
+                                <div class="ab-channel-box">
+                                    <div class="ab-channel-head">
+                                        <div class="ch-left">
+                                            <span class="ch-dot purple"></span>
+                                            <span class="ch-title">GPU VRAM Speicherbelegung, MB & %</span>
+                                        </div>
+                                        <div class="ch-right">
+                                            <span class="ch-stat">Min: <b id="g-vram-min">0</b>%</span>
+                                            <span class="ch-stat">Max: <b id="g-vram-max">0</b>%</span>
+                                            <span class="ch-stat" id="g-vram-total-info">Total: 32 GB</span>
+                                            <span class="ch-cur purple" id="g-vram-cur">0 MB</span>
+                                        </div>
+                                    </div>
+                                    <div class="ab-canvas-wrap">
+                                        <canvas id="chart-gpu-vram" height="80"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Channel 5: CPU & RAM Auslastung -->
+                                <div class="ab-channel-box">
+                                    <div class="ab-channel-head">
+                                        <div class="ch-left">
+                                            <span class="ch-dot green"></span>
+                                            <span class="ch-title">CPU & Arbeitsspeicher (RAM) Auslastung, %</span>
+                                        </div>
+                                        <div class="ch-right">
+                                            <span class="ch-stat">CPU Min: <b id="g-cpu-min">0</b>%</span>
+                                            <span class="ch-stat">CPU Max: <b id="g-cpu-max">0</b>%</span>
+                                            <span class="ch-stat">RAM: <b id="g-ram-stat">0%</b></span>
+                                            <span class="ch-cur green" id="g-cpu-cur">0 %</span>
+                                        </div>
+                                    </div>
+                                    <div class="ab-canvas-wrap">
+                                        <canvas id="chart-cpu-util" height="80"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Timeline Ruler -->
+                            <div class="ab-timeline-ruler">
+                                <span id="ruler-start">T - 60s</span>
+                                <span id="ruler-mid">T - 30s</span>
+                                <span class="ruler-live"><span class="pulse-dot active" style="display:inline-block; margin-right:4px;"></span> LIVE (JETZT)</span>
                             </div>
                         </div>
                     </div>
@@ -525,6 +697,6 @@
     <!-- Toast Notification -->
     <div id="toast" class="toast hidden"></div>
 
-    <script src="/static/app.js?v=6"></script>
+    <script src="/static/app.js?v=8"></script>
 </body>
 </html>

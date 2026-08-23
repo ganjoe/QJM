@@ -31,13 +31,20 @@ class TelemetryCollector:
         self.timeout = httpx.Timeout(1.0, connect=0.3)
 
     def get_gpu_telemetry(self) -> Optional[GPUStats]:
-        """Reads AMD GPU VRAM and utilization from sysfs. Picks the GPU with the most VRAM (discrete card)."""
+        """Reads AMD/Host GPU VRAM, utilization, temperature, power wattage, fan, and clock from sysfs."""
         best_vram_total = 0
         vram_used_mb = None
         vram_total_mb = None
         vram_percent = None
         gpu_util = None
-        temp_c = None
+        temp_edge_c = None
+        temp_hotspot_c = None
+        temp_mem_c = None
+        power_w = None
+        power_cap_w = None
+        fan_rpm = None
+        fan_pct = None
+        clock_mhz = None
         gpu_name = "AMD Radeon GPU"
 
         try:
@@ -67,6 +74,96 @@ class TelemetryCollector:
                             if os.path.exists(gpu_busy_file):
                                 with open(gpu_busy_file, "r") as f:
                                     gpu_util = float(f.read().strip())
+
+                            # Read hwmon sensors (temperatures, power wattage, fan)
+                            hwmon_dirs = glob.glob(os.path.join(card_path, "hwmon", "hwmon*"))
+                            for hwmon_dir in hwmon_dirs:
+                                # Temperature 1: Edge / Core
+                                temp1_file = os.path.join(hwmon_dir, "temp1_input")
+                                if os.path.exists(temp1_file):
+                                    try:
+                                        with open(temp1_file, "r") as tf:
+                                            temp_edge_c = round(int(tf.read().strip()) / 1000.0, 1)
+                                    except Exception:
+                                        pass
+
+                                # Temperature 2: Hotspot / Junction
+                                temp2_file = os.path.join(hwmon_dir, "temp2_input")
+                                if os.path.exists(temp2_file):
+                                    try:
+                                        with open(temp2_file, "r") as tf:
+                                            temp_hotspot_c = round(int(tf.read().strip()) / 1000.0, 1)
+                                    except Exception:
+                                        pass
+
+                                # Temperature 3: Memory / VRAM
+                                temp3_file = os.path.join(hwmon_dir, "temp3_input")
+                                if os.path.exists(temp3_file):
+                                    try:
+                                        with open(temp3_file, "r") as tf:
+                                            temp_mem_c = round(int(tf.read().strip()) / 1000.0, 1)
+                                    except Exception:
+                                        pass
+
+                                # Power: average or input (microwatts -> Watts)
+                                for p_name in ["power1_average", "power1_input"]:
+                                    p_file = os.path.join(hwmon_dir, p_name)
+                                    if os.path.exists(p_file):
+                                        try:
+                                            with open(p_file, "r") as pf:
+                                                power_w = round(int(pf.read().strip()) / 1_000_000.0, 1)
+                                                break
+                                        except Exception:
+                                            pass
+
+                                # Power Cap / TDP Limit
+                                pcap_file = os.path.join(hwmon_dir, "power1_cap")
+                                if os.path.exists(pcap_file):
+                                    try:
+                                        with open(pcap_file, "r") as pf:
+                                            power_cap_w = round(int(pf.read().strip()) / 1_000_000.0, 1)
+                                    except Exception:
+                                        pass
+
+                                # Fan RPM
+                                fan_file = os.path.join(hwmon_dir, "fan1_input")
+                                if os.path.exists(fan_file):
+                                    try:
+                                        with open(fan_file, "r") as ff:
+                                            fan_rpm = int(ff.read().strip())
+                                    except Exception:
+                                        pass
+
+                                fan_max_file = os.path.join(hwmon_dir, "fan1_max")
+                                if os.path.exists(fan_max_file) and fan_rpm is not None:
+                                    try:
+                                        with open(fan_max_file, "r") as fmf:
+                                            max_rpm = int(fmf.read().strip())
+                                            if max_rpm > 0:
+                                                fan_pct = round((fan_rpm / max_rpm) * 100, 1)
+                                    except Exception:
+                                        pass
+
+                            # Core Clock (MHz) from pp_dpm_sclk
+                            pp_sclk = os.path.join(card_path, "pp_dpm_sclk")
+                            if os.path.exists(pp_sclk):
+                                try:
+                                    with open(pp_sclk, "r") as sf:
+                                        for line in sf:
+                                            if "*" in line:
+                                                parts = line.split(":")
+                                                if len(parts) > 1:
+                                                    val_str = parts[1].replace("Mhz", "").replace("MHz", "").replace("*", "").strip()
+                                                    clock_mhz = int(val_str)
+                                                break
+                                except Exception:
+                                    pass
+
+                            # GPU Name label
+                            if vram_total_mb and vram_total_mb > 20000:
+                                gpu_name = f"AMD Radeon (dGPU {round(vram_total_mb/1024, 0):.0f}GB)"
+                            elif vram_total_mb:
+                                gpu_name = f"AMD Radeon ({round(vram_total_mb/1024, 0):.0f}GB)"
                     except Exception:
                         pass
         except Exception as e:
@@ -78,7 +175,14 @@ class TelemetryCollector:
             vram_total_mb=vram_total_mb,
             vram_percent=vram_percent,
             gpu_utilization_percent=gpu_util,
-            temperature_c=temp_c,
+            temperature_c=temp_edge_c,
+            temperature_hotspot_c=temp_hotspot_c,
+            temperature_mem_c=temp_mem_c,
+            power_watts=power_w,
+            power_cap_watts=power_cap_w,
+            fan_rpm=fan_rpm,
+            fan_percent=fan_pct,
+            clock_mhz=clock_mhz,
         )
 
     def get_system_stats(self) -> SystemStats:

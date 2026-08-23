@@ -39,6 +39,13 @@ class GPUStats(BaseModel):
     vram_percent: Optional[float] = None
     gpu_utilization_percent: Optional[float] = None
     temperature_c: Optional[float] = None
+    temperature_hotspot_c: Optional[float] = None
+    temperature_mem_c: Optional[float] = None
+    power_watts: Optional[float] = None
+    power_cap_watts: Optional[float] = None
+    fan_rpm: Optional[int] = None
+    fan_percent: Optional[float] = None
+    clock_mhz: Optional[int] = None
 
 
 class SystemStats(BaseModel):

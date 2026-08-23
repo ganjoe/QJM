@@ -109,6 +109,7 @@ services:
       - ./switchyard-config:/switchyard-config
       - ./dashboard:/app
       - ${LM_STUDIO_MODELS_DIR:-/home/daniel/.lmstudio/models}:/lmstudio-models:ro
+      - /sys:/sys:ro
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
