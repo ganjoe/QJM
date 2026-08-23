@@ -28,6 +28,9 @@ RUN npm install -g @deepseek-ai/dsh@next @deepseek-ai/dsh-mcp-client@next && \
     npm install @deepseek-ai/node-addon-landlock-run-linux-x64 --no-save && \
     chmod +x node_modules/@deepseek-ai/node-addon-landlock-run-linux-x64/bin/landlock-run 2>/dev/null || true
 
+# Patch DSH to allow LAN access for loopback-restricted APIs
+RUN sed -i 's/isTrustedApiRequest(request, \[\])/isTrustedApiRequest(request, typeof trustedHosts !== "undefined" ? trustedHosts : this.trustedHosts)/g' /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
