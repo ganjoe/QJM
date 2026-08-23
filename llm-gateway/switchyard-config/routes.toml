@@ -33,7 +33,7 @@ id = "gemini-3.5-flash"
 llm_client = "gemini"
 
 [targets.ollama_embed]
-id = "nomic-embed-text"
+id = "qwen3-embedding:8b"
 llm_client = "ollama"
 
 [routes.local]
@@ -50,3 +50,13 @@ target = "gemini_31_pro"
 id = "fast"
 type = "passthrough"
 target = "gemini_35_lite"
+
+[routes.auto]
+id = "auto"
+type = "passthrough"
+target = "gemini_36_flash"
+
+[routes.embeddings]
+id = "embeddings"
+type = "passthrough"
+target = "ollama_embed"

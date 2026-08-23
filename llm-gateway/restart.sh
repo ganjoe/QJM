@@ -13,8 +13,8 @@ docker rm llm-gw-litellm llm-gw-orchestrator 2>/dev/null || true
 echo "🏗️ Baue lokale Images (Switchyard, DSH, Dashboard)..."
 docker compose build switchyard dsh dashboard
 
-echo "🚀 Starte Kern-Services (Switchyard, DSH, LM Studio, Dashboard)..."
-docker compose up -d --remove-orphans switchyard dsh lm-studio dashboard
+echo "🚀 Starte Kern-Services (Switchyard, DSH, LM Studio, Ollama, Dashboard)..."
+docker compose up -d --remove-orphans switchyard dsh lm-studio ollama dashboard
 
 echo ""
 echo "✅ Restart abgeschlossen!"

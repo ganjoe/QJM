@@ -27,6 +27,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./switchyard-config:/config
+      - ./switchyard/gateway.py:/app/gateway.py:ro
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
@@ -44,6 +45,8 @@ services:
       dockerfile: Dockerfile
     image: llm-gw-dsh:latest
     container_name: llm-gw-dsh
+    security_opt:
+      - seccomp:unconfined
     ports:
       - "3080:3080"
       - "3443:3443"
@@ -53,10 +56,13 @@ services:
       - ./deepseek-harness/entrypoint.sh:/entrypoint.sh:ro
       - ./dsh-config:/root/.config/dsh
       - ./dsh-config:/root/.dsh
-      - ${DSH_WORKSPACE_DIR:-/home/daniel}:/workspace
+      - ${DSH_WORKSPACE_DIR:-/home/daniel/QJM/dsh_playground}:/workspace
+      - ${DSH_WORKSPACE_DIR:-/home/daniel/QJM/dsh_playground}:/root/QJM
     environment:
       - PORT=3080
       - HOST=0.0.0.0
+      - SHELL=/bin/bash
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - SWITCHYARD_URL=http://switchyard:4000/v1
       - OPENAI_BASE_URL=http://switchyard:4000/v1
       - OPENAI_API_KEY=switchyard
@@ -130,7 +136,7 @@ services:
     restart: unless-stopped
 
   # ============================================
-  # (Optional) Ollama — Embeddings (CPU Backend)
+  # Ollama — Embeddings (CPU Backend)
   # ============================================
   ollama:
     image: ollama/ollama:latest
@@ -146,9 +152,6 @@ services:
       timeout: 10s
       retries: 15
       start_period: 10s
-    profiles:
-      - ollama
-      - full
 
   # ============================================
   # (Optional) vLLM — Inferenz-Server (ROCm)
