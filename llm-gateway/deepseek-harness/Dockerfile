@@ -13,7 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /bin/bash /usr/local/bin/bash
+RUN ln -sf /bin/bash /usr/local/bin/bash && \
+    ln -sf /usr/bin/rg /usr/bin/ripgrep && \
+    ln -sf /usr/bin/rg /usr/local/bin/ripgrep
 
 ENV SHELL=/bin/bash
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"

@@ -7,6 +7,9 @@ umask 0000
 export SHELL=/bin/bash
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 ln -sf /bin/bash /usr/local/bin/bash 2>/dev/null || true
+ln -sf /usr/bin/rg /usr/bin/ripgrep 2>/dev/null || true
+ln -sf /usr/bin/rg /usr/local/bin/ripgrep 2>/dev/null || true
+ln -sf /usr/bin/rg /usr/local/bin/rg 2>/dev/null || true
 
 # DSH requires .credentials.yaml to be owner-only readable (mode 600)
 [ -f /root/.dsh/.credentials.yaml ] && chmod 600 /root/.dsh/.credentials.yaml 2>/dev/null || true

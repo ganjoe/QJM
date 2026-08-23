@@ -47,6 +47,8 @@ services:
     container_name: llm-gw-dsh
     security_opt:
       - seccomp:unconfined
+    cap_add:
+      - SYS_ADMIN
     ports:
       - "3080:3080"
       - "3443:3443"
