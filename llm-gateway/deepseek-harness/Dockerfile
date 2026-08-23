@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install DeepSeek Harness CLI & Web UI globally
-RUN npm install -g @deepseek-ai/dsh@latest
+# Install DeepSeek Harness CLI & Web UI globally + MCP Client
+RUN npm install -g @deepseek-ai/dsh@latest @deepseek-ai/dsh-mcp-client@latest
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -20,6 +20,6 @@ RUN chmod +x /entrypoint.sh
 # Default workspace directory
 WORKDIR /workspace
 
-EXPOSE 3080
+EXPOSE 3080 3443
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -7,3 +7,5 @@ __pycache__/
 dsh-config/.credentials.yaml
 dsh-config/sessions/
 dsh-config/storages/
+dsh-config/ssl/
+dsh-config/settings.yaml

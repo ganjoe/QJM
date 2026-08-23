@@ -1,0 +1,9 @@
+- insert:
+  - id: mcp-openbrain-cco
+    name: "@deepseek-ai/dsh-mcp-client"
+    config:
+      serverName: openbrain-cco
+      transport: streamable-http
+      url: !!js process.env.OPENBRAIN_CCO_MCP_URL || "http://host.docker.internal:8788"
+      headers:
+        x-brain-key: !!js process.env.MCP_ACCESS_KEY || ""
