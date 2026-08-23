@@ -6,7 +6,7 @@ llm-pi-ai:
       displayName: switchyard
       apiKeyEnv: SWITCHYARD_API_KEY
       api: openai-completions
-      baseURL: http://10.20.0.23:4000/v1
+      baseURL: http://switchyard:4000/v1
       models:
         - id: auto
           name: auto

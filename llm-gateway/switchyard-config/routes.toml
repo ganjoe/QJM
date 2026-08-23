@@ -46,77 +46,7 @@ id = "reasoning"
 type = "passthrough"
 target = "gemini_31_pro"
 
-[routes.pro]
-id = "pro"
-type = "passthrough"
-target = "gemini_31_pro"
-
 [routes.fast]
 id = "fast"
 type = "passthrough"
-target = "gemini_36_flash"
-
-[routes.flash]
-id = "flash"
-type = "passthrough"
-target = "gemini_36_flash"
-
-[routes.lite]
-id = "lite"
-type = "passthrough"
 target = "gemini_35_lite"
-
-[routes.gemini_31_pro_preview]
-id = "gemini-3.1-pro-preview"
-type = "passthrough"
-target = "gemini_31_pro"
-
-[routes.gemini_31_pro]
-id = "gemini-3.1-pro"
-type = "passthrough"
-target = "gemini_31_pro"
-
-[routes.gemini_3_pro_alias]
-id = "gemini-3-pro"
-type = "passthrough"
-target = "gemini_31_pro"
-
-[routes.gemini_36_flash]
-id = "gemini-3.6-flash"
-type = "passthrough"
-target = "gemini_36_flash"
-
-[routes.gemini_3_flash_alias]
-id = "gemini-3-flash"
-type = "passthrough"
-target = "gemini_36_flash"
-
-[routes.gemini_35_lite]
-id = "gemini-3.5-flash-lite"
-type = "passthrough"
-target = "gemini_35_lite"
-
-[routes.gemini_35_flash]
-id = "gemini-3.5-flash"
-type = "passthrough"
-target = "gemini_35_flash"
-
-[routes.nomic_embed]
-id = "nomic-embed-text"
-type = "passthrough"
-target = "ollama_embed"
-
-[routes.embeddings_alias]
-id = "embeddings"
-type = "passthrough"
-target = "ollama_embed"
-
-[routes.auto]
-id = "auto"
-type = "llm_classifier"
-mode = "capability"
-classifier_target = "gemini_36_flash"
-weak_target = "local_model"
-strong_target = "gemini_31_pro"
-base_threshold = 0.5
-threshold_step = 0.1
