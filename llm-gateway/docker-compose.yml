@@ -72,9 +72,13 @@ services:
       - DEEPSEEK_API_KEY=switchyard
       - MCP_ACCESS_KEY=${MCP_ACCESS_KEY}
       - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://mcp-cco:8788}
+      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://mcp-pta:8789}
+      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://mcp-cda:8795}
     depends_on:
       - switchyard
       - mcp-cco
+      - mcp-pta
+      - mcp-cda
     restart: unless-stopped
 
   # ============================================
@@ -121,6 +125,83 @@ services:
       - "8788:8788"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # ============================================
+  # PTA MCP Server — Execution & Portfolio Management
+  # ============================================
+  mcp-pta:
+    build:
+      context: ../mcp/agent-pta
+      dockerfile: Dockerfile
+    image: llm-gw-mcp-pta:latest
+    container_name: llm-gw-mcp-pta
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../mcp/agent-pta/index.ts:/app/index.ts:ro
+      - ../mcp/agent-pta/tools:/app/tools:ro
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      SWITCHYARD_URL: http://switchyard:4000/v1
+      EMBED_MODEL: embeddings
+      PORT: "8789"
+      AGENT_ID: "pta"
+      GLOBAL_BRAIN_ACCESS: "false"
+    ports:
+      - "8789:8789"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================
+  # CDA MCP Server — Stock Data Management
+  # ============================================
+  mcp-cda:
+    build:
+      context: ../mcp/agent-cda
+      dockerfile: Dockerfile
+    image: llm-gw-mcp-cda:latest
+    container_name: llm-gw-mcp-cda
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+      - stock-data-node
+    volumes:
+      - ../mcp/agent-cda/index.ts:/app/index.ts:ro
+      - ../mcp/agent-cda/tools:/app/tools:ro
+    environment:
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      STOCK_DATA_NODE_URL: http://stock-data-node:8002
+      PORT: "8795"
+      AGENT_ID: "cda"
+    ports:
+      - "8795:8795"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================
+  # Stock Data Node — OHLCV Market Data Pipeline
+  # ============================================
+  stock-data-node:
+    build: /home/daniel/stock-data-node
+    container_name: stock-data-node
+    restart: unless-stopped
+    environment:
+      - APP_BASE_DIR=/app
+    volumes:
+      - /home/daniel/stock-data-node/config:/app/config
+      - /home/daniel/stock-data-node/data:/app/data
+      - /home/daniel/stock-data-node/watch:/app/watch
+      - /home/daniel/stock-data-node/logs:/app/logs
+      - /home/daniel/stock-data-node/state:/app/state
+    ports:
+      - "8002:8002"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    tty: true
 
   # ============================================
   # LM Studio — Desktop Web UI & OpenAI REST API

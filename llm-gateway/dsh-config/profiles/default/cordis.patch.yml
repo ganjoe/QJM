@@ -7,3 +7,19 @@
       url: !!js process.env.OPENBRAIN_CCO_MCP_URL || "http://host.docker.internal:8788"
       headers:
         x-brain-key: !!js process.env.MCP_ACCESS_KEY || ""
+  - id: mcp-openbrain-pta
+    name: "@deepseek-ai/dsh-mcp-client"
+    config:
+      serverName: openbrain-pta
+      transport: streamable-http
+      url: !!js process.env.OPENBRAIN_PTA_MCP_URL || "http://host.docker.internal:8789"
+      headers:
+        x-brain-key: !!js process.env.MCP_ACCESS_KEY || ""
+  - id: mcp-openbrain-cda
+    name: "@deepseek-ai/dsh-mcp-client"
+    config:
+      serverName: openbrain-cda
+      transport: streamable-http
+      url: !!js process.env.OPENBRAIN_CDA_MCP_URL || "http://host.docker.internal:8795"
+      headers:
+        x-brain-key: !!js process.env.MCP_ACCESS_KEY || ""
