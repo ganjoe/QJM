@@ -53,8 +53,13 @@ target = "gemini_35_lite"
 
 [routes.auto]
 id = "auto"
-type = "passthrough"
-target = "gemini_36_flash"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "gemini_35_lite"
+weak_target = "local_model"
+strong_target = "gemini_31_pro"
+base_threshold = 0.5
+threshold_step = 0.1
 
 [routes.embeddings]
 id = "embeddings"

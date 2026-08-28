@@ -1,0 +1,97 @@
+<mxfile host="65bd71144e">
+    <diagram id="switchyard-reasoning-architecture" name="Switchyard Reasoning Architecture">
+        <mxGraphModel dx="775" dy="506" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="node_client" value="&lt;b&gt;Client Layer&lt;/b&gt;&lt;br&gt;DeepSeek Harness (DSH) / Agentic Clients&lt;br&gt;&lt;i&gt;Parameter: reasoning_effort (&amp;quot;low&amp;quot; | &amp;quot;medium&amp;quot; | &amp;quot;high&amp;quot;)&lt;/i&gt;&lt;br&gt;&lt;i&gt;Route / Model: &amp;quot;reasoning&amp;quot; | &amp;quot;fast&amp;quot; | &amp;quot;auto&amp;quot; | &amp;quot;local&amp;quot;&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1ba1e2;strokeColor=#006EAF;arcSize=12;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="380" y="40" width="380" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_gateway" value="&lt;b&gt;Switchyard Unified Gateway (FastAPI :4000)&lt;/b&gt;&lt;br&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;b&gt;/v1/embeddings&lt;/b&gt; &amp;rarr; Direct Route zu Ollama&lt;/li&gt;&lt;li&gt;&lt;b&gt;/v1/chat/completions&lt;/b&gt; &amp;rarr; Proxy zu NeMo Switchyard (:4001)&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#008a00;strokeColor=#005700;arcSize=10;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="380" y="160" width="380" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_switchyard" value="&lt;b&gt;NeMo Switchyard Router (:4001)&lt;/b&gt;&lt;br&gt;&lt;i&gt;Evaluierung von routes.toml&lt;/i&gt;&lt;br&gt;• Passthrough | Fallback | Weighted Routing&lt;br&gt;• LLM Classifier (Entscheidungs-Routing)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#6a00ff;strokeColor=#3700CC;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="380" y="280" width="380" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_classifier" value="&lt;b&gt;LLM Classifier&lt;/b&gt;&lt;br&gt;&lt;i&gt;(Judge Model)&lt;/i&gt;&lt;br&gt;Komplexität &amp;amp;&lt;br&gt;Reasoning-Bedarf" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="275" width="180" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_gemini_proxy" value="&lt;b&gt;Gemini Proxy &amp;amp; Feature Adapter (:9000)&lt;/b&gt;&lt;br&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;b&gt;Reasoning Translation:&lt;/b&gt;&lt;br&gt;&lt;code&gt;reasoning_effort&lt;/code&gt; &amp;rarr; &lt;code&gt;thinking_config.thinking_budget&lt;/code&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Sanitization:&lt;/b&gt; Setzt &lt;code&gt;temperature=1.0&lt;/code&gt;, bereinigt OpenAI-only Flags&lt;/li&gt;&lt;li&gt;&lt;b&gt;State Cache:&lt;/b&gt; Re-Injektion von &lt;code&gt;thought_signature&lt;/code&gt; bei Tool Calls&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#a20025;strokeColor=#6F0000;arcSize=10;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="120" y="440" width="360" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_lmstudio_adapter" value="&lt;b&gt;LM Studio Bridge (:1234)&lt;/b&gt;&lt;br&gt;• OpenAI-kompatible Schnittstelle&lt;br&gt;• GGUF Sampling / Context Handling&lt;br&gt;• DeepSeek-R1 CoT Output" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;arcSize=10;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="455" width="240" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_ollama_adapter" value="&lt;b&gt;Ollama Embeddings Bridge (:11434)&lt;/b&gt;&lt;br&gt;• Vektor-Berechnung&lt;br&gt;• qwen3-embedding:8b" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;arcSize=10;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="455" width="220" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_cloud_gemini" value="&lt;b&gt;Google AI Studio Cloud&lt;/b&gt;&lt;br&gt;• &lt;b&gt;Gemini 3.1 Pro Preview&lt;/b&gt; (Deep Thinking)&lt;br&gt;• &lt;b&gt;Gemini 3.6 Flash&lt;/b&gt; (Fast Reasoning)&lt;br&gt;• &lt;b&gt;Gemini 3.5 Flash-Lite&lt;/b&gt; (Speed/Low-Cost)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#d80073;strokeColor=#A50040;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="140" y="630" width="320" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_local_gpu" value="&lt;b&gt;LM Studio Server (Vulkan GPU)&lt;/b&gt;&lt;br&gt;• DeepSeek-R1 Distill (CoT aktiv)&lt;br&gt;• Qwen 2.5 / Llama 3.3 (Local Execution)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#d80073;strokeColor=#A50040;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="630" width="240" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="node_local_ollama" value="&lt;b&gt;Ollama Local Container&lt;/b&gt;&lt;br&gt;• qwen3-embedding:8b (CPU/GPU)&lt;br&gt;• Embeddings Target" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#d80073;strokeColor=#A50040;shadow=1;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="630" width="220" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_client_gw" value="POST /v1/chat/completions (reasoning_effort, model)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#333333;" parent="1" source="node_client" target="node_gateway" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_gw_sw" value="Proxy Chat Request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#333333;" parent="1" source="node_gateway" target="node_switchyard" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_gw_ollama" value="Direct Route (/v1/embeddings)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#B85450;" parent="1" source="node_gateway" target="node_ollama_adapter" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="950" y="200"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge_sw_classifier" value="route = &amp;quot;auto&amp;quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#D79B00;" parent="1" source="node_switchyard" target="node_classifier" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_classifier_strong" value="Strong Target (High Reasoning)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#9673A6;" parent="1" source="node_classifier" target="node_gemini_proxy" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="930" y="410"/>
+                            <mxPoint x="300" y="410"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge_classifier_weak" value="Weak Target (Fast / Local)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#666666;" parent="1" source="node_classifier" target="node_lmstudio_adapter" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="930" y="410"/>
+                            <mxPoint x="660" y="410"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge_sw_gemini" value="routes: &amp;quot;reasoning&amp;quot;, &amp;quot;fast&amp;quot;, &amp;quot;gemini_*&amp;quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#9673A6;" parent="1" source="node_switchyard" target="node_gemini_proxy" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="430" y="410"/>
+                            <mxPoint x="300" y="410"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge_sw_lmstudio" value="route = &amp;quot;local&amp;quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#666666;" parent="1" source="node_switchyard" target="node_lmstudio_adapter" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="520" y="410"/>
+                            <mxPoint x="660" y="410"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge_proxy_cloud" value="thinking_config: {thinking_budget}, temp=1.0, thought_sig" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#6C8EBF;" parent="1" source="node_gemini_proxy" target="node_cloud_gemini" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_lmstudio_gpu" value="Native OpenAI REST / Vulkan" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#385723;" parent="1" source="node_lmstudio_adapter" target="node_local_gpu" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge_ollama_local" value="Embedding Matrix Dispatch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#C65911;" parent="1" source="node_ollama_adapter" target="node_local_ollama" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

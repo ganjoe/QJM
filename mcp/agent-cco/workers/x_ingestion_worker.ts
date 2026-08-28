@@ -77,7 +77,7 @@ export async function ingestInfluencerTweets(
     .limit(1)
     .single();
 
-  const sinceId = latestRecord?.metadata?.id || undefined;
+  const sinceId = latestRecord?.metadata?.external_id || undefined;
   let totalSaved = 0;
 
   async function fetchAndSaveBatch(params: { sinceId?: string; untilId?: string; startTime?: string; limit?: number }) {
@@ -136,12 +136,11 @@ export async function ingestInfluencerTweets(
         return {
           agent_id: "cco",
           artifact_type: "x_post",
-          title: `X Post by ${cleanName} (${tweet.id})`,
           content: tweet.text,
           status: "pending_metadata", // Stage 1 output status
           created_at: tweet.created_at || new Date().toISOString(),
           metadata: {
-            id: tweet.id,
+            external_id: tweet.id,
             author: cleanName,
             screen_name: screenName,
             published_at: tweet.created_at,
@@ -158,7 +157,7 @@ export async function ingestInfluencerTweets(
           .from("agent_workspace")
           .select("id")
           .eq("artifact_type", "x_post")
-          .eq("metadata->>id", rec.metadata.id)
+          .eq("metadata->>external_id", rec.metadata.external_id)
           .single();
 
         if (!existing) {

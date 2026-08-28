@@ -155,6 +155,7 @@ export async function getValidXUserAccessToken(): Promise<{ access_token: string
 }
 
 // --- Global X API Rate Limiter ---
+export let globalXApiBlockedUntil = 0;
 let lastXApiFetchTime = 0;
 export const xRateLimitStats = {
   requestsInWindow: 0,
@@ -166,6 +167,10 @@ export const xRateLimitStats = {
 };
 
 export async function throttledXFetch(url: string, init?: RequestInit): Promise<Response> {
+  if (Date.now() < globalXApiBlockedUntil) {
+    throw new Error(`X API fetch skipped: Blocked until ${new Date(globalXApiBlockedUntil).toISOString()} due to previous 402 Payment Required error.`);
+  }
+
   const now = Date.now();
   const elapsed = now - lastXApiFetchTime;
   if (elapsed < X_MIN_REQUEST_DELAY_MS) {
@@ -194,6 +199,11 @@ export async function throttledXFetch(url: string, init?: RequestInit): Promise<
   const resetHeader = res.headers.get("x-rate-limit-reset");
   if (remainingHeader !== null) xRateLimitStats.remaining = Number(remainingHeader);
   if (resetHeader !== null) xRateLimitStats.resetEpoch = Number(resetHeader);
+
+  if (res.status === 402) {
+    globalXApiBlockedUntil = Date.now() + 15 * 60 * 1000;
+    log.error(`[X API] 402 Payment Required empfangen. Pausiere alle X API Requests für 15 Minuten bis ${new Date(globalXApiBlockedUntil).toISOString()}`);
+  }
 
   return res;
 }
