@@ -45,6 +45,7 @@ services:
       dockerfile: Dockerfile
     image: llm-gw-dsh:latest
     container_name: llm-gw-dsh
+    user: "1000:1000"
     security_opt:
       - seccomp:unconfined
     cap_add:
@@ -56,24 +57,29 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./deepseek-harness/entrypoint.sh:/entrypoint.sh:ro
+      - ./dsh-config:/home/node/.config/dsh
+      - ./dsh-config:/home/node/.dsh
       - ./dsh-config:/root/.config/dsh
       - ./dsh-config:/root/.dsh
-      - ${DSH_WORKSPACE_DIR:-/home/daniel/QJM/dsh_playground}:/workspace
-      - ${DSH_WORKSPACE_DIR:-/home/daniel/QJM/dsh_playground}:/root/QJM
+      - ${QJM_PROJECT_DIR:-..}:/workspace/qjm
+      - ${QJM_PROJECT_DIR:-..}:/qjm
+      - ${QJM_PROJECT_DIR:-..}:/home/daniel/QJM
     environment:
+      - HOME=/home/node
       - PORT=3080
       - HOST=0.0.0.0
       - SHELL=/bin/bash
       - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - DSH_WORKSPACE_DIR=/workspace
       - SWITCHYARD_URL=http://switchyard:4000/v1
       - OPENAI_BASE_URL=http://switchyard:4000/v1
       - OPENAI_API_KEY=switchyard
       - DEEPSEEK_BASE_URL=http://switchyard:4000/v1
       - DEEPSEEK_API_KEY=switchyard
       - MCP_ACCESS_KEY=${MCP_ACCESS_KEY}
-      - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://mcp-cco:8788}
-      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://mcp-pta:8789}
-      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://mcp-cda:8795}
+      - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://llm-gw-mcp-cco:8788}
+      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://llm-gw-mcp-pta:8789}
+      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://llm-gw-mcp-cda:8795}
     depends_on:
       - switchyard
       - mcp-cco

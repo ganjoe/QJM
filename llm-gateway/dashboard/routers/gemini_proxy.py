@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from typing import Optional, Dict, Any, List
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -15,9 +16,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 # Unsupported fields by Google's direct OpenAI REST parser
-STRIP_FIELDS = {"store", "metadata", "service_tier", "modalities"}
+STRIP_FIELDS = {
+    "store",
+    "metadata",
+    "service_tier",
+    "modalities",
+    "stream_options",
+    "parallel_tool_calls",
+}
 
-# Exact active Google AI Studio model IDs (as of Aug 2026)
+# Exact active Google AI Studio model IDs
 MODEL_MAP = {
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
     "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
@@ -31,29 +39,33 @@ MODEL_MAP = {
     "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
     "lite": "gemini-3.5-flash-lite",
+    "auto": "gemini-3.6-flash",
 }
 
 # ---------------------------------------------------------------------------
-# Thought Signature Cache
+# Thought Signature Cache & Validator
 # ---------------------------------------------------------------------------
-# Gemini 3.x models include a `thought_signature` with tool_call responses.
+# Gemini 2.5/3.x models include a `thought_signature` with tool_call responses.
 # This is an encrypted snapshot of the model's reasoning state, required by
 # Google's API on subsequent turns that reference the tool_call.
 #
-# OpenAI-compatible clients (like dsh/Switchyard) strip this non-standard
-# field from conversation history. We cache the full assistant message on
-# response and re-inject it on the next request.
+# Standard OpenAI-compatible clients (like dsh/Switchyard) do not include this
+# non-standard field in conversation history. We cache the full assistant message
+# on response and re-inject it on the next request. If no signature was saved,
+# Google provides the sentinel "skip_thought_signature_validator" to bypass 400 errors.
 # ---------------------------------------------------------------------------
 
 _THOUGHT_CACHE_MAX = int(os.getenv("THOUGHT_CACHE_MAX_ENTRIES", "500"))
 _THOUGHT_CACHE_TTL = int(os.getenv("THOUGHT_CACHE_TTL_SECONDS", "1800"))
+FALLBACK_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 
 
 class _ThoughtSignatureCache:
-    """LRU + TTL cache: maps tool_call_id → full assistant message dict."""
+    """LRU + TTL cache: maps tool_call_id → full assistant message dict and tool_call dict."""
 
     def __init__(self, max_entries: int, ttl_seconds: int):
         self._store: OrderedDict[str, dict] = OrderedDict()
+        self._tc_store: OrderedDict[str, dict] = OrderedDict()
         self._ts: dict[str, float] = {}
         self._max = max_entries
         self._ttl = ttl_seconds
@@ -71,48 +83,140 @@ class _ThoughtSignatureCache:
                 continue
             self._store[tc_id] = message
             self._store.move_to_end(tc_id)
+            self._tc_store[tc_id] = tc
+            self._tc_store.move_to_end(tc_id)
             self._ts[tc_id] = now
 
-    def get(self, tool_call_id: str) -> dict | None:
+    def get_message(self, tool_call_id: str) -> Optional[dict]:
         """Retrieve a cached assistant message by tool_call_id."""
         msg = self._store.get(tool_call_id)
         if msg is None:
             return None
         if time.time() - self._ts.get(tool_call_id, 0) >= self._ttl:
             self._store.pop(tool_call_id, None)
+            self._tc_store.pop(tool_call_id, None)
             self._ts.pop(tool_call_id, None)
             return None
         return msg
+
+    def get_tool_call(self, tool_call_id: str) -> Optional[dict]:
+        """Retrieve a cached tool_call dict by tool_call_id."""
+        tc = self._tc_store.get(tool_call_id)
+        if tc is None:
+            return None
+        if time.time() - self._ts.get(tool_call_id, 0) >= self._ttl:
+            self._store.pop(tool_call_id, None)
+            self._tc_store.pop(tool_call_id, None)
+            self._ts.pop(tool_call_id, None)
+            return None
+        return tc
 
     def _evict(self, now: float):
         # Remove expired entries
         expired = [k for k, t in self._ts.items() if now - t >= self._ttl]
         for k in expired:
             self._store.pop(k, None)
+            self._tc_store.pop(k, None)
             self._ts.pop(k, None)
         # Trim to max size
         while len(self._store) > self._max:
             k, _ = self._store.popitem(last=False)
+            self._tc_store.pop(k, None)
             self._ts.pop(k, None)
 
 
 _thought_cache = _ThoughtSignatureCache(_THOUGHT_CACHE_MAX, _THOUGHT_CACHE_TTL)
 
 
+def _extract_signature(item: dict) -> Optional[str]:
+    """Extract thought_signature from various possible locations in a tool_call or message dict."""
+    if not isinstance(item, dict):
+        return None
+    # Check extra_content.google.thought_signature (Standard Google OpenAI format)
+    extra = item.get("extra_content")
+    if isinstance(extra, dict):
+        google_extra = extra.get("google")
+        if isinstance(google_extra, dict) and google_extra.get("thought_signature"):
+            return str(google_extra["thought_signature"])
+    # Check top-level thought_signature
+    if item.get("thought_signature"):
+        return str(item["thought_signature"])
+    # Check function.thought_signature
+    func = item.get("function")
+    if isinstance(func, dict):
+        if func.get("thought_signature"):
+            return str(func["thought_signature"])
+        extra_f = func.get("extra_content")
+        if isinstance(extra_f, dict):
+            google_f = extra_f.get("google")
+            if isinstance(google_f, dict) and google_f.get("thought_signature"):
+                return str(google_f["thought_signature"])
+    return None
+
+
 def _inject_cached_signatures(body: dict):
-    """Replace assistant tool_call messages with cached versions that include thought_signature."""
+    """
+    Ensures that every assistant message with tool_calls contains the necessary
+    thought_signature (either from cache or fallback sentinel) in extra_content.google.
+    Google Gemini API strictly enforces thought_signature inside extra_content.google.
+    """
     messages = body.get("messages", [])
     patched = 0
-    for i, msg in enumerate(messages):
-        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+    for msg in messages:
+        if msg.get("role") not in ("assistant", "model"):
             continue
-        first_tc_id = msg["tool_calls"][0].get("id", "")
-        cached = _thought_cache.get(first_tc_id)
-        if cached:
-            messages[i] = cached
+
+        # Handle tool_calls
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id", "")
+                cached_tc = _thought_cache.get_tool_call(tc_id) if tc_id else None
+                cached_msg = _thought_cache.get_message(tc_id) if tc_id else None
+
+                sig = None
+                if cached_tc:
+                    sig = _extract_signature(cached_tc)
+                if not sig and cached_msg:
+                    sig = _extract_signature(cached_msg)
+                if not sig:
+                    sig = _extract_signature(tc)
+                if not sig:
+                    sig = _extract_signature(msg)
+                if not sig:
+                    sig = FALLBACK_THOUGHT_SIGNATURE
+
+                # Inject into Google's required OpenAI structure: extra_content.google.thought_signature
+                if "extra_content" not in tc or not isinstance(tc["extra_content"], dict):
+                    tc["extra_content"] = {}
+                if "google" not in tc["extra_content"] or not isinstance(tc["extra_content"]["google"], dict):
+                    tc["extra_content"]["google"] = {}
+                tc["extra_content"]["google"]["thought_signature"] = sig
+
+                # Also set legacy top-level for backward compatibility
+                tc["thought_signature"] = sig
+                if "function" in tc and isinstance(tc["function"], dict):
+                    tc["function"]["thought_signature"] = sig
+                patched += 1
+
+            if not msg.get("thought_signature") and msg["tool_calls"]:
+                first_sig = _extract_signature(msg["tool_calls"][0]) or FALLBACK_THOUGHT_SIGNATURE
+                msg["thought_signature"] = first_sig
+
+        # Handle legacy function_call
+        if msg.get("function_call"):
+            fc = msg["function_call"]
+            sig = _extract_signature(fc) or _extract_signature(msg) or FALLBACK_THOUGHT_SIGNATURE
+            if "extra_content" not in fc or not isinstance(fc["extra_content"], dict):
+                fc["extra_content"] = {}
+            if "google" not in fc["extra_content"] or not isinstance(fc["extra_content"]["google"], dict):
+                fc["extra_content"]["google"] = {}
+            fc["extra_content"]["google"]["thought_signature"] = sig
+            fc["thought_signature"] = sig
+            msg["thought_signature"] = sig
             patched += 1
+
     if patched:
-        logger.info(f"[ThoughtSig] Injected {patched} cached assistant message(s)")
+        logger.info(f"[ThoughtSig] Injected/validated thought_signature for {patched} tool_call/function_call entry(s)")
 
 
 def _cache_from_message(msg: dict):
@@ -154,17 +258,30 @@ class _StreamAccumulator:
                 self.tool_calls[idx] = {
                     "id": "", "type": "function",
                     "function": {"name": "", "arguments": ""},
+                    "extra_content": {"google": {}},
                 }
             entry = self.tool_calls[idx]
-            if tc_delta.get("id"):
-                entry["id"] = tc_delta["id"]
-            if tc_delta.get("type"):
-                entry["type"] = tc_delta["type"]
+            for k, v in tc_delta.items():
+                if k not in ("index", "function", "extra_content"):
+                    if k in ("id", "type"):
+                        if v:
+                            entry[k] = v
+                    else:
+                        entry[k] = v
+                elif k == "extra_content" and isinstance(v, dict):
+                    entry.setdefault("extra_content", {})
+                    google_data = v.get("google", {})
+                    if isinstance(google_data, dict):
+                        entry["extra_content"].setdefault("google", {}).update(google_data)
+
             func = tc_delta.get("function", {})
             if func.get("name"):
                 entry["function"]["name"] += func["name"]
             if "arguments" in func:
                 entry["function"]["arguments"] += func["arguments"]
+            for fk, fv in func.items():
+                if fk not in ("name", "arguments"):
+                    entry["function"][fk] = fv
 
         # Capture any extra fields on delta (e.g. thought_signature, thinking)
         for key, val in delta.items():
@@ -176,18 +293,37 @@ class _StreamAccumulator:
             if key not in ("index", "delta", "finish_reason", "logprobs"):
                 self.extra_fields[f"_choice_{key}"] = val
 
-    def build_message(self) -> dict | None:
+        # Also check chunk-level extra fields
+        for key, val in chunk_json.items():
+            if key not in ("id", "object", "created", "model", "choices", "usage", "system_fingerprint"):
+                self.extra_fields[f"_chunk_{key}"] = val
+
+    def build_message(self) -> Optional[dict]:
         """Build the complete assistant message. Returns None if no tool_calls were seen."""
         if not self.tool_calls:
             return None
+
+        tool_calls_list = [self.tool_calls[i] for i in sorted(self.tool_calls.keys())]
+        for tc in tool_calls_list:
+            sig = _extract_signature(tc)
+            if not sig:
+                sig = self.extra_fields.get("thought_signature") or FALLBACK_THOUGHT_SIGNATURE
+
+            if "extra_content" not in tc or not isinstance(tc["extra_content"], dict):
+                tc["extra_content"] = {}
+            if "google" not in tc["extra_content"] or not isinstance(tc["extra_content"]["google"], dict):
+                tc["extra_content"]["google"] = {}
+            tc["extra_content"]["google"]["thought_signature"] = sig
+            tc["thought_signature"] = sig
+
         msg: dict = {
             "role": "assistant",
             "content": "".join(self.content_parts) if self.content_parts else None,
-            "tool_calls": [self.tool_calls[i] for i in sorted(self.tool_calls.keys())],
+            "tool_calls": tool_calls_list,
         }
         # Attach any extra fields we captured (thought_signature, etc.)
         for key, val in self.extra_fields.items():
-            if not key.startswith("_choice_"):
+            if not key.startswith("_choice_") and not key.startswith("_chunk_"):
                 msg[key] = val
         return msg
 
@@ -215,10 +351,10 @@ async def get_gemini_models():
 async def gemini_chat_proxy(request: Request):
     """
     Transparent proxy to Google AI Studio OpenAI endpoint.
-    1. Sanitizes OpenAI client fields ('store', 'metadata', etc.).
+    1. Sanitizes OpenAI client fields ('store', 'metadata', 'stream_options', etc.).
     2. Maps forward-looking model IDs to verified Google AI Studio models.
     3. Normalizes streaming chunks so that finish_reason is always sent before [DONE].
-    4. Caches & re-injects Gemini 3.x thought_signatures for tool-call round-trips.
+    4. Caches & re-injects Gemini 3.x thought_signatures (or fallback sentinels) for tool-call round-trips.
     """
     api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
 

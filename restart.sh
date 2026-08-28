@@ -3,7 +3,8 @@
 # LLM Gateway - Restart Script (Switchyard + DSH + LM Studio + Dashboard)
 # ==============================================================================
 
-cd "$(dirname "$0")" || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/llm-gateway" || exit 1
 
 SERVICE=$1
 

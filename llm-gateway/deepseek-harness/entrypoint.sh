@@ -2,9 +2,10 @@
 set -e
 
 # Ensure all files and directories created by DSH are readable and writable by the host user
-umask 0000
+umask 0002
 
 export SHELL=/bin/bash
+export HOME="${HOME:-/home/node}"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 ln -sf /bin/bash /usr/local/bin/bash 2>/dev/null || true
 ln -sf /usr/bin/rg /usr/bin/ripgrep 2>/dev/null || true
@@ -12,10 +13,12 @@ ln -sf /usr/bin/rg /usr/local/bin/ripgrep 2>/dev/null || true
 ln -sf /usr/bin/rg /usr/local/bin/rg 2>/dev/null || true
 
 # DSH requires .credentials.yaml to be owner-only readable (mode 600)
+[ -f "${HOME}/.dsh/.credentials.yaml" ] && chmod 600 "${HOME}/.dsh/.credentials.yaml" 2>/dev/null || true
+[ -f "${HOME}/.config/dsh/.credentials.yaml" ] && chmod 600 "${HOME}/.config/dsh/.credentials.yaml" 2>/dev/null || true
 [ -f /root/.dsh/.credentials.yaml ] && chmod 600 /root/.dsh/.credentials.yaml 2>/dev/null || true
 [ -f /root/.config/dsh/.credentials.yaml ] && chmod 600 /root/.config/dsh/.credentials.yaml 2>/dev/null || true
 
-SSL_DIR="/root/.config/dsh/ssl"
+SSL_DIR="${SSL_DIR:-${HOME}/.config/dsh/ssl}"
 CERT_FILE="${SSL_DIR}/cert.pem"
 KEY_FILE="${SSL_DIR}/key.pem"
 COMBINED_FILE="${SSL_DIR}/server.pem"

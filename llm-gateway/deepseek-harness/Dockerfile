@@ -31,6 +31,10 @@ RUN npm install -g @deepseek-ai/dsh@next @deepseek-ai/dsh-mcp-client@next && \
 # Patch DSH to allow LAN access for loopback-restricted APIs
 RUN sed -i 's/isTrustedApiRequest(request, \[\])/isTrustedApiRequest(request, typeof trustedHosts !== "undefined" ? trustedHosts : this.trustedHosts)/g' /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js
 
+# Ensure workspace, home, and QJM directories exist with proper permissions for node user (1000:1000)
+RUN mkdir -p /workspace/qjm /qjm /workspace /home/node/.config/dsh /home/node/.dsh /home/daniel/QJM && \
+    chown -R node:node /workspace /qjm /home/node /home/daniel
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

@@ -1,0 +1,13 @@
+services:
+  ibkr-sync:
+    build: .
+    image: qjm-ibkr-sync:latest
+    container_name: ibkr-sync
+    restart: unless-stopped
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - IB_GATEWAY_HOST=${IB_GATEWAY_HOST:-host.docker.internal}
+      - IB_GATEWAY_PORT=${IB_GATEWAY_PORT:-4002}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
