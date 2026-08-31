@@ -1,4 +1,4 @@
-import { supabase, log, getEmbeddingsBatch, MAX_CONCURRENT_YT_CHANNELS } from "../tools/shared.ts";
+import { supabase, log, getEmbeddingsBatch, MAX_CONCURRENT_YT_CHANNELS, AGENT_ID } from "../tools/shared.ts";
 
 export const ytIngestionStats = {
   isRunning: false,
@@ -216,34 +216,127 @@ export async function syncSingleChannel(handle: string, signal?: AbortSignal) {
 }
 
 /**
- * Process a pending YouTube video (download transcript + embedding)
+ * Chunk transcript text into manageable overlapping segments
+ */
+export function chunkTranscript(
+  transcript: string,
+  chunkSize: number = parseInt(Deno.env.get("YT_CHUNK_SIZE") || "1500"),
+  overlap: number = parseInt(Deno.env.get("YT_CHUNK_OVERLAP") || "200"),
+): string[] {
+  if (!transcript || transcript.trim().length === 0) return [];
+  const text = transcript.trim();
+  if (text.length <= chunkSize) return [text];
+
+  const chunks: string[] = [];
+  let startIndex = 0;
+
+  while (startIndex < text.length) {
+    let endIndex = startIndex + chunkSize;
+
+    if (endIndex >= text.length) {
+      chunks.push(text.substring(startIndex).trim());
+      break;
+    }
+
+    const slice = text.substring(startIndex, endIndex);
+    const lastBreak = Math.max(
+      slice.lastIndexOf("\n"),
+      slice.lastIndexOf(". "),
+      slice.lastIndexOf("? "),
+      slice.lastIndexOf("! "),
+      slice.lastIndexOf(" "),
+    );
+
+    if (lastBreak > chunkSize * 0.6) {
+      endIndex = startIndex + lastBreak + 1;
+    }
+
+    const chunk = text.substring(startIndex, endIndex).trim();
+    if (chunk.length > 0) {
+      chunks.push(chunk);
+    }
+
+    startIndex = Math.max(startIndex + 1, endIndex - overlap);
+  }
+
+  return chunks;
+}
+
+/**
+ * Process a pending or downloaded YouTube video (download transcript if needed + chunk + embed to agent_workspace)
  */
 async function processSingleYtVideo(video: any, signal?: AbortSignal) {
   try {
-    const vtt = await downloadVtt(video.video_id, video.language || "en", signal);
-    if (!vtt) {
-      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Auto-Captions" }).eq("video_id", video.video_id);
+    let plaintext = video.transcript;
+
+    // 1. Download transcript if not yet present
+    if (!plaintext) {
+      const vtt = await downloadVtt(video.video_id, video.language || "en", signal);
+      if (!vtt) {
+        await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Auto-Captions" }).eq("video_id", video.video_id);
+        return;
+      }
+
+      plaintext = vttToPlaintext(vtt);
+      await supabase.from("yt_videos").update({
+        transcript: plaintext,
+        status: "downloaded",
+        error_msg: null,
+      }).eq("video_id", video.video_id);
+    }
+
+    if (!plaintext || plaintext.trim().length === 0) {
+      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Leeres Transkript" }).eq("video_id", video.video_id);
       return;
     }
 
-    const plaintext = vttToPlaintext(vtt);
+    // 2. Chunk transcript
+    const chunks = chunkTranscript(plaintext);
+    if (chunks.length === 0) {
+      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Chunks generierbar" }).eq("video_id", video.video_id);
+      return;
+    }
+
+    const augmentedTexts = chunks.map((chunk, idx) =>
+      `[Video: "${video.title}" | Kanal: ${video.channel} | Datum: ${video.published_at || "Unbekannt"}]\n\n${chunk}`
+    );
+
+    // 3. Generate embeddings via Switchyard
+    const embeddings = await getEmbeddingsBatch(augmentedTexts);
+
+    // 4. Save chunks into agent_workspace
+    const rowsToInsert = chunks.map((chunk, idx) => ({
+      agent_id: AGENT_ID || "cco",
+      artifact_type: "yt_chunk",
+      content: augmentedTexts[idx],
+      embedding: embeddings[idx],
+      created_at: video.published_at || new Date().toISOString(),
+      metadata: {
+        channel: video.channel,
+        video_id: video.video_id,
+        video_title: video.title,
+        block_index: idx,
+        total_blocks: chunks.length,
+        published_at: video.published_at,
+        stage: "embedded",
+      },
+    }));
+
+    // Clean up older chunks if re-processing
+    await supabase.from("agent_workspace").delete().eq("artifact_type", "yt_chunk").eq("metadata->>video_id", video.video_id);
+
+    const { error: insErr } = await supabase.from("agent_workspace").insert(rowsToInsert);
+    if (insErr) throw insErr;
+
+    // 5. Update yt_videos record
     await supabase.from("yt_videos").update({
-      transcript: plaintext,
-      status: "downloaded",
+      status: "embedded",
+      chunk_count: chunks.length,
       error_msg: null,
     }).eq("video_id", video.video_id);
 
-    // Generate embedding for transcript / title
-    const embedText = `Channel: ${video.channel}\nTitle: ${video.title}\nTranscript:\n${plaintext.substring(0, 4000)}`;
-    const [embedding] = await getEmbeddingsBatch([embedText]);
-
-    await supabase.from("yt_videos").update({
-      status: "embedded",
-      embedding,
-    }).eq("video_id", video.video_id);
-
     ytIngestionStats.totalProcessed++;
-    log.info(`[YT Process] Transkript & Embedding abgeschlossen für "${video.title}"`);
+    log.info(`[YT Process] Transkript & ${chunks.length} Embeddings abgeschlossen für "${video.title}" (${video.channel})`);
   } catch (err: any) {
     if (err.name === "AbortError") throw err;
     log.error(`[YT Process] Video ${video.video_id} failed: ${err.message}`);
@@ -269,7 +362,8 @@ export async function runYtLoop() {
         const executing = new Set<Promise<any>>();
         for (const ch of channels) {
           if (!ytAbortController || ytAbortController.signal.aborted) break;
-          const p = syncSingleChannel(ch.handle, ytAbortController.signal).then(() => executing.delete(p));
+          let p: Promise<any>;
+          p = syncSingleChannel(ch.handle, ytAbortController.signal).then(() => executing.delete(p));
           executing.add(p);
           if (executing.size >= MAX_CONCURRENT_YT_CHANNELS) {
             await Promise.race(executing);
@@ -278,18 +372,33 @@ export async function runYtLoop() {
         await Promise.all(executing);
       }
 
-      // 2. Process Pending Videos (One by one with delay)
-      const { data: pendingVideos } = await supabase
-        .from("yt_videos")
-        .select("video_id, channel, title, published_at, language")
-        .eq("status", "pending")
-        .order("published_at", { ascending: false })
-        .limit(3);
+      // 2. Process Pending & Downloaded Videos (Batch by Batch)
+      const batchLimit = parseInt(Deno.env.get("YT_EMBED_BATCH_LIMIT") || "5");
+      let hasMore = true;
 
-      if (pendingVideos && pendingVideos.length > 0) {
-        for (const vid of pendingVideos) {
+      while (hasMore && ytAbortController && !ytAbortController.signal.aborted) {
+        const { data: videosToProcess } = await supabase
+          .from("yt_videos")
+          .select("video_id, channel, title, published_at, language, transcript, status")
+          .or("status.eq.pending,status.eq.downloaded")
+          .order("published_at", { ascending: false, nullsFirst: false })
+          .limit(batchLimit);
+
+        if (!videosToProcess || videosToProcess.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        for (const vid of videosToProcess) {
           if (!ytAbortController || ytAbortController.signal.aborted) break;
           await processSingleYtVideo(vid, ytAbortController.signal);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+
+        if (videosToProcess.length < batchLimit) {
+          hasMore = false;
+        } else {
+          // Brief pause before next batch
           await new Promise(r => setTimeout(r, 2000));
         }
       }

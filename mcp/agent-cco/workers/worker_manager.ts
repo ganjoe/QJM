@@ -40,15 +40,27 @@ export class WorkerManager {
     const [
       { count: pendingMetadataCount },
       { count: pendingEmbeddingCount },
-      { count: embeddedCount },
+      { count: embeddedXCount },
       { count: totalPosts },
       { count: activeInfluencers },
+      { count: activeYtChannels },
+      { count: ytPendingVideos },
+      { count: ytDownloadedTranscripts },
+      { count: ytEmbeddedVideos },
+      { count: ytEmbeddedChunks },
+      { count: ytFailedVideos },
     ] = await Promise.all([
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("status", "pending_metadata"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).or("status.eq.pending_embedding,status.eq.pending"),
-      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("status", "embedded"),
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "embedded"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post"),
       supabase.from("x_users").select("*", { count: "exact", head: true }).eq("is_active", true),
+      supabase.from("yt_channels").select("*", { count: "exact", head: true }).eq("is_active", true),
+      supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "downloaded"),
+      supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "embedded"),
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "yt_chunk"),
+      supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "failed"),
     ]);
 
     return {
@@ -83,11 +95,21 @@ export class WorkerManager {
         },
       },
       backlog: {
-        stage_1_pending_metadata: pendingMetadataCount || 0,
-        stage_2_pending_embedding: pendingEmbeddingCount || 0,
-        stage_3_embedded: embeddedCount || 0,
-        total_x_posts: totalPosts || 0,
-        active_influencers: activeInfluencers || 0,
+        x_posts: {
+          stage_1_pending_metadata: pendingMetadataCount || 0,
+          stage_2_pending_embedding: pendingEmbeddingCount || 0,
+          stage_3_embedded: embeddedXCount || 0,
+          total: totalPosts || 0,
+          active_influencers: activeInfluencers || 0,
+        },
+        youtube: {
+          active_channels: activeYtChannels || 0,
+          pending_discovery: ytPendingVideos || 0,
+          transcripts_in_queue: ytDownloadedTranscripts || 0,
+          videos_embedded: ytEmbeddedVideos || 0,
+          total_chunks_in_workspace: ytEmbeddedChunks || 0,
+          failed_videos: ytFailedVideos || 0,
+        },
       },
     };
   }

@@ -377,6 +377,12 @@ async def gemini_chat_proxy(request: Request):
     if model_req in MODEL_MAP:
         body["model"] = MODEL_MAP[model_req]
 
+    # Force large max_tokens for reasoning models to prevent thought/tool_call truncation
+    if body["model"] == "gemini-3.1-pro-preview" or "reasoning" in model_req.lower():
+        body.pop("max_tokens", None)
+        body.pop("max_completion_tokens", None)
+        body["max_tokens"] = 50000
+
     # 3. Re-inject cached thought_signatures into assistant tool_call messages
     _inject_cached_signatures(body)
 

@@ -36,7 +36,7 @@ export function registerYouTubeTools(server: McpServer) {
     "manage_youtube_channels",
     {
       title: "Manage YouTube Channels",
-      description: "List, add, or remove monitored YouTube channels.",
+      description: "List, add, or remove monitored YouTube channels. Channels are automatically synced in the background without needing manual video IDs.",
       inputSchema: {
         action: z.enum(["LIST", "ADD", "REMOVE"]).describe("The action to perform"),
         channel: z.string().optional().describe("YouTube Handle (@MarkMinervini) or Channel-URL (for ADD or REMOVE)"),
@@ -59,9 +59,9 @@ export function registerYouTubeTools(server: McpServer) {
 
           const { data: videoCounts } = await supabase
             .from("yt_videos")
-            .select("channel, video_id")
-            .in("channel", data.map(c => c.handle))
-            .eq("status", "embedded");
+            .select("channel, video_id, status")
+            .in("channel", data.map((c: any) => c.handle))
+            .or("status.eq.downloaded,status.eq.embedded");
 
           const countMap = new Map<string, number>();
           for (const v of (videoCounts || [])) {
@@ -69,7 +69,7 @@ export function registerYouTubeTools(server: McpServer) {
           }
 
           const formatted = data.map((c: any, idx: number) =>
-            `${idx + 1}. ${c.handle} (${c.title || "N/A"}) — ${countMap.get(c.handle) || 0} Videos — ${c.notes || ""}`
+            `${idx + 1}. ${c.handle} (${c.title || "N/A"}) — ${countMap.get(c.handle) || 0} Videos mit Transkript — ${c.notes || ""}`
           ).join("\n");
 
           return { content: [{ type: "text", text: `Hier sind alle überwachten YouTube-Channels:\n\n${formatted}` }] };
