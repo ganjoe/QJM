@@ -8,7 +8,7 @@ export function registerPtaTools(server: McpServer) {
     "place_trade",
     {
       title: "Place Trade",
-      description: "Log a trade execution event for STK, OPT, or COMBO (ENTER, UPDATE, EXIT, CANCEL, CASH).",
+      description: "Submits a trade to the broker by logging an execution event into the database, which is then asynchronously picked up and executed by the gateway. Supports STK, OPT, or COMBO. Valid actions are ENTER, UPDATE, EXIT, CANCEL, CASH, and REFRESH.",
       inputSchema: {
         action: z.enum(["ENTER", "UPDATE", "EXIT", "CANCEL", "CASH", "REFRESH"]).describe("The execution action"),
         asset_type: z.enum(["STK", "OPT", "COMBO"]).default("STK").describe("The asset type"),
@@ -202,7 +202,7 @@ export function registerPtaTools(server: McpServer) {
     "list_active_positions",
     {
       title: "List Active Positions",
-      description: "Show all currently open trades and their net positions, pulling live data from the broker.",
+      description: "Shows all currently open trades and their net positions by pulling live data from the broker. This tool also triggers a live refresh, provides the current account summary (such as Cash Balance and Net Liquidation Value), lists all unconfirmed or queued orders, and displays locally tracked trades. Use this tool if you need to know the account's cash balance, check for hanging orders, or see the real-time status of the portfolio.",
       inputSchema: {
         ticker: z.string().optional().describe("Optional filter by ticker"),
       },
@@ -482,7 +482,7 @@ export function registerPtaTools(server: McpServer) {
     "portfolio_analytics",
     {
       title: "Portfolio Analytics",
-      description: "Calculates performance statistics like Winrate, Total PnL, Profit Factor, Average Win/Loss based on all closed trades. Can optionally be filtered by timeframe.",
+      description: "Calculates historical performance statistics like Winrate, Total PnL, Profit Factor, and Average Win/Loss based on all closed trades. You can optionally filter the results by a specific timeframe. IMPORTANT: If you call this tool WITHOUT a timeframe filter (no start_date, end_date, or days), it will additionally return crucial Live Risk & Exposure metrics (such as Portfolio Heat, Core Risk, and NAV) as well as Aggregate Account Metrics (like Max Drawdown and Total Cash Injected). Use this tool without timeframe filters whenever you need to check the current portfolio risk parameters.",
       inputSchema: {
         start_date: z.string().optional().describe("Start date (YYYY-MM-DD)"),
         end_date: z.string().optional().describe("End date (YYYY-MM-DD)"),

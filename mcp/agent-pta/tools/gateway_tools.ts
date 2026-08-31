@@ -145,7 +145,8 @@ export function registerGatewayTools(server: McpServer) {
         "GET_STATUS: Query the current trading mode and Docker status of both gateway containers. " +
         "SWITCH_MODE: Switch between 'live' and 'paper' trading mode (stops old container, starts new, updates DB). " +
         "RESTART_GATEWAY: Restart the active or specified gateway container. " +
-        "START_GATEWAY / STOP_GATEWAY: Start or stop a specific gateway container.",
+        "START_GATEWAY / STOP_GATEWAY: Start or stop a specific gateway container. " +
+        "CRITICAL NOTE: If your action is SWITCH_MODE, you MUST explicitly provide the 'target_mode' parameter (either 'live' or 'paper'), even though the schema marks it as optional.",
       inputSchema: {
         action: z
           .enum(["GET_STATUS", "SWITCH_MODE", "RESTART_GATEWAY", "START_GATEWAY", "STOP_GATEWAY"])

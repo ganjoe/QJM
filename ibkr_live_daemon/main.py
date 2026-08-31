@@ -1,6 +1,8 @@
 import os
+import json
 import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from ib_insync import IB, util, Contract, Order, Stock, Option, Bag, ComboLeg, LimitOrder, MarketOrder, StopOrder
@@ -71,68 +73,60 @@ def update_gateway_status(connected: bool):
     except Exception as e:
         logger.error(f"Exception during gateway status update: {e}")
 
+
+# --- Event Queues for Callbacks ---
+fill_events = []
+status_events = []
+commission_events = []
+
 # --- Event Handlers for Callbacks ---
 
 def on_connected():
     logger.info(f"Connected to IB Gateway ({active_trading_mode}).")
-    update_gateway_status(True)
+    def _run():
+        update_gateway_status(True)
+    threading.Thread(target=_run).start()
     ib.reqMarketDataType(4) # Delayed-Frozen
 
 def on_disconnected():
     logger.warning("Disconnected from IB Gateway.")
-    update_gateway_status(False)
+    def _run():
+        update_gateway_status(False)
+    threading.Thread(target=_run).start()
 
 def on_exec_details(trade, fill):
     logger.info(f"Fill received: {fill.execution.execId} | {trade.contract.symbol} | {fill.execution.shares} @ {fill.execution.price}")
-    try:
-        action = "BUY" if fill.execution.side == "BOT" else "SELL"
-        supabase.rpc("pta_log_event", {
-            "p_trade_id": fill.execution.orderRef or "UNKNOWN",
-            "p_ticker": trade.contract.symbol,
-            "p_event_type": "FILL",
-            "p_action": action,
-            "p_quantity": float(fill.execution.shares),
-            "p_price": float(fill.execution.price),
-            "p_broker_order_id": str(fill.execution.orderId),
-            "p_broker_exec_id": fill.execution.execId,
-            "p_currency": trade.contract.currency or "USD",
-            "p_exchange": trade.contract.exchange or "SMART",
-            "p_order_ref": fill.execution.orderRef or "UNKNOWN"
-        }).execute()
-        logger.info(f"Logged FILL {fill.execution.execId} successfully.")
-    except Exception as e:
-        logger.error(f"Exception handling execution details: {e}")
+    action = "BUY" if fill.execution.side == "BOT" else "SELL"
+    fill_events.append({
+        "trade_id": fill.execution.orderRef or "UNKNOWN",
+        "ticker": trade.contract.symbol,
+        "action": action,
+        "quantity": float(fill.execution.shares),
+        "price": float(fill.execution.price),
+        "broker_order_id": str(fill.execution.orderId),
+        "broker_exec_id": fill.execution.execId,
+        "currency": trade.contract.currency or "USD",
+        "exchange": trade.contract.exchange or "SMART",
+        "order_ref": fill.execution.orderRef or "UNKNOWN"
+    })
 
 def on_order_status(trade):
     logger.info(f"Order Status Update: OrderId {trade.order.orderId} | Status: {trade.orderStatus.status}")
-    try:
-        supabase.table("pta_ibkr_open_orders").update({
-            "status": trade.orderStatus.status,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }).eq("order_id", trade.order.orderId).execute()
-
-        if trade.orderStatus.status in ["Inactive", "Cancelled"]:
-            supabase.rpc("pta_log_event", {
-                "p_trade_id": f"ORDER-{trade.order.orderId}",
-                "p_ticker": trade.contract.symbol or "UNKNOWN",
-                "p_event_type": "ORDER_STATUS_UPDATE",
-                "p_action": "INFO",
-                "p_broker_order_id": str(trade.order.orderId),
-                "p_notes": f"Order changed status to {trade.orderStatus.status}. WhyHeld: {trade.orderStatus.whyHeld or 'N/A'}"
-            }).execute()
-    except Exception as e:
-        logger.error(f"Exception handling order status update: {e}")
+    status_events.append({
+        "order_id": trade.order.orderId,
+        "status": trade.orderStatus.status,
+        "trade_id": f"ORDER-{trade.order.orderId}",
+        "ticker": trade.contract.symbol or "UNKNOWN",
+        "why_held": trade.orderStatus.whyHeld or 'N/A'
+    })
 
 def on_commission_report(trade, fill, report):
     logger.info(f"Commission Report received: ExecId {report.execId} | Commission: {report.commission} {report.currency}")
-    try:
-        supabase.table("pta_execution_log").update({
-            "commission": float(report.commission),
-            "currency": report.currency,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }).eq("broker_order_id", report.execId).execute()
-    except Exception as e:
-        logger.error(f"Exception handling commission report: {e}")
+    commission_events.append({
+        "broker_order_id": report.execId,
+        "commission": float(report.commission),
+        "currency": report.currency
+    })
 
 # Bind handlers
 ib.connectedEvent += on_connected
@@ -141,11 +135,127 @@ ib.execDetailsEvent += on_exec_details
 ib.orderStatusEvent += on_order_status
 ib.commissionReportEvent += on_commission_report
 
+
+# --- Helper Methods ---
+
+def parse_contract(ticker: str, currency: str, notes: str) -> Contract:
+    try:
+        if notes:
+            notes_data = json.loads(notes)
+            if notes_data.get('isOption'):
+                # expiry expected in YYYYMMDD format
+                contract = Option(
+                    symbol=ticker, 
+                    lastTradeDateOrContractMonth=notes_data['expiry'], 
+                    strike=float(notes_data['strike']), 
+                    right=notes_data['right'], 
+                    exchange='SMART', 
+                    currency=currency, 
+                    multiplier=str(notes_data.get('multiplier', 100))
+                )
+                return contract
+            elif notes_data.get('isCombo'):
+                contract = Contract()
+                contract.symbol = ticker
+                contract.secType = 'BAG'
+                contract.currency = currency
+                contract.exchange = 'SMART'
+                comboLegs = []
+                for leg in notes_data.get('legs', []):
+                    opt = Option(
+                        symbol=ticker, 
+                        lastTradeDateOrContractMonth=leg['expiry'], 
+                        strike=float(leg['strike']), 
+                        right=leg['right'], 
+                        exchange='SMART', 
+                        currency=currency
+                    )
+                    ib.qualifyContracts(opt) # We must synchronously qualify here to get conId
+                    if getattr(opt, 'conId', 0) == 0:
+                        raise ValueError(f"Could not qualify leg for {ticker} combo: {leg}")
+                    l = ComboLeg(conId=opt.conId, ratio=leg['ratio'], action=leg['action'], exchange='SMART')
+                    comboLegs.append(l)
+                contract.comboLegs = comboLegs
+                return contract
+    except Exception as e:
+        # Notes not JSON, or missing fields -> Fallback to stock
+        pass
+    
+    return Stock(ticker, 'SMART', currency)
+
+
+async def process_queued_events():
+    global fill_events, status_events, commission_events
+    
+    if fill_events:
+        fills = fill_events[:]
+        fill_events = []
+        for f in fills:
+            try:
+                await asyncio.to_thread(
+                    lambda f=f: supabase.rpc("pta_log_event", {
+                        "p_trade_id": f["trade_id"],
+                        "p_ticker": f["ticker"],
+                        "p_event_type": "FILL",
+                        "p_action": f["action"],
+                        "p_quantity": f["quantity"],
+                        "p_price": f["price"],
+                        "p_broker_order_id": f["broker_order_id"],
+                        "p_broker_exec_id": f["broker_exec_id"],
+                        "p_currency": f["currency"],
+                        "p_exchange": f["exchange"],
+                        "p_order_ref": f["order_ref"]
+                    }).execute()
+                )
+                logger.info(f"Processed FILL event for {f['broker_exec_id']} to DB.")
+            except Exception as e:
+                logger.error(f"Error processing fill event: {e}")
+
+    if status_events:
+        statuses = status_events[:]
+        status_events = []
+        for s in statuses:
+            try:
+                await asyncio.to_thread(
+                    lambda s=s: supabase.table("pta_ibkr_open_orders").update({
+                        "status": s["status"],
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("order_id", s["order_id"]).execute()
+                )
+                if s["status"] in ["Inactive", "Cancelled"]:
+                    await asyncio.to_thread(
+                        lambda s=s: supabase.rpc("pta_log_event", {
+                            "p_trade_id": s["trade_id"],
+                            "p_ticker": s["ticker"],
+                            "p_event_type": "ORDER_STATUS_UPDATE",
+                            "p_action": "INFO",
+                            "p_broker_order_id": str(s["order_id"]),
+                            "p_notes": f"Order changed status to {s['status']}. WhyHeld: {s['why_held']}"
+                        }).execute()
+                    )
+            except Exception as e:
+                logger.error(f"Error processing status event: {e}")
+
+    if commission_events:
+        comms = commission_events[:]
+        commission_events = []
+        for c in comms:
+            try:
+                await asyncio.to_thread(
+                    lambda c=c: supabase.table("pta_execution_log").update({
+                        "commission": c["commission"],
+                        "currency": c["currency"],
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("broker_order_id", c["broker_order_id"]).execute()
+                )
+            except Exception as e:
+                logger.error(f"Error processing commission event: {e}")
+
 # --- Main Sync Tasks ---
 
 async def handle_refresh_requests():
     try:
-        resp = supabase.table("pta_execution_log").select("*").eq("event_type", "REFRESH_REQUESTED").neq("notes", "PROCESSING").execute()
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "REFRESH_REQUESTED").neq("notes", "PROCESSING").execute())
         reqs = resp.data
         if not reqs:
             return
@@ -153,7 +263,7 @@ async def handle_refresh_requests():
         logger.info(f"Received {len(reqs)} new refresh request(s). Fetching snapshot from ib_insync...")
         
         ids = [r["id"] for r in reqs]
-        supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).in_("id", ids).execute()
+        await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).in_("id", ids).execute())
 
         ib.reqAccountUpdates()
         await asyncio.sleep(1)
@@ -184,7 +294,7 @@ async def handle_refresh_requests():
         try:
             currencies = list(set([p.contract.currency for p in positions if p.contract.currency != "EUR"]))
             if currencies:
-                fx_resp = supabase.table("exchange_rates").select("*").in_("target_currency", currencies).eq("base_currency", "EUR").order("date", desc=True).execute()
+                fx_resp = await asyncio.to_thread(lambda: supabase.table("exchange_rates").select("*").in_("target_currency", currencies).eq("base_currency", "EUR").order("date", desc=True).execute())
                 if fx_resp.data:
                     seen = set()
                     for row in fx_resp.data:
@@ -194,13 +304,13 @@ async def handle_refresh_requests():
         except Exception as e:
             logger.error(f"Failed to fetch exchange rates: {e}")
 
-        supabase.table("pta_ibkr_positions").delete().eq("mode", active_trading_mode).execute()
+        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").delete().eq("mode", active_trading_mode).execute())
         
         total_heat = 0
         total_core_risk = 0
 
         if positions:
-            active_pos_data = supabase.table("pta_active_positions").select("ticker, current_stop_loss").execute()
+            active_pos_data = await asyncio.to_thread(lambda: supabase.table("pta_active_positions").select("ticker, current_stop_loss").execute())
             stop_losses = {row["ticker"]: row["current_stop_loss"] for row in active_pos_data.data if row.get("current_stop_loss") is not None} if active_pos_data.data else {}
 
             inserts = []
@@ -245,23 +355,23 @@ async def handle_refresh_requests():
                 })
             
             if inserts:
-                supabase.table("pta_ibkr_positions").insert(inserts).execute()
+                await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").insert(inserts).execute())
 
         for acc, metrics in active_account_metrics.items():
             cash_quote = (metrics["totalCashBalance"] / metrics["netLiquidation"]) * 100 if metrics["netLiquidation"] > 0 else 0
-            supabase.table("pta_ibkr_account_summary").upsert({
-                "account": acc,
-                "total_cash_balance": metrics["totalCashBalance"],
-                "net_liquidation": metrics["netLiquidation"],
-                "available_funds": metrics["availableFunds"],
+            await asyncio.to_thread(lambda m=metrics, a=acc: supabase.table("pta_ibkr_account_summary").upsert({
+                "account": a,
+                "total_cash_balance": m["totalCashBalance"],
+                "net_liquidation": m["netLiquidation"],
+                "available_funds": m["availableFunds"],
                 "cash_quote": cash_quote,
                 "portfolio_heat_eur": total_heat,
                 "core_risk_eur": total_core_risk,
                 "mode": active_trading_mode,
                 "updated_at": datetime.now(timezone.utc).isoformat()
-            }, on_conflict="account,mode").execute()
+            }, on_conflict="account,mode").execute())
 
-        supabase.table("pta_ibkr_open_orders").delete().eq("mode", active_trading_mode).execute()
+        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_open_orders").delete().eq("mode", active_trading_mode).execute())
         
         trades = ib.openTrades()
         if trades:
@@ -281,16 +391,16 @@ async def handle_refresh_requests():
                     "mode": active_trading_mode,
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
-            supabase.table("pta_ibkr_open_orders").insert(order_inserts).execute()
+            await asyncio.to_thread(lambda: supabase.table("pta_ibkr_open_orders").insert(order_inserts).execute())
 
-        supabase.table("pta_execution_log").update({"notes": "COMPLETED"}).in_("id", ids).execute()
+        await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "COMPLETED"}).in_("id", ids).execute())
         logger.info("Refresh requests processed successfully.")
     except Exception as e:
         logger.error(f"Error handling refresh requests: {e}")
 
 async def handle_orders():
     try:
-        resp = supabase.table("pta_execution_log").select("*").eq("event_type", "ORDER_SUBMITTED").is_("broker_order_id", "null").execute()
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "ORDER_SUBMITTED").is_("broker_order_id", "null").execute())
         orders = resp.data
         if not orders:
             return
@@ -312,32 +422,64 @@ async def handle_orders():
             if po_action in ["BUY", "SELL"]:
                 order_action = po_action
             elif po_action == "UPDATE":
-                pos_resp = supabase.table("pta_ibkr_positions").select("quantity").eq("ticker", ticker).execute()
+                pos_resp = await asyncio.to_thread(lambda t=ticker: supabase.table("pta_ibkr_positions").select("quantity").eq("ticker", t).execute())
                 if pos_resp.data and pos_resp.data[0].get("quantity", 0) < 0:
                     order_action = "BUY"
                 else:
                     order_action = "SELL"
 
-            contract = Stock(ticker, 'SMART', po.get("currency") or "USD")
-            ib.qualifyContracts(contract)
+            currency = po.get("currency") or "USD"
+            contract = parse_contract(ticker, currency, notes)
+            
+            if contract.secType != 'BAG':
+                ib.qualifyContracts(contract)
+                if not getattr(contract, 'conId', 0):
+                    logger.error(f"Failed to qualify contract for {ticker}")
+                    await asyncio.to_thread(lambda id=po["id"]: supabase.table("pta_execution_log").update({
+                        "notes": "ERROR: INVALID_CONTRACT",
+                        "broker_order_id": "FAILED"
+                    }).eq("id", id).execute())
+                    continue
 
             if is_bracket:
-                bracket_orders = ib.bracketOrder(
-                    order_action, quantity, 
-                    limitPrice=price or 0, 
-                    takeProfitPrice=take_profit or 0, 
-                    stopLossPrice=stop_price or 0
-                )
+                orders_to_place = []
                 
-                if not price:
-                    bracket_orders[0].orderType = 'MKT'
-                    bracket_orders[0].lmtPrice = 0
+                # Parent Order
+                if price:
+                    parent = LimitOrder(order_action, quantity, price)
+                else:
+                    parent = MarketOrder(order_action, quantity)
+                parent.orderId = ib.client.getReqId()
+                parent.transmit = False
+                parent.orderRef = po.get("trade_id", "")
+                orders_to_place.append(parent)
                 
-                for o in bracket_orders:
-                    o.orderRef = po.get("trade_id", "")
+                # Take Profit Leg
+                if take_profit:
+                    tp = LimitOrder("SELL" if order_action == "BUY" else "BUY", quantity, take_profit)
+                    tp.orderId = ib.client.getReqId()
+                    tp.parentId = parent.orderId
+                    tp.transmit = False
+                    tp.orderRef = po.get("trade_id", "")
+                    orders_to_place.append(tp)
+                    
+                # Stop Loss Leg
+                if stop_price:
+                    sl = StopOrder("SELL" if order_action == "BUY" else "BUY", quantity, stop_price)
+                    sl.orderId = ib.client.getReqId()
+                    sl.parentId = parent.orderId
+                    sl.transmit = False
+                    sl.orderRef = po.get("trade_id", "")
+                    orders_to_place.append(sl)
+
+                # Ensure only the last leg transmits the whole bracket
+                if orders_to_place:
+                    orders_to_place[-1].transmit = True
+                
+                for o in orders_to_place:
                     ib.placeOrder(contract, o)
                 
-                current_order_id = bracket_orders[0].orderId
+                current_order_id = parent.orderId
 
             else:
                 if price and stop_price:
@@ -360,9 +502,9 @@ async def handle_orders():
                 ib.placeOrder(contract, order)
                 current_order_id = order.orderId
 
-            supabase.table("pta_execution_log").update({
-                "broker_order_id": str(current_order_id)
-            }).eq("id", po["id"]).execute()
+            await asyncio.to_thread(lambda id=po["id"], oid=current_order_id: supabase.table("pta_execution_log").update({
+                "broker_order_id": str(oid)
+            }).eq("id", id).execute())
             
             logger.info(f"Placed order for {ticker}: broker_order_id {current_order_id}")
 
@@ -371,7 +513,7 @@ async def handle_orders():
 
 async def handle_cancels():
     try:
-        resp = supabase.table("pta_execution_log").select("*").eq("event_type", "CANCEL_REQUESTED").is_("broker_order_id", "null").execute()
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "CANCEL_REQUESTED").is_("broker_order_id", "null").execute())
         reqs = resp.data
         if not reqs:
             return
@@ -395,10 +537,10 @@ async def handle_cancels():
                     ib.cancelOrder(t.order)
                     cancelled_count += 1
             
-            supabase.table("pta_execution_log").update({
+            await asyncio.to_thread(lambda id=cr["id"], c=cancelled_count, t=ticker: supabase.table("pta_execution_log").update({
                 "broker_order_id": "CANCELLED",
-                "notes": f"Cancelled {cancelled_count} order(s) for {ticker}"
-            }).eq("id", cr["id"]).execute()
+                "notes": f"Cancelled {c} order(s) for {t}"
+            }).eq("id", id).execute())
             
             logger.info(f"Processed Cancel Request for {ticker}: cancelled {cancelled_count} orders.")
 
@@ -407,7 +549,7 @@ async def handle_cancels():
 
 async def handle_quotes():
     try:
-        resp = supabase.table("pta_execution_log").select("*").eq("event_type", "QUOTE_REQUESTED").eq("notes", "PENDING").execute()
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "QUOTE_REQUESTED").eq("notes", "PENDING").execute())
         reqs = resp.data
         if not reqs:
             return
@@ -416,7 +558,7 @@ async def handle_quotes():
             ticker = qr.get("ticker")
             if not ticker: continue
             
-            supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).eq("id", qr["id"]).execute()
+            await asyncio.to_thread(lambda id=qr["id"]: supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).eq("id", id).execute())
             
             contract = Stock(ticker, 'SMART', qr.get("currency") or "USD")
             ib.qualifyContracts(contract)
@@ -427,11 +569,11 @@ async def handle_quotes():
                 t = tickers[0]
                 price = t.marketPrice() or t.last or t.close or 0
             
-            supabase.table("pta_execution_log").update({
-                "price": price,
+            await asyncio.to_thread(lambda id=qr["id"], p=price: supabase.table("pta_execution_log").update({
+                "price": p,
                 "notes": "COMPLETED",
                 "updated_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", qr["id"]).execute()
+            }).eq("id", id).execute())
             logger.info(f"Processed Quote for {ticker}: {price}")
 
     except Exception as e:
@@ -442,7 +584,10 @@ async def sync_loop():
     
     while True:
         try:
-            cfg = load_gateway_config()
+            # Process events collected by callbacks
+            await process_queued_events()
+
+            cfg = await asyncio.to_thread(load_gateway_config)
             new_mode = cfg["mode"]
             new_host = cfg["host"]
             new_port = cfg["port"]
@@ -473,7 +618,7 @@ async def sync_loop():
             await handle_cancels()
             await handle_quotes()
 
-            ib.sleep(2)
+            await asyncio.sleep(2)
 
         except Exception as e:
             logger.error(f"Error in sync loop: {e}")

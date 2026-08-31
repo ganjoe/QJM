@@ -5,6 +5,7 @@ import { AGENT_ID, MCP_ACCESS_KEY, log } from "./tools/shared.ts";
 import { registerPtaTools } from "./tools/pta.ts";
 import { registerQuoteTools } from "./tools/get_quote.ts";
 import { registerGatewayTools } from "./tools/gateway_tools.ts";
+import { registerIbkrSyncTools } from "./tools/ibkr_sync_tools.ts";
 
 // --- MCP Server Setup ---
 const server = new McpServer({
@@ -16,6 +17,7 @@ const server = new McpServer({
 registerPtaTools(server);
 registerQuoteTools(server);
 registerGatewayTools(server);
+registerIbkrSyncTools(server);
 
 // --- Hono App ---
 const app = new Hono();
