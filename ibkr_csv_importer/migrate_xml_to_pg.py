@@ -67,8 +67,8 @@ def postgrest_request(path, method="GET", data=None):
 
 def get_existing_ids():
     try:
-        # Fetch existing trade_ids from Postgres
-        rows = postgrest_request("/pta_execution_log?select=trade_id")
+        # Only check existing FILLs for deduplication (not ORDER_SUBMITTED etc.)
+        rows = postgrest_request("/pta_execution_log?select=trade_id&event_type=eq.FILL")
         return {r["trade_id"] for r in rows if r.get("trade_id")}
     except Exception as e:
         print(f"Error fetching existing trade_ids: {e}")
@@ -102,13 +102,9 @@ def fifo_match_trades(events):
     FIFO-Matching: Assigns matching trade_ids so that BUY and SELL of the same
     ticker share a trade_id (= a complete round-trip trade).
     
-    Logic per ticker (chronological):
-    - BUY arrives with no open short → new trade_id (keeps its own hash), pushed to buy_queue
-    - SELL arrives with open buy_queue → takes trade_id from oldest BUY
-    - SELL arrives with empty buy_queue → new short trade_id, pushed to sell_queue  
-    - BUY arrives with open sell_queue → takes trade_id from oldest SELL (short cover)
-    
-    Partial fills are tracked: a BUY of 10 can be matched by SELL 5 + SELL 5.
+    When a SELL spans multiple BUYs (scaling-in), ALL consumed BUY fills get
+    reassigned to the first BUY's trade_id. This ensures the SQL view sees
+    qty_bought == qty_sold for the complete round-trip.
     """
     # Only match FILL events; pass through everything else unchanged
     fills = [e for e in events if e.get("event_type") == "FILL"]
@@ -126,51 +122,62 @@ def fifo_match_trades(events):
     stats = {"matched": 0, "unmatched": 0}
     
     for ticker, ticker_fills in by_ticker.items():
-        # Queues: list of (trade_id, remaining_qty)
-        buy_queue = []
-        sell_queue = []
+        # Queues: list of [fill_object, remaining_qty]
+        # We store the fill object so we can retroactively update its trade_id
+        buy_queue = []   # [[fill, remaining_qty], ...]
+        sell_queue = []   # [[fill, remaining_qty], ...]
         
         for fill in ticker_fills:
             action = fill["action"]
             qty = fill["quantity"]
-            original_id = fill["trade_id"]
             
             if action == "BUY":
                 if sell_queue:
                     # Short cover: match against oldest open short
-                    short_id, short_remaining = sell_queue[0]
-                    fill["trade_id"] = short_id
+                    master_id = sell_queue[0][0]["trade_id"]
+                    fill["trade_id"] = master_id
                     stats["matched"] += 1
                     
-                    if qty >= short_remaining:
-                        sell_queue.pop(0)
-                        remaining = qty - short_remaining
-                        if remaining > 0:
-                            buy_queue.append((original_id, remaining))
-                    else:
-                        sell_queue[0] = (short_id, short_remaining - qty)
+                    remaining = qty
+                    while remaining > 0 and sell_queue:
+                        sq_fill, sq_rem = sell_queue[0]
+                        sq_fill["trade_id"] = master_id  # unify trade_id
+                        if remaining >= sq_rem:
+                            sell_queue.pop(0)
+                            remaining -= sq_rem
+                        else:
+                            sell_queue[0][1] = sq_rem - remaining
+                            remaining = 0
+                    if remaining > 0:
+                        buy_queue.append([fill, remaining])
                 else:
                     # New long position
-                    buy_queue.append((original_id, qty))
+                    buy_queue.append([fill, qty])
                     stats["unmatched"] += 1
                     
             elif action == "SELL":
                 if buy_queue:
-                    # Close long: match against oldest open buy
-                    buy_id, buy_remaining = buy_queue[0]
-                    fill["trade_id"] = buy_id
+                    # Close long: match against oldest open buy(s)
+                    # The master trade_id is the first BUY's trade_id
+                    master_id = buy_queue[0][0]["trade_id"]
+                    fill["trade_id"] = master_id
                     stats["matched"] += 1
                     
-                    if qty >= buy_remaining:
-                        buy_queue.pop(0)
-                        remaining = qty - buy_remaining
-                        if remaining > 0:
-                            sell_queue.append((original_id, remaining))
-                    else:
-                        buy_queue[0] = (buy_id, buy_remaining - qty)
+                    remaining = qty
+                    while remaining > 0 and buy_queue:
+                        bq_fill, bq_rem = buy_queue[0]
+                        bq_fill["trade_id"] = master_id  # unify trade_id
+                        if remaining >= bq_rem:
+                            buy_queue.pop(0)
+                            remaining -= bq_rem
+                        else:
+                            buy_queue[0][1] = bq_rem - remaining
+                            remaining = 0
+                    if remaining > 0:
+                        sell_queue.append([fill, remaining])
                 else:
                     # New short position
-                    sell_queue.append((original_id, qty))
+                    sell_queue.append([fill, qty])
                     stats["unmatched"] += 1
             
             matched_fills.append(fill)
