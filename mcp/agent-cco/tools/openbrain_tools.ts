@@ -73,4 +73,37 @@ export function registerOpenBrainTools(server: McpServer) {
       }
     }
   );
+
+
+  // 3. Tool: forget_thought
+  server.registerTool(
+    "forget_thought",
+    {
+      title: "Forget Thought",
+      description: "Soft delete a thought from the Open Brain if it is incorrect or outdated.",
+      inputSchema: {
+        id: z.string().describe("The UUID of the thought to forget (can be found via search_thoughts)"),
+      },
+    },
+    async ({ id }: any) => {
+      try {
+        // Enforce permissions: if not GLOBAL_BRAIN_ACCESS, only delete own thoughts
+        let query = supabase.from("open_brain").update({ deleted_at: new Date().toISOString() }).eq("id", id);
+        if (!GLOBAL_BRAIN_ACCESS) {
+          query = query.eq("agent_id", AGENT_ID);
+        }
+
+        const { data, error } = await query.select("id");
+        if (error) throw error;
+        
+        if (!data || data.length === 0) {
+           return { content: [{ type: "text", text: `Thought with ID ${id} not found or you don't have permission to delete it.` }] };
+        }
+
+        return { content: [{ type: "text", text: `✅ Thought ${id} successfully forgotten (soft deleted).` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
 }

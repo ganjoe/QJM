@@ -17,6 +17,8 @@
           models:
             - id: auto
               name: "⚡ Auto Classifier (Switchyard)"
+            - id: openrouter
+              name: "🌐 OpenRouter (Auto Router)"
             - id: reasoning
               name: "🧠 Reasoning Tier (Gemini 3.1 Pro)"
             - id: fast
