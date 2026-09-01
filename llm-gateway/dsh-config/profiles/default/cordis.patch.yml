@@ -23,3 +23,12 @@
       url: !!js process.env.OPENBRAIN_CDA_MCP_URL || "http://host.docker.internal:8795"
       headers:
         x-brain-key: !!js process.env.MCP_ACCESS_KEY || "2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+  - id: mcp-openbrain-pca
+    name: "@deepseek-ai/dsh-mcp-client"
+    config:
+      serverName: openbrain-pca
+      transport: streamable-http
+      url: !!js process.env.OPENBRAIN_PCA_MCP_URL || "http://host.docker.internal:8790"
+      headers:
+        x-brain-key: !!js process.env.MCP_ACCESS_KEY || "2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+

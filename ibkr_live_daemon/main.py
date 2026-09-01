@@ -58,16 +58,20 @@ def update_gateway_status(connected: bool):
         logger.info(f"Updated gateway status in DB to connected: {connected}")
         
         # Telemetry
-        import requests
+        import urllib.request
+        import json
         emoji = "🟢" if connected else "🟡"
         action = "eingeloggt" if connected else "getrennt / wartet auf Login"
         try:
-            requests.post("http://nexus-service:7734/api/send", json={
+            req = urllib.request.Request("http://nexus-service:7734/api/send", method="POST")
+            req.add_header('Content-Type', 'application/json')
+            data = json.dumps({
                 "from_agent": "system",
                 "to": "all",
                 "text": f"{emoji} IBKR-{active_trading_mode.upper()} {action}",
                 "msg_type": "telemetry"
-            }, timeout=2)
+            }).encode('utf-8')
+            urllib.request.urlopen(req, data=data, timeout=2)
         except Exception:
             pass
     except Exception as e:

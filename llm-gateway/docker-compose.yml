@@ -189,6 +189,34 @@ services:
       - "host.docker.internal:host-gateway"
 
   # ============================================
+  # PCA MCP Server — Pattern & Features Management
+  # ============================================
+  mcp-pca:
+    build:
+      context: ../mcp/agent-pca
+      dockerfile: Dockerfile
+    image: llm-gw-mcp-pca:latest
+    container_name: llm-gw-mcp-pca
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+    volumes:
+      - ../mcp/agent-pca/index.ts:/app/index.ts:ro
+      - ../mcp/agent-pca/tools:/app/tools:ro
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      FEATURES_SERVICE_URL: http://host.docker.internal:8003
+      PCA_SERVICE_URL: http://host.docker.internal:8791
+      PORT: "8790"
+      AGENT_ID: "pca"
+    ports:
+      - "8790:8790"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================
   # Stock Data Node — OHLCV Market Data Pipeline
   # ============================================
   stock-data-node:
