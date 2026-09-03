@@ -25,6 +25,8 @@ Always select the most specific tool for the task. Follow these strict disambigu
 * **`import_watchlist`**: Use when **bulk importing new watchlists from text/files** with automatic verification of local Parquet chart data availability.
 * **`manage_feature_calculation`**: System-level background daemon control (GET_STATUS, TRIGGER, SET_SCHEDULE).
   * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.
+* **`add_ticker`**: Add new stock or ETF tickers to the database and queue immediate priority downloads. Automatically resolves unknown symbols across ranked data providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
+* **`override_ticker_mapping`**: Explicitly override or correct a ticker's provider or symbol mapping.
 
 ### B. Trading, Execution & Portfolio (`openbrain-pta`)
 * **`get_quote`**: Use to fetch the **single real-time current market price** of a ticker from Interactive Brokers (IBKR).

@@ -207,6 +207,7 @@ services:
       MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
       FEATURES_SERVICE_URL: http://host.docker.internal:8003
       PCA_SERVICE_URL: http://pca-service:8791
+      STOCK_DATA_NODE_URL: http://stock-data-node:8002
       PORT: "8790"
       AGENT_ID: "pca"
     ports:
@@ -225,6 +226,7 @@ services:
       - APP_BASE_DIR=/app
     volumes:
       - /home/daniel/stock-data-node/config:/app/config
+      - /home/daniel/stock-data-node/src:/app/src
       - /home/daniel/stock-data-node/data:/app/data
       - /home/daniel/stock-data-node/watch:/app/watch
       - /home/daniel/stock-data-node/logs:/app/logs

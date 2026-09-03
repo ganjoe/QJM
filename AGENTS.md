@@ -21,7 +21,11 @@ You are operating within the **QJM (Quant Journey Master)** workspace. You have 
 * **`manage_watchlist` (agent-pca)**: CRUD operations in Supabase (`pca_watchlists`). Use `action: "LOAD"` with `list_name: "current_positions"` to fetch tickers.
 * **`import_watchlist` (agent-pca)**: Bulk-import raw text or files with local Parquet chart data availability checks.
 
-### 5. Execution & Portfolio
+### 5. Adding Tickers & Market Data Ingestion
+* **`add_ticker` (agent-pca)**: Adds one or more tickers to the system and queues priority downloads. Automatically resolves unknown ticker symbols across ranked providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
+* **`override_ticker_mapping` (agent-pca)**: Explicitly overrides the provider symbol mapping for a ticker.
+
+### 6. Execution & Portfolio
 * **`list_active_positions` (agent-pta)**: Live account summary, Cash Balance, NAV, open orders, and current stock/option positions.
 * **`place_trade` (agent-pta)**: Order execution for STK, OPT, or COMBO.
 * **`portfolio_analytics` (agent-pta)**: Winrate, Profit Factor, Portfolio Heat, and Drawdown.

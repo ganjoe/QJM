@@ -1,6 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log } from "./shared.ts";
+import { supabase, log, STOCK_DATA_NODE_URL } from "./shared.ts";
+
+function triggerBackgroundDownload(tickers: string[]) {
+  if (!tickers || tickers.length === 0) return;
+  fetch(`${STOCK_DATA_NODE_URL}/add`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tickers }),
+  }).catch((err: any) => {
+    log.warn(`[pca] Background download queue trigger failed: ${err.message}`);
+  });
+}
 
 export function registerPcaTools(server: McpServer) {
 
@@ -74,22 +85,26 @@ export function registerPcaTools(server: McpServer) {
         } else if (action === "ADD") {
           if (!list_name) throw new Error("list_name ist für ADD erforderlich");
           if (tickers && tickers.length > 0) {
-            const rows = tickers.map((t: string, idx: number) => ({
+            const cleanTickers = tickers.map((t: string) => t.trim().toUpperCase()).filter(Boolean);
+            const rows = cleanTickers.map((t: string, idx: number) => ({
               list_name,
-              ticker: t.toUpperCase(),
+              ticker: t,
               position: (position ?? 0) + idx,
             }));
             const { error } = await supabase.from("pca_watchlists").upsert(rows, { onConflict: "list_name,ticker" });
             if (error) throw error;
-            return { content: [{ type: "text", text: `${tickers.length} Ticker zu '${list_name}' hinzugefügt.` }] };
+            triggerBackgroundDownload(cleanTickers);
+            return { content: [{ type: "text", text: `${cleanTickers.length} Ticker zu '${list_name}' hinzugefügt (Download-Queue im Hintergrund aktiviert).` }] };
           } else if (ticker) {
+            const clean = ticker.trim().toUpperCase();
             const { error } = await supabase.from("pca_watchlists").insert({
               list_name,
-              ticker: ticker.toUpperCase(),
+              ticker: clean,
               position: position ?? 999,
             });
             if (error) throw error;
-            return { content: [{ type: "text", text: `${ticker.toUpperCase()} zu '${list_name}' hinzugefügt.` }] };
+            triggerBackgroundDownload([clean]);
+            return { content: [{ type: "text", text: `${clean} zu '${list_name}' hinzugefügt (Download-Queue im Hintergrund aktiviert).` }] };
           }
           throw new Error("ticker oder tickers ist für ADD erforderlich");
         } else if (action === "REMOVE") {
@@ -104,14 +119,16 @@ export function registerPcaTools(server: McpServer) {
         } else if (action === "CREATE") {
           if (!list_name) throw new Error("list_name ist für CREATE erforderlich");
           if (tickers && tickers.length > 0) {
-            const rows = tickers.map((t: string, idx: number) => ({
+            const cleanTickers = tickers.map((t: string) => t.trim().toUpperCase()).filter(Boolean);
+            const rows = cleanTickers.map((t: string, idx: number) => ({
               list_name,
-              ticker: t.toUpperCase(),
+              ticker: t,
               position: idx,
             }));
             const { error } = await supabase.from("pca_watchlists").upsert(rows, { onConflict: "list_name,ticker" });
             if (error) throw error;
-            return { content: [{ type: "text", text: `Watchlist '${list_name}' mit ${tickers.length} Tickern erstellt.` }] };
+            triggerBackgroundDownload(cleanTickers);
+            return { content: [{ type: "text", text: `Watchlist '${list_name}' mit ${cleanTickers.length} Tickern erstellt (Download-Queue im Hintergrund aktiviert).` }] };
           }
           return { content: [{ type: "text", text: `Watchlist '${list_name}' registriert.` }] };
         } else if (action === "RENAME") {
@@ -222,12 +239,29 @@ export function registerPcaTools(server: McpServer) {
           }
         }
 
+        // Automatisch fehlende Ticker in die Download-Queue von stock-data-node einreihen
+        let autoEnqueued = 0;
+        if (missingData.length > 0) {
+          try {
+            await fetch(`${STOCK_DATA_NODE_URL}/add`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tickers: missingData }),
+            });
+            autoEnqueued = missingData.length;
+            log.info(`[import_watchlist] Automatically enqueued ${autoEnqueued} missing tickers for download.`);
+          } catch (e: any) {
+            log.warn(`[import_watchlist] Failed to enqueue missing tickers: ${e.message}`);
+          }
+        }
+
         const report = {
           status: "success",
           list_name,
           total_imported: uniqueTickers.length,
           with_parquet_data: withData.length,
           missing_parquet_data: missingData.length,
+          auto_download_queued: autoEnqueued,
           missing_tickers: missingData,
         };
 
