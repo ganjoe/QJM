@@ -1,3 +1,4 @@
 ib_insync==0.9.86
 supabase==2.5.0
 python-dotenv==1.0.1
+aiohttp==3.9.5

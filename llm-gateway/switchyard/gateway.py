@@ -39,48 +39,60 @@ def load_routes_config() -> Dict[str, Any]:
         return {}
 
 
-def resolve_embedding_target(requested_model: str, config: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+def resolve_embedding_targets(requested_model: str, config: Dict[str, Any]) -> list[tuple[str, str]]:
     """
-    Resolves the target endpoint URL and backend model ID from routes.toml.
-    Returns (target_base_url, actual_model_id).
+    Resolves candidate target endpoint URLs and backend model IDs from routes.toml in fallback order.
+    Returns list of (target_base_url, actual_model_id).
     """
     routes = config.get("routes", {})
     targets = config.get("targets", {})
     llm_clients = config.get("llm_clients", {})
     endpoints = config.get("endpoints", {})
 
-    target_name = None
-    if requested_model in routes:
-        route_info = routes[requested_model]
-        target_name = route_info.get("target") or (route_info.get("targets", [None])[0])
+    target_names: list[str] = []
+    route_info = routes.get(requested_model)
+    if not route_info and "embeddings" in routes:
+        route_info = routes["embeddings"]
+
+    if route_info:
+        if "targets" in route_info and isinstance(route_info["targets"], list):
+            target_names.extend(route_info["targets"])
+        elif "target" in route_info:
+            target_names.append(route_info["target"])
     elif requested_model in targets:
-        target_name = requested_model
-    else:
-        # Check if "embeddings" default route exists
-        if "embeddings" in routes:
-            target_name = routes["embeddings"].get("target")
+        target_names.append(requested_model)
 
-    if not target_name or target_name not in targets:
-        logger.warning(f"No target found for embedding model '{requested_model}', checking targets...")
-        if "ollama_embed" in targets:
-            target_name = "ollama_embed"
-        else:
-            return None, None
+    # Always ensure both GPU and CPU embedding targets are in fallback chain
+    for fallback in ["ollama_embed_gpu", "ollama_embed_cpu", "ollama_embed"]:
+        if fallback in targets and fallback not in target_names:
+            target_names.append(fallback)
 
-    target_info = targets[target_name]
-    model_id = target_info.get("id", requested_model)
-    client_name = target_info.get("llm_client") or target_info.get("endpoint")
+    resolved: list[tuple[str, str]] = []
+    for t_name in target_names:
+        if t_name not in targets:
+            continue
+        t_info = targets[t_name]
+        m_id = t_info.get("id", requested_model or "qwen3-embedding:8b")
+        c_name = t_info.get("llm_client") or t_info.get("endpoint")
+        base_url = None
+        if c_name and c_name in llm_clients:
+            base_url = llm_clients[c_name].get("base_url")
+        elif c_name and c_name in endpoints:
+            base_url = endpoints[c_name].get("base_url")
+        if base_url and (base_url, m_id) not in resolved:
+            resolved.append((base_url, m_id))
 
-    base_url = None
-    if client_name and client_name in llm_clients:
-        base_url = llm_clients[client_name].get("base_url")
-    elif client_name and client_name in endpoints:
-        base_url = endpoints[client_name].get("base_url")
+    if not resolved:
+        resolved.append(("http://host.docker.internal:11435/v1", "qwen3-embedding:8b"))
+        resolved.append(("http://host.docker.internal:11434/v1", "qwen3-embedding:8b"))
 
-    if not base_url:
-        base_url = "http://host.docker.internal:11434/v1"
+    return resolved
 
-    return base_url, model_id
+
+def resolve_embedding_target(requested_model: str, config: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Backward compatibility wrapper returning first resolved target."""
+    targets = resolve_embedding_targets(requested_model, config)
+    return targets[0] if targets else (None, None)
 
 
 @app.on_event("startup")
@@ -122,7 +134,8 @@ async def shutdown_event():
 @app.post("/api/embeddings")
 async def handle_embeddings(request: Request):
     """
-    Handles /v1/embeddings by evaluating routes.toml and dispatching to the target embedding engine.
+    Handles /v1/embeddings by evaluating routes.toml and dispatching to whichever
+    embedding engine (GPU or CPU) is currently started.
     """
     try:
         body = await request.json()
@@ -131,36 +144,41 @@ async def handle_embeddings(request: Request):
 
     requested_model = body.get("model", "embeddings")
     config = load_routes_config()
-    base_url, target_model = resolve_embedding_target(requested_model, config)
+    target_candidates = resolve_embedding_targets(requested_model, config)
 
-    if not base_url:
-        base_url = "http://host.docker.internal:11434/v1"
-        target_model = "qwen3-embedding:8b"
+    # Active-Active Load Balancing:
+    # We shuffle the fallback order so that if both GPU and CPU are running,
+    # incoming concurrent requests will be statistically distributed across both.
+    import random
+    random.shuffle(target_candidates)
 
-    body["model"] = target_model
-
-    # Normalize target URL
-    clean_base = base_url.rstrip("/")
-    target_endpoint = f"{clean_base}/embeddings" if clean_base.endswith("/v1") else f"{clean_base}/v1/embeddings"
-
-    # Forward to target backend
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
     headers["content-type"] = "application/json"
 
-    logger.info(f"Routing embeddings: model='{requested_model}' -> '{target_model}' at {target_endpoint}")
-    
-    # Candidate endpoints for fallback (e.g. host.docker.internal vs container network ollama)
-    fallback_endpoints = [target_endpoint]
-    if "host.docker.internal:11434" in target_endpoint:
-        fallback_endpoints.append(target_endpoint.replace("host.docker.internal:11434", "ollama:11434"))
-    elif "ollama:11434" in target_endpoint:
-        fallback_endpoints.append(target_endpoint.replace("ollama:11434", "host.docker.internal:11434"))
-
     last_res = None
-    for ep in fallback_endpoints:
+    attempted_endpoints: list[str] = []
+
+    # Configurable connect timeout: stopped containers fail in <5ms on Linux, small timeout protects against network stalls
+    connect_timeout = float(os.getenv("SWITCHYARD_CONNECT_TIMEOUT", "1.0"))
+    read_timeout = float(os.getenv("SWITCHYARD_TIMEOUT", "300.0"))
+
+    for base_url, target_model in target_candidates:
+        clean_base = base_url.rstrip("/")
+        target_endpoint = f"{clean_base}/embeddings" if clean_base.endswith("/v1") else f"{clean_base}/v1/embeddings"
+
+        req_body = dict(body)
+        req_body["model"] = target_model
+        attempted_endpoints.append(target_endpoint)
+
         try:
-            resp = await http_client.post(ep, json=body, headers=headers)
+            resp = await http_client.post(
+                target_endpoint,
+                json=req_body,
+                headers=headers,
+                timeout=httpx.Timeout(read_timeout, connect=connect_timeout)
+            )
             if resp.status_code == 200:
+                logger.info(f"Embeddings served by {target_endpoint} using '{target_model}'")
                 return Response(
                     content=resp.content,
                     status_code=resp.status_code,
@@ -168,7 +186,7 @@ async def handle_embeddings(request: Request):
                 )
             last_res = resp
         except Exception as e:
-            logger.debug(f"Attempt failed at {ep}: {e}")
+            logger.debug(f"Target unreachable at {target_endpoint}: {e}")
             continue
 
     if last_res:
@@ -181,7 +199,7 @@ async def handle_embeddings(request: Request):
     return Response(
         content=json.dumps({
             "error": {
-                "message": f"Could not connect to embedding target for model '{requested_model}' ({target_model}) at {target_endpoint}. Please ensure Ollama is running.",
+                "message": f"Kein aktiver Embedding-Container erreichbar für '{requested_model}'. Bitte starte 'llm-gw-ollama-gpu' oder 'llm-gw-ollama-cpu' im QJM Control Plane.",
                 "type": "server_error",
                 "param": None,
                 "code": "backend_unreachable"

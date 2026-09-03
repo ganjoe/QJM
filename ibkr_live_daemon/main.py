@@ -5,6 +5,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from aiohttp import web
 from ib_insync import IB, util, Contract, Order, Stock, Option, Bag, ComboLeg, LimitOrder, MarketOrder, StopOrder
 from supabase import create_client, Client
 
@@ -583,8 +584,43 @@ async def handle_quotes():
     except Exception as e:
         logger.error(f"Error handling quotes: {e}")
 
+# --- HTTP API ---
+async def handle_search(request):
+    query = request.query.get('q', '').strip()
+    if not query:
+        return web.json_response({"error": "Missing query parameter 'q'"}, status=400)
+    if not ib.isConnected():
+        return web.json_response({"error": "IBKR not connected"}, status=503)
+    
+    try:
+        results = await ib.reqMatchingSymbolsAsync(query)
+        candidates = []
+        for desc in results:
+            if desc.contract.secType in ['STK', 'ETF']:
+                candidates.append({
+                    "symbol": desc.contract.symbol,
+                    "exchange": desc.contract.primaryExchange,
+                    "secType": desc.contract.secType,
+                    "currency": desc.contract.currency
+                })
+        return web.json_response({"results": candidates})
+    except Exception as e:
+        logger.error(f"Search API error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get('/search', handle_search)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8005)
+    await site.start()
+    logger.info("HTTP Server running on port 8005")
+
 async def sync_loop():
     global active_trading_mode, current_host, current_port
+    
+    await start_http_server()
     
     while True:
         try:

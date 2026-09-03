@@ -6,6 +6,7 @@ import { registerPtaTools } from "./tools/pta.ts";
 import { registerQuoteTools } from "./tools/get_quote.ts";
 import { registerGatewayTools } from "./tools/gateway_tools.ts";
 import { registerIbkrSyncTools } from "./tools/ibkr_sync_tools.ts";
+import { registerResolveCompanyTools } from "./tools/resolve_company.ts";
 
 // --- MCP Server Setup ---
 const server = new McpServer({
@@ -18,13 +19,26 @@ registerPtaTools(server);
 registerQuoteTools(server);
 registerGatewayTools(server);
 registerIbkrSyncTools(server);
+registerResolveCompanyTools(server);
 
 // --- Hono App ---
 const app = new Hono();
 
+import { resolveCompanyLogic } from "./tools/resolve_company.ts";
+
 // Health check endpoint
 app.get("/health", (c) => {
   return c.json({ status: "healthy", server: "openbrain-pta", version: "2.0.0" });
+});
+
+// Resolve company endpoint for CCO worker
+app.get("/resolve", async (c) => {
+  const company_name = c.req.query("company_name");
+  if (!company_name) {
+    return c.json({ error: "Missing company_name parameter" }, 400);
+  }
+  const result = await resolveCompanyLogic(company_name, true, false);
+  return c.json(result);
 });
 
 // MCP Endpoint with key protection

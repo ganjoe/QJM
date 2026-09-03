@@ -3,6 +3,7 @@ import { startXIngestion, stopXIngestion, xIngestionStats } from "./x_ingestion_
 import { startMetadataWorker, stopMetadataWorker, metadataWorkerStats } from "./metadata_worker.ts";
 import { startEmbeddingWorker, stopEmbeddingWorker, embeddingWorkerStats } from "./embedding_worker.ts";
 import { startYtWorker, stopYtWorker, ytIngestionStats } from "./yt_ingestion_worker.ts";
+import { startCompanyExtractionWorker, stopCompanyExtractionWorker, companyExtractionStats } from "./company_extraction_worker.ts";
 
 export class WorkerManager {
   private static instance: WorkerManager;
@@ -23,6 +24,7 @@ export class WorkerManager {
     startMetadataWorker();
     startEmbeddingWorker();
     startYtWorker();
+    startCompanyExtractionWorker();
     this.isInitialized = true;
   }
 
@@ -32,6 +34,7 @@ export class WorkerManager {
     stopMetadataWorker();
     stopEmbeddingWorker();
     stopYtWorker();
+    stopCompanyExtractionWorker();
     this.isInitialized = false;
   }
 
@@ -89,9 +92,31 @@ export class WorkerManager {
         youtube_worker: {
           running: ytIngestionStats.isRunning,
           videos_discovered: ytIngestionStats.totalVideosDiscovered,
-          videos_processed: ytIngestionStats.totalProcessed,
+          transcripts_downloaded: ytIngestionStats.totalTranscriptsDownloaded,
+          videos_processed: ytIngestionStats.totalVideosProcessed,
+          chunks_processed: ytIngestionStats.totalChunksProcessed,
+          speed: {
+            chunks_per_sec: ytIngestionStats.currentChunksPerSec,
+            tokens_per_sec: ytIngestionStats.currentTokensPerSec,
+            avg_chunk_latency_ms: ytIngestionStats.avgChunkLatencyMs,
+            last_batch_chunks: ytIngestionStats.lastBatchChunks,
+            last_batch_duration_ms: ytIngestionStats.lastBatchDurationMs,
+            active_downloads: ytIngestionStats.activeDownloadsRunning,
+            active_embeddings: ytIngestionStats.activeEmbeddingsRunning,
+            last_processed_title: ytIngestionStats.lastProcessedTitle,
+            last_processed_channel: ytIngestionStats.lastProcessedChannel,
+          },
           last_run: ytIngestionStats.lastRunTime ? new Date(ytIngestionStats.lastRunTime).toISOString() : null,
           last_error: ytIngestionStats.lastError,
+        },
+        company_extraction: {
+          running: companyExtractionStats.isRunning,
+          videos_scanned: companyExtractionStats.totalVideosScanned,
+          companies_extracted: companyExtractionStats.totalCompaniesExtracted,
+          tickers_resolved: companyExtractionStats.totalResolvedTickers,
+          tickers_failed: companyExtractionStats.totalFailedTickers,
+          last_run: companyExtractionStats.lastRunTime ? new Date(companyExtractionStats.lastRunTime).toISOString() : null,
+          last_error: companyExtractionStats.lastError,
         },
       },
       backlog: {

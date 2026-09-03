@@ -21,13 +21,17 @@ class TelemetryCollector:
         self.vllm_url = os.getenv("VLLM_URL", "http://host.docker.internal:8100")
         self.lmstudio_url = os.getenv("LMSTUDIO_URL", "http://host.docker.internal:1234")
         self.lmstudio_web_port = os.getenv("LMSTUDIO_WEB_PORT", "3002")
-        self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+        self.ollama_cpu_url = os.getenv("OLLAMA_CPU_URL", "http://host.docker.internal:11434")
+        self.ollama_gpu_url = os.getenv("OLLAMA_GPU_URL", "http://host.docker.internal:11435")
+        self.ollama_url = os.getenv("OLLAMA_URL", self.ollama_gpu_url)
         self.dsh_url = os.getenv("DSH_URL", "http://dsh:3080")
         self.vllm_container = os.getenv("DOCKER_VLLM_CONTAINER", "llm-gw-vllm")
         self.lmstudio_container = os.getenv("DOCKER_LMSTUDIO_CONTAINER", "llm-gw-lmstudio")
         self.switchyard_container = os.getenv("DOCKER_SWITCHYARD_CONTAINER", "llm-gw-switchyard")
         self.dsh_container = os.getenv("DOCKER_DSH_CONTAINER", "llm-gw-dsh")
-        self.ollama_container = os.getenv("DOCKER_OLLAMA_CONTAINER", "llm-gw-ollama")
+        self.ollama_cpu_container = os.getenv("DOCKER_OLLAMA_CPU_CONTAINER", "llm-gw-ollama-cpu")
+        self.ollama_gpu_container = os.getenv("DOCKER_OLLAMA_GPU_CONTAINER", "llm-gw-ollama-gpu")
+        self.ollama_container = os.getenv("DOCKER_OLLAMA_CONTAINER", self.ollama_gpu_container)
         self.timeout = httpx.Timeout(1.0, connect=0.3)
 
     def get_gpu_telemetry(self) -> Optional[GPUStats]:
@@ -285,15 +289,25 @@ class TelemetryCollector:
             "container_status": lms_state.get("status", "stopped"),
         })
 
-        # 4. Ollama (CPU Embeddings)
-        ollama_state = await docker_manager.get_container_status(self.ollama_container)
+        # 4. Ollama (CPU & GPU Embeddings)
+        ollama_cpu_state = await docker_manager.get_container_status(self.ollama_cpu_container)
         backends.append({
-            "id": "ollama",
+            "id": "ollama_cpu",
             "name": "Ollama (CPU Embeddings)",
-            "healthy": ollama_state.get("status") == "running",
-            "url": self.ollama_url,
+            "healthy": ollama_cpu_state.get("status") == "running",
+            "url": self.ollama_cpu_url,
             "type": "embeddings",
-            "container_status": ollama_state.get("status", "stopped"),
+            "container_status": ollama_cpu_state.get("status", "stopped"),
+        })
+
+        ollama_gpu_state = await docker_manager.get_container_status(self.ollama_gpu_container)
+        backends.append({
+            "id": "ollama_gpu",
+            "name": "Ollama (GPU Embeddings)",
+            "healthy": ollama_gpu_state.get("status") == "running",
+            "url": self.ollama_gpu_url,
+            "type": "embeddings",
+            "container_status": ollama_gpu_state.get("status", "stopped"),
         })
 
         return backends

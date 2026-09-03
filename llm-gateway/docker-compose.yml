@@ -287,12 +287,16 @@ services:
       - LMSTUDIO_URL=http://host.docker.internal:1234
       - LMSTUDIO_WEB_PORT=3002
       - VLLM_URL=http://host.docker.internal:8100
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://host.docker.internal:11435
+      - OLLAMA_CPU_URL=http://host.docker.internal:11434
+      - OLLAMA_GPU_URL=http://host.docker.internal:11435
       - DOCKER_SWITCHYARD_CONTAINER=llm-gw-switchyard
       - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
       - DOCKER_VLLM_CONTAINER=llm-gw-vllm
       - DOCKER_DSH_CONTAINER=llm-gw-dsh
-      - DOCKER_OLLAMA_CONTAINER=llm-gw-ollama
+      - DOCKER_OLLAMA_CONTAINER=llm-gw-ollama-gpu
+      - DOCKER_OLLAMA_CPU_CONTAINER=llm-gw-ollama-cpu
+      - DOCKER_OLLAMA_GPU_CONTAINER=llm-gw-ollama-gpu
       - LMSTUDIO_MODELS_PATH=/lmstudio-models
     depends_on:
       - switchyard
@@ -301,12 +305,43 @@ services:
   # ============================================
   # Ollama — Embeddings (CPU Backend)
   # ============================================
-  ollama:
+  ollama-cpu:
     image: ollama/ollama:latest
-    container_name: llm-gw-ollama
+    container_name: llm-gw-ollama-cpu
     restart: unless-stopped
     ports:
       - "11434:11434"
+    volumes:
+      - openbrain_ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 10s
+
+  # ============================================
+  # Ollama — Embeddings (GPU Backend - AMD ROCm)
+  # ============================================
+  ollama-gpu:
+    image: ollama/ollama:rocm
+    container_name: llm-gw-ollama-gpu
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"
+      - "991"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - HIP_VISIBLE_DEVICES=0
+      - ROCR_VISIBLE_DEVICES=0
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-4096}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
     volumes:
       - openbrain_ollama:/root/.ollama
     healthcheck:

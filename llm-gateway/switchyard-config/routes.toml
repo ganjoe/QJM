@@ -8,9 +8,17 @@ base_url = "http://host.docker.internal:1234/v1"
 format = "openai_chat"
 base_url = "http://dashboard:9000/api/gemini/v1"
 
-[llm_clients.ollama]
+[llm_clients.ollama_cpu]
 format = "openai_chat"
 base_url = "http://host.docker.internal:11434/v1"
+
+[llm_clients.ollama_gpu]
+format = "openai_chat"
+base_url = "http://host.docker.internal:11435/v1"
+
+[llm_clients.ollama]
+format = "openai_chat"
+base_url = "http://host.docker.internal:11435/v1"
 
 [llm_clients.openrouter]
 format = "openai_chat"
@@ -37,9 +45,17 @@ llm_client = "gemini"
 id = "gemini-3.5-flash"
 llm_client = "gemini"
 
+[targets.ollama_embed_cpu]
+id = "qwen3-embedding:8b"
+llm_client = "ollama_cpu"
+
+[targets.ollama_embed_gpu]
+id = "qwen3-embedding:8b"
+llm_client = "ollama_gpu"
+
 [targets.ollama_embed]
 id = "qwen3-embedding:8b"
-llm_client = "ollama"
+llm_client = "ollama_gpu"
 
 [targets.openrouter]
 id = "openrouter/auto"
@@ -73,7 +89,12 @@ threshold_step = 0.1
 [routes.embeddings]
 id = "embeddings"
 type = "passthrough"
-target = "ollama_embed"
+target = "ollama_embed_gpu"
+
+[routes.embeddings_cpu]
+id = "embeddings_cpu"
+type = "passthrough"
+target = "ollama_embed_cpu"
 
 [routes.openrouter]
 id = "openrouter"

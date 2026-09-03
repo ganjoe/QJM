@@ -5,7 +5,19 @@ export const ytIngestionStats = {
   startTime: 0,
   lastRunTime: 0,
   totalVideosDiscovered: 0,
-  totalProcessed: 0,
+  totalTranscriptsDownloaded: 0,
+  totalVideosProcessed: 0,
+  totalChunksProcessed: 0,
+  totalTokensEstimated: 0,
+  lastBatchChunks: 0,
+  lastBatchDurationMs: 0,
+  currentChunksPerSec: 0,
+  currentTokensPerSec: 0,
+  avgChunkLatencyMs: 0,
+  activeEmbeddingsRunning: 0,
+  activeDownloadsRunning: 0,
+  lastProcessedTitle: "",
+  lastProcessedChannel: "",
   lastError: null as string | null,
 };
 
@@ -263,48 +275,88 @@ export function chunkTranscript(
 }
 
 /**
- * Process a pending or downloaded YouTube video (download transcript if needed + chunk + embed to agent_workspace)
+ * Step 1: Download transcript for a pending YouTube video (Network only, zero GPU usage)
  */
-async function processSingleYtVideo(video: any, signal?: AbortSignal) {
+async function downloadSingleTranscript(video: any, signal?: AbortSignal): Promise<boolean> {
   try {
-    let plaintext = video.transcript;
-
-    // 1. Download transcript if not yet present
-    if (!plaintext) {
-      const vtt = await downloadVtt(video.video_id, video.language || "en", signal);
-      if (!vtt) {
-        await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Auto-Captions" }).eq("video_id", video.video_id);
-        return;
-      }
-
-      plaintext = vttToPlaintext(vtt);
-      await supabase.from("yt_videos").update({
-        transcript: plaintext,
-        status: "downloaded",
-        error_msg: null,
-      }).eq("video_id", video.video_id);
+    const vtt = await downloadVtt(video.video_id, video.language || "en", signal);
+    if (!vtt) {
+      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Auto-Captions" }).eq("video_id", video.video_id);
+      return false;
     }
 
+    const plaintext = vttToPlaintext(vtt);
     if (!plaintext || plaintext.trim().length === 0) {
       await supabase.from("yt_videos").update({ status: "failed", error_msg: "Leeres Transkript" }).eq("video_id", video.video_id);
-      return;
+      return false;
     }
 
-    // 2. Chunk transcript
+    await supabase.from("yt_videos").update({
+      transcript: plaintext,
+      status: "downloaded",
+      error_msg: null,
+    }).eq("video_id", video.video_id);
+
+    ytIngestionStats.totalTranscriptsDownloaded++;
+    log.info(`[YT Downloader] Transkript geladen für "${video.title}" (${video.channel})`);
+    return true;
+  } catch (err: any) {
+    if (err.name === "AbortError" || signal?.aborted) throw err;
+    log.error(`[YT Downloader] Video ${video.video_id} download failed: ${err.message}`);
+    await supabase.from("yt_videos").update({ status: "failed", error_msg: err.message }).eq("video_id", video.video_id);
+    return false;
+  }
+}
+
+/**
+ * Step 2: Generate embeddings for a downloaded video (GPU only, zero YouTube network delay)
+ */
+async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<boolean> {
+  try {
+    const plaintext = video.transcript;
+    if (!plaintext || plaintext.trim().length === 0) {
+      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Leeres Transkript" }).eq("video_id", video.video_id);
+      return false;
+    }
+
     const chunks = chunkTranscript(plaintext);
     if (chunks.length === 0) {
       await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Chunks generierbar" }).eq("video_id", video.video_id);
-      return;
+      return false;
     }
 
     const augmentedTexts = chunks.map((chunk, idx) =>
       `[Video: "${video.title}" | Kanal: ${video.channel} | Datum: ${video.published_at || "Unbekannt"}]\n\n${chunk}`
     );
 
-    // 3. Generate embeddings via Switchyard
-    const embeddings = await getEmbeddingsBatch(augmentedTexts);
+    ytIngestionStats.activeEmbeddingsRunning++;
+    const t0 = Date.now();
+    let embeddings: number[][];
+    try {
+      embeddings = await getEmbeddingsBatch(augmentedTexts);
+    } finally {
+      ytIngestionStats.activeEmbeddingsRunning = Math.max(0, ytIngestionStats.activeEmbeddingsRunning - 1);
+    }
+    const durationMs = Math.max(1, Date.now() - t0);
 
-    // 4. Save chunks into agent_workspace
+    // Live performance metrics calculation
+    const chunksPerSec = Number((chunks.length / (durationMs / 1000)).toFixed(1));
+    const totalChars = chunks.reduce((acc, c) => acc + c.length, 0);
+    const estTokens = Math.round(totalChars / 4);
+    const tokensPerSec = Math.round(estTokens / (durationMs / 1000));
+    const avgLatencyMs = Math.round(durationMs / chunks.length);
+
+    ytIngestionStats.lastBatchChunks = chunks.length;
+    ytIngestionStats.lastBatchDurationMs = durationMs;
+    ytIngestionStats.currentChunksPerSec = chunksPerSec;
+    ytIngestionStats.currentTokensPerSec = tokensPerSec;
+    ytIngestionStats.avgChunkLatencyMs = avgLatencyMs;
+    ytIngestionStats.totalChunksProcessed += chunks.length;
+    ytIngestionStats.totalTokensEstimated += estTokens;
+    ytIngestionStats.totalVideosProcessed++;
+    ytIngestionStats.lastProcessedTitle = video.title || "";
+    ytIngestionStats.lastProcessedChannel = video.channel || "";
+
     const rowsToInsert = chunks.map((chunk, idx) => ({
       agent_id: AGENT_ID || "cco",
       artifact_type: "yt_chunk",
@@ -322,41 +374,133 @@ async function processSingleYtVideo(video: any, signal?: AbortSignal) {
       },
     }));
 
-    // Clean up older chunks if re-processing
     await supabase.from("agent_workspace").delete().eq("artifact_type", "yt_chunk").eq("metadata->>video_id", video.video_id);
-
     const { error: insErr } = await supabase.from("agent_workspace").insert(rowsToInsert);
     if (insErr) throw insErr;
 
-    // 5. Update yt_videos record
     await supabase.from("yt_videos").update({
       status: "embedded",
       chunk_count: chunks.length,
       error_msg: null,
     }).eq("video_id", video.video_id);
 
-    ytIngestionStats.totalProcessed++;
-    log.info(`[YT Process] Transkript & ${chunks.length} Embeddings abgeschlossen für "${video.title}" (${video.channel})`);
+    log.info(`[YT Embedder] Fertig: ${chunks.length} Chunks in ${(durationMs / 1000).toFixed(2)}s (${chunksPerSec} Chunks/s, ~${tokensPerSec} t/s) für "${video.title}"`);
+    return true;
   } catch (err: any) {
-    if (err.name === "AbortError") throw err;
-    log.error(`[YT Process] Video ${video.video_id} failed: ${err.message}`);
+    if (err.name === "AbortError" || signal?.aborted) throw err;
+    log.error(`[YT Embedder] Video ${video.video_id} failed: ${err.message}`);
     await supabase.from("yt_videos").update({ status: "failed", error_msg: err.message }).eq("video_id", video.video_id);
+    return false;
   }
 }
 
 /**
- * Stage 1 & Processing Loop for YouTube
+ * Loop 1: Independent Transcript Downloader (Network/yt-dlp -> DB 'downloaded')
  */
-export async function runYtLoop() {
-  ytIngestionStats.isRunning = true;
-  ytIngestionStats.startTime = Date.now();
-  log.info(`[YT Loop] Gestartet (Parallel Channels: ${MAX_CONCURRENT_YT_CHANNELS})`);
+async function runTranscriptDownloadLoop() {
+  const downloadBatchLimit = parseInt(Deno.env.get("YT_DOWNLOAD_BATCH_LIMIT") || "6");
+  const downloadConcurrency = parseInt(Deno.env.get("YT_DOWNLOAD_CONCURRENCY") || "2");
+  const delayBetweenDownloadsMs = parseInt(Deno.env.get("YT_DOWNLOAD_DELAY_MS") || "500");
+  const pollIntervalMs = parseInt(Deno.env.get("YT_DOWNLOAD_POLL_INTERVAL_MS") || "5000");
+
+  log.info(`[YT Downloader Loop] Gestartet (Concurrency: ${downloadConcurrency})`);
 
   while (ytAbortController && !ytAbortController.signal.aborted) {
     try {
-      ytIngestionStats.lastRunTime = Date.now();
+      const { data: pendingVideos, error } = await supabase
+        .from("yt_videos")
+        .select("video_id, channel, title, published_at, language")
+        .eq("status", "pending")
+        .order("published_at", { ascending: false, nullsFirst: false })
+        .limit(downloadBatchLimit);
 
-      // 1. Channel Discovery (Parallel)
+      if (error) throw error;
+
+      if (!pendingVideos || pendingVideos.length === 0) {
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+        continue;
+      }
+
+      const executing = new Set<Promise<any>>();
+      for (const vid of pendingVideos) {
+        if (!ytAbortController || ytAbortController.signal.aborted) break;
+        ytIngestionStats.activeDownloadsRunning++;
+        const p: Promise<any> = downloadSingleTranscript(vid, ytAbortController.signal)
+          .finally(() => {
+            executing.delete(p);
+            ytIngestionStats.activeDownloadsRunning = Math.max(0, ytIngestionStats.activeDownloadsRunning - 1);
+          });
+        executing.add(p);
+        if (executing.size >= downloadConcurrency) {
+          await Promise.race(executing);
+        }
+        if (delayBetweenDownloadsMs > 0) {
+          await new Promise(r => setTimeout(r, delayBetweenDownloadsMs));
+        }
+      }
+      await Promise.all(executing);
+    } catch (err: any) {
+      if (err.name === "AbortError" || ytAbortController?.signal.aborted) break;
+      log.error(`[YT Downloader Error]: ${err.message}`);
+      await new Promise(r => setTimeout(r, 10000));
+    }
+  }
+}
+
+/**
+ * Loop 2: Independent GPU Embedder (Local DB 'downloaded' -> Ollama GPU -> 'embedded')
+ */
+async function runEmbeddingLoop() {
+  const embedBatchLimit = parseInt(Deno.env.get("YT_EMBED_BATCH_LIMIT") || "4");
+  const embedConcurrency = parseInt(Deno.env.get("YT_EMBED_CONCURRENCY") || "2");
+  const pollIntervalMs = parseInt(Deno.env.get("YT_EMBED_POLL_INTERVAL_MS") || "2000");
+
+  log.info(`[YT Embedder Loop] Gestartet (Concurrency: ${embedConcurrency})`);
+
+  while (ytAbortController && !ytAbortController.signal.aborted) {
+    try {
+      const { data: downloadedVideos, error } = await supabase
+        .from("yt_videos")
+        .select("video_id, channel, title, published_at, language, transcript, status")
+        .eq("status", "downloaded")
+        .order("published_at", { ascending: false, nullsFirst: false })
+        .limit(embedBatchLimit);
+
+      if (error) throw error;
+
+      if (!downloadedVideos || downloadedVideos.length === 0) {
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+        continue;
+      }
+
+      const executing = new Set<Promise<any>>();
+      for (const vid of downloadedVideos) {
+        if (!ytAbortController || ytAbortController.signal.aborted) break;
+        const p: Promise<any> = embedSingleTranscript(vid, ytAbortController.signal)
+          .finally(() => executing.delete(p));
+        executing.add(p);
+        if (executing.size >= embedConcurrency) {
+          await Promise.race(executing);
+        }
+      }
+      await Promise.all(executing);
+    } catch (err: any) {
+      if (err.name === "AbortError" || ytAbortController?.signal.aborted) break;
+      log.error(`[YT Embedder Error]: ${err.message}`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+}
+
+/**
+ * Loop 3: Periodic Channel Discovery
+ */
+async function runChannelDiscoveryLoop() {
+  const intervalMs = parseInt(Deno.env.get("YT_SYNC_INTERVAL_MS") || "3600000");
+  log.info(`[YT Discovery Loop] Gestartet (Intervall: ${Math.round(intervalMs / 60000)}m)`);
+
+  while (ytAbortController && !ytAbortController.signal.aborted) {
+    try {
       const { data: channels } = await supabase.from("yt_channels").select("handle").eq("is_active", true);
       if (channels && channels.length > 0) {
         const executing = new Set<Promise<any>>();
@@ -371,50 +515,36 @@ export async function runYtLoop() {
         }
         await Promise.all(executing);
       }
-
-      // 2. Process Pending & Downloaded Videos (Batch by Batch)
-      const batchLimit = parseInt(Deno.env.get("YT_EMBED_BATCH_LIMIT") || "5");
-      let hasMore = true;
-
-      while (hasMore && ytAbortController && !ytAbortController.signal.aborted) {
-        const { data: videosToProcess } = await supabase
-          .from("yt_videos")
-          .select("video_id, channel, title, published_at, language, transcript, status")
-          .or("status.eq.pending,status.eq.downloaded")
-          .order("published_at", { ascending: false, nullsFirst: false })
-          .limit(batchLimit);
-
-        if (!videosToProcess || videosToProcess.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        for (const vid of videosToProcess) {
-          if (!ytAbortController || ytAbortController.signal.aborted) break;
-          await processSingleYtVideo(vid, ytAbortController.signal);
-          await new Promise(r => setTimeout(r, 1000));
-        }
-
-        if (videosToProcess.length < batchLimit) {
-          hasMore = false;
-        } else {
-          // Brief pause before next batch
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      }
-
-      // Wait between discovery cycles (1 hour or interruptible)
-      const intervalMs = parseInt(Deno.env.get("YT_SYNC_INTERVAL_MS") || "3600000");
       let waited = 0;
       while (waited < intervalMs && ytAbortController && !ytAbortController.signal.aborted) {
         await new Promise(r => setTimeout(r, 10000));
         waited += 10000;
       }
     } catch (err: any) {
-      if (err.name === "AbortError") break;
-      ytIngestionStats.lastError = err.message;
-      log.error(`[YT Loop Error]: ${err.message}`);
-      await new Promise(r => setTimeout(r, 30000));
+      if (err.name === "AbortError" || ytAbortController?.signal.aborted) break;
+      log.error(`[YT Discovery Error]: ${err.message}`);
+      await new Promise(r => setTimeout(r, 60000));
+    }
+  }
+}
+
+/**
+ * Main YouTube Worker Loop: Runs Discovery, Downloader, and GPU Embedder concurrently
+ */
+export async function runYtLoop() {
+  ytIngestionStats.isRunning = true;
+  ytIngestionStats.startTime = Date.now();
+  log.info("[YT Loop] Haupt-Pipeline gestartet: Discovery, Downloader & GPU Embedder laufen parallel!");
+
+  try {
+    await Promise.all([
+      runChannelDiscoveryLoop(),
+      runTranscriptDownloadLoop(),
+      runEmbeddingLoop(),
+    ]);
+  } catch (err: any) {
+    if (err.name !== "AbortError") {
+      log.error(`[YT Loop Fatal]: ${err.message}`);
     }
   }
 
