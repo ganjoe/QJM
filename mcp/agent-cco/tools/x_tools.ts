@@ -42,7 +42,9 @@ export function registerXTools(server: McpServer) {
     "search_influencer_posts",
     {
       title: "Search Influencer Posts",
-      description: "Search the database for influencer posts using hybrid semantic or exact keyword search.",
+      description: "Search stored influencer posts in the database using hybrid semantic or exact keyword search.\n\n" +
+        "WHEN TO USE: Use when searching for posts discussing specific topics, tickers (e.g. '$NVDA', 'breakout'), trade setups, or sentiment across monitored influencers.\n" +
+        "WHEN NOT TO USE: To simply browse an influencer's chronological timeline feed or fetch a single tweet by ID, use `show_x_content`.",
       inputSchema: {
         action: z.enum(["READ", "READ_IDS"]).default("READ").describe("READ = search posts, READ_IDS = fetch specific posts by ID array"),
         query: z.string().optional().describe("Search query (ticker, topic, keyword). Leave empty to list recent posts."),
@@ -145,10 +147,12 @@ export function registerXTools(server: McpServer) {
   server.registerTool(
     "show_x_content",
     {
-      title: "Show X Content",
-      description: "View X/Twitter content. DATABASE lists stored posts chronologically. ONLINE fetches a single tweet live from the X API.",
+      title: "Show X Content (Timeline & Live Tweet)",
+      description: "Browse X/Twitter content.\n- DATABASE: Lists stored posts in reverse chronological order (optional filter by username/handle).\n- ONLINE: Fetches a single live tweet directly from the X API by tweet ID or URL.\n\n" +
+        "WHEN TO USE: Use when asked to show recent tweets from an influencer or to look up a specific tweet by URL/ID.\n" +
+        "WHEN NOT TO USE: To search across posts for specific keywords, topics, or stock tickers, use `search_influencer_posts`.",
       inputSchema: {
-        action: z.enum(["DATABASE", "ONLINE"]).describe("DATABASE = list stored posts. ONLINE = fetch a single tweet live."),
+        action: z.enum(["DATABASE", "ONLINE"]).describe("DATABASE = list stored posts chronologically. ONLINE = fetch a single tweet live from API."),
         username: z.string().optional().describe("Filter by influencer handle (for DATABASE, e.g. '@elonmusk')"),
         limit: z.number().optional().default(10).describe("Max posts to show (for DATABASE, default: 10)"),
         days_back: z.number().optional().describe("Filter posts from the last X days (for DATABASE)"),

@@ -76,12 +76,12 @@ services:
       - MCP_ACCESS_KEY=${MCP_ACCESS_KEY}
       - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://llm-gw-mcp-cco:8788}
       - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://llm-gw-mcp-pta:8789}
-      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://llm-gw-mcp-cda:8795}
+      - OPENBRAIN_PCA_MCP_URL=${OPENBRAIN_PCA_MCP_URL:-http://llm-gw-mcp-pca:8790}
     depends_on:
       - switchyard
       - mcp-cco
       - mcp-pta
-      - mcp-cda
+      - mcp-pca
     restart: unless-stopped
 
   # ============================================
@@ -160,33 +160,31 @@ services:
       - "host.docker.internal:host-gateway"
 
   # ============================================
-  # CDA MCP Server — Stock Data Management
+  # PCA Service — Parquet Chart Data & Technical Analysis Engine
   # ============================================
-  mcp-cda:
+  pca-service:
     build:
-      context: ../mcp/agent-cda
+      context: ../services/pca-service
       dockerfile: Dockerfile
-    image: llm-gw-mcp-cda:latest
-    container_name: llm-gw-mcp-cda
+    image: llm-gw-pca-service:latest
+    container_name: qjm-pca-service
     restart: unless-stopped
-    depends_on:
-      - switchyard
-      - stock-data-node
-    volumes:
-      - ../mcp/agent-cda/index.ts:/app/index.ts:ro
-      - ../mcp/agent-cda/tools:/app/tools:ro
     environment:
-      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
-      STOCK_DATA_NODE_URL: http://stock-data-node:8002
-      PORT: "8795"
-      AGENT_ID: "cda"
+      - PARQUET_BASE_PATH=/parquet
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - DEFAULT_CANDLE_LIMIT=200
+      - MAX_CANDLE_LIMIT=2000
+    volumes:
+      - /home/daniel/stock-data-node/data/parquet:/parquet:ro
+      - /home/daniel/stock-data-node/data/watchlists:/app/watchlists:ro
     ports:
-      - "8795:8795"
+      - "8794:8791"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   # ============================================
-  # PCA MCP Server — Pattern & Features Management
+  # PCA MCP Server — Technical Analysis & Watchlist Management
   # ============================================
   mcp-pca:
     build:
@@ -197,15 +195,18 @@ services:
     restart: unless-stopped
     depends_on:
       - switchyard
+      - pca-service
     volumes:
       - ../mcp/agent-pca/index.ts:/app/index.ts:ro
       - ../mcp/agent-pca/tools:/app/tools:ro
+      - /home/daniel/stock-data-node/data/parquet:/parquet:ro
+      - /home/daniel/stock-data-node/data/watchlists:/watchlists:ro
     environment:
       SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
       MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
       FEATURES_SERVICE_URL: http://host.docker.internal:8003
-      PCA_SERVICE_URL: http://host.docker.internal:8791
+      PCA_SERVICE_URL: http://pca-service:8791
       PORT: "8790"
       AGENT_ID: "pca"
     ports:

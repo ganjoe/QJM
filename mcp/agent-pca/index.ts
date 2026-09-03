@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { AGENT_ID, MCP_ACCESS_KEY, log } from "./tools/shared.ts";
 import { registerPcaTools } from "./tools/pca.ts";
 import { registerFeatureTools } from "./tools/features.ts";
-import { registerScannerTools } from "./tools/scanner.ts";
+import { registerAnalysisTools } from "./tools/analysis.ts";
 
 // --- MCP Server Setup ---
 const server = new McpServer({
@@ -15,7 +15,7 @@ const server = new McpServer({
 // Register selected tools
 registerPcaTools(server);
 registerFeatureTools(server);
-registerScannerTools(server);
+registerAnalysisTools(server);
 
 // --- Hono App ---
 const app = new Hono();

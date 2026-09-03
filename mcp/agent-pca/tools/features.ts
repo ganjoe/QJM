@@ -19,13 +19,17 @@ export function registerFeatureTools(server: McpServer) {
   server.registerTool(
     "manage_feature_calculation",
     {
-      title: "Manage Stock Features Calculation & Scheduling",
+      title: "Manage System Feature Calculation Daemon",
       description:
-        "Manage technical indicator / feature calculation (MAs, RS-Rating, Minervini) for all stocks in the system. " +
-        "GET_STATUS: Returns the live progress (X of Y tickers completed, elapsed time, ms/ticker, ETA/remaining time, last run stats). " +
-        "TRIGGER: Trigger a full calculation run immediately (optional priority ticker). " +
-        "SET_SCHEDULE: Configure cyclical automatic calculations (e.g. every 60 minutes or daily at a specific UTC time). " +
-        "GET_SCHEDULE: View current cyclical schedule and next run time.",
+        "Controls the system-wide background technical indicator calculation daemon (batch computation of moving averages, RS ratings, Minervini score for the entire database of stocks).\n\n" +
+        "ACTIONS:\n" +
+        "- GET_STATUS: Returns live batch progress across all tickers (completed count, elapsed time, ms/ticker, ETA).\n" +
+        "- TRIGGER: Starts a full background batch calculation run across all stocks (optional priority ticker).\n" +
+        "- SET_SCHEDULE: Configures cyclical automatic calculation (INTERVAL or DAILY UTC).\n" +
+        "- GET_SCHEDULE: Views current schedule and next run time.\n\n" +
+        "CRITICAL DISTINCTION:\n" +
+        "WHEN TO USE: Use ONLY when explicitly asked to trigger or monitor the system-wide background batch calculation job.\n" +
+        "WHEN NOT TO USE: Do NOT use this to get or calculate an indicator for an individual stock! For stock indicators, use `get_timeseries` (for precalculated standard indicators) or `calculate_indicator` (for custom on-the-fly calculations).",
       inputSchema: {
         action: z
           .enum(["GET_STATUS", "TRIGGER", "SET_SCHEDULE", "GET_SCHEDULE"])

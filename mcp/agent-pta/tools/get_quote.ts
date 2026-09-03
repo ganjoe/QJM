@@ -14,10 +14,12 @@ export function registerQuoteTools(server: McpServer) {
   server.registerTool(
     "get_quote",
     {
-      title: "Get Live Market Quote (IBKR)",
-      description: "Fetches the real-time current price of a stock ticker from Interactive Brokers. Crucial for Minervini calculations.",
+      title: "Get Live Market Quote (IBKR Real-Time)",
+      description: "Fetches the single real-time current market price of a stock ticker from Interactive Brokers (IBKR).\n\n" +
+        "WHEN TO USE: Use whenever you need the immediate current live market price of a ticker for trade execution or real-time valuation.\n" +
+        "WHEN NOT TO USE: Do NOT use for historical chart data, OHLCV candle bars, volume history, or historical technical indicators (use `get_timeseries` in agent-pca instead).",
       inputSchema: {
-        ticker: z.string().describe("Stock ticker symbol (e.g., AAPL)"),
+        ticker: z.string().describe("Stock ticker symbol (e.g. 'AAPL', 'MSFT')"),
       },
     },
     async (params: any) => {

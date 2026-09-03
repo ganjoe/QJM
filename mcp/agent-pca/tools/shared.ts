@@ -33,18 +33,3 @@ export async function sendTelemetry(text: string) {
     log.warn(`Telemetry failed: ${e.message}`);
   }
 }
-
-// --- PCA Service proxy helper ---
-export async function pcaCommand(action: string, payload: Record<string, unknown> = {}): Promise<string> {
-  const r = await fetch(`${PCA_SERVICE_URL}/api/command`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, payload }),
-  });
-  if (!r.ok) {
-    const err = await r.text();
-    throw new Error(`PCA service error ${r.status}: ${err}`);
-  }
-  const data = await r.json();
-  return JSON.stringify(data);
-}
