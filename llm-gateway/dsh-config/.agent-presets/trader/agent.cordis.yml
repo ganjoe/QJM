@@ -5,7 +5,7 @@
 #   - custom persona: the full QJM system prompt, verbatim from
 #     /qjm/DSH_SYSTEM_PROMPT.md (`complete: true`, runtime context suppressed)
 #   - `trader-mcp-filter`: restricts the inherited GLOBAL tool surface to the
-#     OpenBrain MCP tools (openbrain-cco / openbrain-pca / openbrain-pta)
+#     OpenBrain MCP tools (openbrain-cco / openbrain-pca / openbrain-pta / openbrain-cda)
 #     listed in its `config.allow`; the preset's own scoped tools stay visible.
 #
 # This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
@@ -63,8 +63,6 @@
       * **`import_watchlist`**: Use when **bulk importing new watchlists from text/files** with automatic verification of local Parquet chart data availability.
       * **`manage_feature_calculation`**: System-level background daemon control (GET_STATUS, TRIGGER, SET_SCHEDULE).
         * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.
-      * **`add_ticker`**: Add new stock or ETF tickers to the database and queue immediate priority downloads. Automatically resolves unknown symbols across ranked data providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
-      * **`override_ticker_mapping`**: Explicitly override or correct a ticker's provider or symbol mapping.
 
       ### B. Trading, Execution & Portfolio (`openbrain-pta`)
       * **`get_quote`**: Use to fetch the **single real-time current market price** of a ticker from Interactive Brokers (IBKR).
@@ -83,6 +81,20 @@
       * **`web_scrape`**, **`web_extract_metrics`**, **`web_download_report`**, **`web_ocr_extract`**: Web research and financial metric extraction.
       * **`search_thoughts`**, **`capture_thought`**: Long-term strategic memory in Open Brain (lessons learned, setups).
 
+      ### D. Chart Data Ingestion & Download Management (`openbrain-cda`)
+      * **`manage_chart_downloads`**: Use to **monitor, inspect, and manage the `stock-data-node` OHLCV chart pipeline**.
+        * Actions:
+          * `'GET_STATUS'`: Download queue size, node health, and IBKR Gateway connectivity.
+          * `'STALENESS_REPORT'`: Age distribution of the entire Parquet chart database.
+          * `'TRIGGER_SWEEP'`: Starts a background staleness sweep to check which tickers need updates.
+          * `'TICKER_STATUS'`: Checks local parquet directory existence, timeframes, and last candle date for tickers.
+          * `'FALLBACK_CHECK'`: Checks if Yahoo Finance has historical data for a ticker.
+          * `'MAPPING'`: Displays provider and ticker alias mapping.
+          * `'TRIGGER_DOWNLOAD'`: Enqueues one or more tickers for immediate priority download.
+          * `'SET_PROVIDER'`: Sets the provider for a ticker (`IBKR` or `YFINANCE`).
+      * **`add_ticker`**: Add new stock or ETF tickers to the database and queue immediate priority downloads. Automatically resolves unknown symbols across ranked data providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
+      * **`override_ticker_mapping`**: Explicitly override or correct a ticker's provider or symbol mapping.
+
       ---
 
       ## 2. Decision Tree for Common Requests
@@ -100,6 +112,12 @@
          → Call `calculate_indicator(ticker: "TSLA", indicator_type: "EMA", period: 21)`.
       6. **"What is my current cash balance and open risk?"**
          → Call `list_active_positions()` or `portfolio_analytics()`.
+      7. **"Check download queue or staleness report."**
+         → Call `manage_chart_downloads(action: "GET_STATUS")` or `manage_chart_downloads(action: "STALENESS_REPORT")`.
+      8. **"Check if AAPL chart is up-to-date or downloaded."**
+         → Call `manage_chart_downloads(action: "TICKER_STATUS", tickers: ["AAPL"])`.
+      9. **"Add ticker 4GLD to database."**
+         → Call `add_ticker(tickers: ["4GLD"])`.
 
       ---
 
@@ -125,54 +143,47 @@
   config:
     maxBytes: 65536
 
-# ── MCP tool restriction ─────────────────────────────────────────────────────
+# ── MCP Clients (Agent-Scoped) ───────────────────────────────────────────────
 
-# The deployment registers the three OpenBrain MCP servers (cco/pta/pca) as
-# GLOBAL tools for every agent. Production dsh exposes no per-agent MCP
-# selector, so this preset ships its own filter: a local plugin file that
-# travels with the composition and calls `tools.restrict({ allow: [...] })`
-# from the preset's scope. Scoped registrations (bash, fs, web, … below) stay
-# visible; only the inherited GLOBAL surface is masked to this allowlist.
-- id: trader-mcp-filter
-  name: ./tool-filter.mjs
+# Instead of global registration and filtering, the MCP clients are registered
+# natively into the Trader Agent's local scope. This guarantees they are only
+# available here and eliminates startup race conditions with tools.restrict().
+- id: mcp-openbrain-cco
+  name: "@deepseek-ai/dsh-mcp-client"
   config:
-    allow:
-      - mcp__openbrain-cco__manage_sync_pipeline
-      - mcp__openbrain-cco__search_influencer_posts
-      - mcp__openbrain-cco__show_x_content
-      - mcp__openbrain-cco__manage_influencers
-      - mcp__openbrain-cco__discover_ticker_mentions
-      - mcp__openbrain-cco__sync_influencer_posts
-      - mcp__openbrain-cco__cancel_influencer_sync
-      - mcp__openbrain-cco__manage_x_auth
-      - mcp__openbrain-cco__sync_x_bookmarks
-      - mcp__openbrain-cco__manage_youtube_channels
-      - mcp__openbrain-cco__show_yt_content
-      - mcp__openbrain-cco__show_yt_transcript
-      - mcp__openbrain-cco__search_youtube_content
-      - mcp__openbrain-cco__web_scrape
-      - mcp__openbrain-cco__web_extract_metrics
-      - mcp__openbrain-cco__web_download_report
-      - mcp__openbrain-cco__web_ocr_extract
-      - mcp__openbrain-cco__search_thoughts
-      - mcp__openbrain-cco__capture_thought
-      - mcp__openbrain-cco__forget_thought
-      - mcp__openbrain-pca__get_timeseries
-      - mcp__openbrain-pca__calculate_indicator
-      - mcp__openbrain-pca__run_technical_scanner
-      - mcp__openbrain-pca__list_available_features
-      - mcp__openbrain-pca__import_watchlist
-      - mcp__openbrain-pca__manage_feature_calculation
-      - mcp__openbrain-pca__manage_watchlist
-      - mcp__openbrain-pca__add_ticker
-      - mcp__openbrain-pca__override_ticker_mapping
-      - mcp__openbrain-pta__get_quote
-      - mcp__openbrain-pta__get_trade_history
-      - mcp__openbrain-pta__list_active_positions
-      - mcp__openbrain-pta__manage_ib_gateway
-      - mcp__openbrain-pta__manage_ibkr_sync
-      - mcp__openbrain-pta__place_trade
-      - mcp__openbrain-pta__portfolio_analytics
+    serverName: openbrain-cco
+    transport: streamable-http
+    url: !!js process.env.OPENBRAIN_CCO_MCP_URL || "http://mcp-cco:8788"
+    headers:
+      x-brain-key: !!js process.env.MCP_ACCESS_KEY
+
+- id: mcp-openbrain-pta
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: openbrain-pta
+    transport: streamable-http
+    url: !!js process.env.OPENBRAIN_PTA_MCP_URL || "http://mcp-pta:8789"
+    headers:
+      x-brain-key: !!js process.env.MCP_ACCESS_KEY
+
+- id: mcp-openbrain-pca
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: openbrain-pca
+    transport: streamable-http
+    url: !!js process.env.OPENBRAIN_PCA_MCP_URL || "http://mcp-pca:8790"
+    headers:
+      x-brain-key: !!js process.env.MCP_ACCESS_KEY
+
+- id: mcp-openbrain-cda
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: openbrain-cda
+    transport: streamable-http
+    url: !!js process.env.OPENBRAIN_CDA_MCP_URL || "http://mcp-cda:8795"
+    headers:
+      x-brain-key: !!js process.env.MCP_ACCESS_KEY
+
 
 # ── shell ───────────────────────────────────────────────────────────────────
 

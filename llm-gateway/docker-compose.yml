@@ -74,14 +74,16 @@ services:
       - SWITCHYARD_URL=http://switchyard:4000/v1
       - SWITCHYARD_API_KEY=switchyard
       - MCP_ACCESS_KEY=${MCP_ACCESS_KEY}
-      - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://llm-gw-mcp-cco:8788}
-      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://llm-gw-mcp-pta:8789}
-      - OPENBRAIN_PCA_MCP_URL=${OPENBRAIN_PCA_MCP_URL:-http://llm-gw-mcp-pca:8790}
+      - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://mcp-cco:8788}
+      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://mcp-pta:8789}
+      - OPENBRAIN_PCA_MCP_URL=${OPENBRAIN_PCA_MCP_URL:-http://mcp-pca:8790}
+      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://mcp-cda:8795}
     depends_on:
       - switchyard
       - mcp-cco
       - mcp-pta
       - mcp-pca
+      - mcp-cda
     restart: unless-stopped
 
   # ============================================
@@ -128,6 +130,11 @@ services:
       - "8788:8788"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - mcp-cco
+          - llm-gw-mcp-cco
 
   # ============================================
   # PTA MCP Server — Execution & Portfolio Management
@@ -158,6 +165,11 @@ services:
       - "8789:8789"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - mcp-pta
+          - llm-gw-mcp-pta
 
   # ============================================
   # PCA Service — Parquet Chart Data & Technical Analysis Engine
@@ -214,6 +226,44 @@ services:
       - "8790:8790"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - mcp-pca
+          - llm-gw-mcp-pca
+
+  # ============================================
+  # CDA MCP Server — Chart Download & Data Ingestion Agent
+  # ============================================
+  mcp-cda:
+    build:
+      context: ../mcp/agent-cda
+      dockerfile: Dockerfile
+    image: llm-gw-mcp-cda:latest
+    container_name: llm-gw-mcp-cda
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+      - stock-data-node
+    volumes:
+      - ../mcp/agent-cda/index.ts:/app/index.ts:ro
+      - ../mcp/agent-cda/tools:/app/tools:ro
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      STOCK_DATA_NODE_URL: http://stock-data-node:8002
+      PORT: "8795"
+      AGENT_ID: "cda"
+    ports:
+      - "8795:8795"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - mcp-cda
+          - llm-gw-mcp-cda
 
   # ============================================
   # Stock Data Node — OHLCV Market Data Pipeline

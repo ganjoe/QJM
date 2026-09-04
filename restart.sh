@@ -11,11 +11,11 @@ SERVICE=$1
 if [ -z "$SERVICE" ] || [ "$SERVICE" = "all" ]; then
     echo "🔄 Stoppe bestehende Container & Orphans..."
     docker compose down --remove-orphans
-    docker stop llm-gw-litellm llm-gw-orchestrator llm-gw-mcp-pta llm-gw-mcp-pca qjm-pca-service stock-data-node llm-gw-dsh 2>/dev/null || true
-    docker rm llm-gw-litellm llm-gw-orchestrator llm-gw-mcp-pta llm-gw-mcp-pca qjm-pca-service stock-data-node llm-gw-dsh 2>/dev/null || true
+    docker stop llm-gw-litellm llm-gw-orchestrator llm-gw-mcp-pta llm-gw-mcp-pca llm-gw-mcp-cda qjm-pca-service stock-data-node llm-gw-dsh 2>/dev/null || true
+    docker rm llm-gw-litellm llm-gw-orchestrator llm-gw-mcp-pta llm-gw-mcp-pca llm-gw-mcp-cda qjm-pca-service stock-data-node llm-gw-dsh 2>/dev/null || true
 
     echo "🏗️ Baue lokale Images..."
-    docker compose build switchyard dsh dashboard mcp-cco mcp-pta pca-service mcp-pca
+    docker compose build switchyard dsh dashboard mcp-cco mcp-pta pca-service mcp-pca mcp-cda
 
     echo "🚀 Starte Kern-Services..."
     # Lade alle definierten Services hoch (die nicht durch profiles deaktiviert sind)
@@ -29,6 +29,7 @@ if [ -z "$SERVICE" ] || [ "$SERVICE" = "all" ]; then
     echo "CCO MCP Server:       http://10.20.0.23:8788"
     echo "PTA MCP Server:       http://10.20.0.23:8789"
     echo "PCA MCP Server:       http://10.20.0.23:8790"
+    echo "CDA MCP Server:       http://10.20.0.23:8795"
     echo "PCA Service (API):    http://10.20.0.23:8794"
 else
     echo "🔄 Starte Service '$SERVICE' neu..."

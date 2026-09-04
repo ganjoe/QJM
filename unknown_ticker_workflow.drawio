@@ -1,0 +1,253 @@
+<mxfile host="app.diagrams.net" modified="2026-09-03T22:15:00.000Z" agent="Antigravity" version="21.0.0" type="device">
+  <diagram id="unknown-ticker-workflow" name="Workflow Unbekannter Ticker">
+    <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1300" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ==================== HEADER / TITLE ==================== -->
+        <mxCell id="title_banner" value="&lt;b style=&quot;font-size: 20px;&quot;&gt;Workflow: Erkennung und Verarbeitung unbekannter Ticker in QJM&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size: 12px; color: #666;&quot;&gt;Automatisierte Ingestion von Quellen (Watchlist, CCO, PTA, User) über Provider-Auflösung bis zur Feature-Bereitstellung&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="30" width="1680" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== STAGE 1: QUELLEN (SOURCES) ==================== -->
+        <mxCell id="group_sources" value="1. Ticker-Quellen (Woher stammen neue/unbekannte Ticker?)" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#0066cc;fontStyle=1;fontSize=14;fontColor=#0066cc;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="360" height="840" as="geometry" />
+        </mxCell>
+
+        <mxCell id="src_pca" value="&lt;b&gt;Watchlist Management&lt;/b&gt;&lt;br&gt;&lt;i&gt;Agent: openbrain-pca&lt;/i&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;code&gt;import_watchlist&lt;/code&gt; (Bulk CSV/Text)&lt;/li&gt;&lt;li&gt;&lt;code&gt;manage_watchlist&lt;/code&gt; (ADD, LOAD)&lt;/li&gt;&lt;li&gt;Minervini Screens, FinViz Imports&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#000000;align=center;" vertex="1" parent="group_sources">
+          <mxGeometry x="25" y="50" width="310" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="src_cco" value="&lt;b&gt;Social &amp; Web Intelligence&lt;/b&gt;&lt;br&gt;&lt;i&gt;Agent: openbrain-cco&lt;/i&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;code&gt;discover_ticker_mentions&lt;/code&gt;&lt;/li&gt;&lt;li&gt;&lt;code&gt;search_influencer_posts&lt;/code&gt;&lt;/li&gt;&lt;li&gt;X / Twitter &amp; YouTube Extraktion&lt;/li&gt;&lt;li&gt;Neue Symbole in Posts (z.B. $NVDA, $BBAI)&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontColor=#000000;align=center;" vertex="1" parent="group_sources">
+          <mxGeometry x="25" y="200" width="310" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="src_pta" value="&lt;b&gt;Live-Trading &amp; Broker Sync&lt;/b&gt;&lt;br&gt;&lt;i&gt;Agent: openbrain-pta&lt;/i&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;code&gt;list_active_positions&lt;/code&gt; (IBKR Live)&lt;/li&gt;&lt;li&gt;&lt;code&gt;place_trade&lt;/code&gt; (Neue Orders)&lt;/li&gt;&lt;li&gt;Neue Käufe im Broker ohne Parquet&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontColor=#000000;align=center;" vertex="1" parent="group_sources">
+          <mxGeometry x="25" y="360" width="310" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="src_user" value="&lt;b&gt;Direkte Benutzeranfrage&lt;/b&gt;&lt;br&gt;&lt;i&gt;Chat / Agent Interaction&lt;/i&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;User: „Analysiere Ticker XYZ"&lt;/li&gt;&lt;li&gt;User: „Zeige Chart für XYZ"&lt;/li&gt;&lt;li&gt;Agent prüft Chartdaten für Antwort&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontColor=#000000;align=center;" vertex="1" parent="group_sources">
+          <mxGeometry x="25" y="510" width="310" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="src_scanner" value="&lt;b&gt;Technischer Scanner&lt;/b&gt;&lt;br&gt;&lt;i&gt;Agent: openbrain-pca&lt;/i&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;&quot;&gt;&lt;li&gt;&lt;code&gt;run_technical_scanner&lt;/code&gt;&lt;/li&gt;&lt;li&gt;Scans über Tickerlisten&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontColor=#000000;align=center;" vertex="1" parent="group_sources">
+          <mxGeometry x="25" y="660" width="310" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== STAGE 2: ERKENNUNG & STATUSPRÜFUNG ==================== -->
+        <mxCell id="group_detect" value="2. Ticker-Statusprüfung &amp; Identifikation" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#d79b00;fontStyle=1;fontSize=14;fontColor=#b45f06;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="460" y="120" width="360" height="840" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_collect" value="&lt;b&gt;Ticker-Übergabe an Daten-Pipeline&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Symbol-Normalisierung (Uppercase, z.B. „4gld&quot; → „4GLD&quot;)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b45f06;align=center;" vertex="1" parent="group_detect">
+          <mxGeometry x="25" y="50" width="310" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_status_check" value="&lt;b&gt;Lokale Datenabfrage&lt;/b&gt;&lt;br&gt;&lt;code&gt;manage_chart_downloads&lt;/code&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Action: &lt;b&gt;TICKER_STATUS&lt;/b&gt;&lt;br&gt;GET /data/status/{TICKER}&lt;br&gt;(auf stock-data-node :8002)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;" vertex="1" parent="group_detect">
+          <mxGeometry x="25" y="160" width="310" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="decision_exists" value="Parquet-Datei &amp;amp;&lt;br&gt;Tageskerzen&lt;br&gt;vorhanden?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;align=center;" vertex="1" parent="group_detect">
+          <mxGeometry x="95" y="280" width="170" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="known_path" value="&lt;b&gt;Ticker bereits BEKANNT ✅&lt;/b&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;font-size:11px;&quot;&gt;&lt;li&gt;&lt;code&gt;folder_exists: true&lt;/code&gt;&lt;/li&gt;&lt;li&gt;&lt;code&gt;has_data: true&lt;/code&gt;&lt;/li&gt;&lt;li&gt;Aktuelle Kerzen vorhanden&lt;/li&gt;&lt;/ul&gt;&lt;br&gt;Direkter Zugriff via &lt;code&gt;get_timeseries&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="group_detect">
+          <mxGeometry x="25" y="440" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="unknown_path" value="&lt;b&gt;Ticker UNBEKANNT ⚠️&lt;/b&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;font-size:11px;&quot;&gt;&lt;li&gt;&lt;code&gt;folder_exists: false&lt;/code&gt; ODER&lt;/li&gt;&lt;li&gt;&lt;code&gt;has_data: false&lt;/code&gt; (keine Parquet-Daten)&lt;/li&gt;&lt;li&gt;Kein lokales OHLCV vorhanden&lt;/li&gt;&lt;/ul&gt;&lt;br&gt;&lt;b style=&quot;color:#b85450;&quot;&gt;→ Start Ingestion &amp;amp; Mapping!&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;" vertex="1" parent="group_detect">
+          <mxGeometry x="25" y="600" width="310" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== STAGE 3: RESOLUTION & PROVIDER MAPPING ==================== -->
+        <mxCell id="group_mapping" value="3. Provider-Auflösung &amp; Mapping (add_ticker / CDA)" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#9673a6;fontStyle=1;fontSize=14;fontColor=#9673a6;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="860" y="120" width="440" height="840" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_add_ticker" value="&lt;b&gt;add_ticker(tickers=[&quot;XYZ&quot;])&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Aufruf durch PCA/CDA an stock-data-node &lt;code&gt;POST /add&lt;/code&gt;&lt;br&gt;Startet automatisierte Kaskade über gerankte Provider&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="30" y="50" width="380" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_ibkr_lookup" value="&lt;b&gt;Schritt 1: Primär-Provider IBKR Lookup&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Abfrage von Interactive Brokers Contract Details&lt;br&gt;(TWS / Gateway API: Symbol, Primary Exchange, Currency)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="30" y="150" width="380" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="decision_ibkr" value="IBKR Contract&lt;br&gt;gefunden?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="135" y="240" width="170" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_map_ibkr" value="&lt;b&gt;Mapping: Provider = &quot;IBKR&quot; ✅&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Z.B. AAPL → NASDAQ, USD, ConID 265598&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="240" y="360" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_yf_check" value="&lt;b&gt;Schritt 2: Fallback-Provider Yahoo Finance&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Aufruf &lt;code&gt;GET /fallback/check/{ticker}&lt;/code&gt;&lt;br&gt;Prüfung ob Ticker direkt oder mit Suffix verfügbar ist&lt;br&gt;(z.B. europäische Aktien: &lt;b&gt;4GLD → 4GLD.DE&lt;/b&gt;)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="30" y="450" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="decision_yf" value="YFinance&lt;br&gt;verfügbar?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="135" y="550" width="170" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_map_yf" value="&lt;b&gt;Mapping: Provider = &quot;YFINANCE&quot; ✅&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Speichert &lt;code&gt;yf_ticker&lt;/code&gt; &amp;amp; Börsen-Suffix&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="240" y="660" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_unresolved" value="&lt;b&gt;Fehlgeschlagen: Unresolved Symbol ❌&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Weder IBKR noch YFinance liefern Kontraktdaten.&lt;br&gt;&lt;b&gt;Lösung:&lt;/b&gt; &lt;code&gt;override_ticker_mapping&lt;/code&gt; (manuelles Mapping)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;" vertex="1" parent="group_mapping">
+          <mxGeometry x="30" y="740" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== STAGE 4: DOWNLOAD & BEREITSTELLUNG ==================== -->
+        <mxCell id="group_download" value="4. Priority Download &amp; Feature-Berechnung" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#2b78e4;fontStyle=1;fontSize=14;fontColor=#2b78e4;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="120" width="400" height="840" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_priority_queue" value="&lt;b&gt;Priority-Queue Ingestion&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Neu hinzugefügte Ticker erhalten &lt;b&gt;höchste Priorität&lt;/b&gt;!&lt;br&gt;Überspringt die reguläre Queue (5000+ Ticker)&lt;br&gt;Eingang in &lt;code&gt;stock-data-node&lt;/code&gt; Download-Manager&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;" vertex="1" parent="group_download">
+          <mxGeometry x="30" y="50" width="340" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_downloader" value="&lt;b&gt;Download Worker Ausführung&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;Worker bezieht Daten vom aktiven Provider:&lt;br&gt;• IBKR API (TWS / Gateway historische Daten)&lt;br&gt;• ODER YFinance API (Daily OHLCV)&lt;br&gt;• Bereinigung: Splits, Dividenden, Zeitzonen&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2b78e4;align=center;" vertex="1" parent="group_download">
+          <mxGeometry x="30" y="170" width="340" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_parquet" value="&lt;b&gt;Speicherung Parquet / DuckDB 💾&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;&lt;code&gt;/data/ohlcv/{TICKER}.parquet&lt;/code&gt;&lt;br&gt;1D Tageskerzen historisch gespeichert&lt;/span&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="group_download">
+          <mxGeometry x="70" y="300" width="260" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_features" value="&lt;b&gt;Feature-Berechnung (PCA-Daemon)&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;&quot;&gt;&lt;code&gt;trigger_feature_calculation&lt;/code&gt;&lt;br&gt;Berechnet technische Indikatoren:&lt;br&gt;• SMA 50 / SMA 200 / 21 EMA&lt;br&gt;• Minervini Stage 2 Trend Score&lt;br&gt;• ADR20 (Average Daily Range)&lt;br&gt;• RS Rating &amp;amp; Bollinger Bänder&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=center;" vertex="1" parent="group_download">
+          <mxGeometry x="30" y="420" width="340" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step_ready" value="&lt;b&gt;Ticker vollständig einsatzbereit! 🚀&lt;/b&gt;&lt;hr&gt;&lt;ul style=&quot;margin:0;padding-left:15px;text-align:left;font-size:11px;&quot;&gt;&lt;li&gt;&lt;code&gt;get_timeseries&lt;/code&gt; liefert Daten &amp;amp; Features&lt;/li&gt;&lt;li&gt;&lt;code&gt;run_technical_scanner&lt;/code&gt; scannt Ticker&lt;/li&gt;&lt;li&gt;Visualisierung im Chart-View&lt;/li&gt;&lt;li&gt;Portfolio &amp;amp; Trade-Ready für Agent-PTA&lt;/li&gt;&lt;/ul&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="group_download">
+          <mxGeometry x="30" y="580" width="340" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== MONITORING BAR ==================== -->
+        <mxCell id="monitoring_bar" value="&lt;b&gt;Echtzeit-Monitoring &amp;amp; Steuerung über MCP:&lt;/b&gt; &lt;code&gt;manage_chart_downloads&lt;/code&gt; (&lt;b&gt;GET_STATUS&lt;/b&gt; = Queue-Größe, &lt;b&gt;STALENESS_REPORT&lt;/b&gt; = Altersverteilung, &lt;b&gt;FALLBACK_CHECK&lt;/b&gt; = YF-Test, &lt;b&gt;TRIGGER_DOWNLOAD&lt;/b&gt; = Prio-Queueing)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;" vertex="1" parent="1">
+          <mxGeometry x="60" y="990" width="1680" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== EDGES / CONNECTIONS ==================== -->
+        <!-- Sources -> Collect -->
+        <mxCell id="edge_src1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="src_pca" target="step_collect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge_src2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" source="src_cco" target="step_collect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge_src3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="src_pta" target="step_collect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge_src4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" source="src_user" target="step_collect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge_src5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="src_scanner" target="step_collect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Collect -> Check -->
+        <mxCell id="edge_collect_check" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b45f06;strokeWidth=2;" edge="1" source="step_collect" target="step_status_check" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Check -> Decision -->
+        <mxCell id="edge_check_decision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b45f06;strokeWidth=2;" edge="1" source="step_status_check" target="decision_exists" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision -> Known (JA) -->
+        <mxCell id="edge_decision_known" value="JA" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_exists" target="known_path" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision -> Unknown (NEIN) -->
+        <mxCell id="edge_decision_unknown" value="NEIN (Unbekannt)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b85450;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_exists" target="unknown_path" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Unknown -> add_ticker -->
+        <mxCell id="edge_unknown_add" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b85450;strokeWidth=2;" edge="1" source="unknown_path" target="step_add_ticker" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- add_ticker -> IBKR lookup -->
+        <mxCell id="edge_add_ibkr" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" source="step_add_ticker" target="step_ibkr_lookup" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- IBKR lookup -> Decision IBKR -->
+        <mxCell id="edge_ibkr_decision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="step_ibkr_lookup" target="decision_ibkr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision IBKR -> JA -> Map IBKR -->
+        <mxCell id="edge_ibkr_ja" value="JA" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_ibkr" target="step_map_ibkr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision IBKR -> NEIN -> YF check -->
+        <mxCell id="edge_ibkr_nein" value="NEIN / Fallback nötig" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d6b656;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_ibkr" target="step_yf_check" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- YF check -> Decision YF -->
+        <mxCell id="edge_yf_decision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" source="step_yf_check" target="decision_yf" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision YF -> JA -> Map YF -->
+        <mxCell id="edge_yf_ja" value="JA (z.B. 4GLD.DE)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_yf" target="step_map_yf" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision YF -> NEIN -> Unresolved -->
+        <mxCell id="edge_yf_nein" value="NEIN" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b85450;strokeWidth=2;fontStyle=1;labelBackgroundColor=#ffffff;" edge="1" source="decision_yf" target="step_unresolved" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Map IBKR -> Priority Queue -->
+        <mxCell id="edge_map_ibkr_queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="step_map_ibkr" target="step_priority_queue" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Map YF -> Priority Queue -->
+        <mxCell id="edge_map_yf_queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="step_map_yf" target="step_priority_queue" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Priority Queue -> Downloader -->
+        <mxCell id="edge_queue_downloader" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2b78e4;strokeWidth=2;" edge="1" source="step_priority_queue" target="step_downloader" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Downloader -> Parquet -->
+        <mxCell id="edge_downloader_parquet" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2b78e4;strokeWidth=2;" edge="1" source="step_downloader" target="step_parquet" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Parquet -> Features -->
+        <mxCell id="edge_parquet_features" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="step_parquet" target="step_features" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Features -> Ready -->
+        <mxCell id="edge_features_ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="step_features" target="step_ready" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Known Path -> Ready -->
+        <mxCell id="edge_known_ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;strokeWidth=2;dashed=1;" edge="1" source="known_path" target="step_ready" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="640" y="560" />
+              <mxPoint x="830" y="560" />
+              <mxPoint x="830" y="900" />
+              <mxPoint x="1510" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
