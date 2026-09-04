@@ -21,6 +21,10 @@ You are operating within the **QJM (Quant Journey Master)** workspace. You have 
 * **`manage_watchlist` (agent-pca)**: CRUD operations in Supabase (`pca_watchlists`). Use `action: "LOAD"` with `list_name: "current_positions"` to fetch tickers.
 * **`import_watchlist` (agent-pca)**: Bulk-import raw text or files with local Parquet chart data availability checks.
 
+### 4.5 Desktop Chart Viewer Control
+* **`manage_chart_viewer` (agent-pca)**: Controls the native TC2000-style desktop chart viewer running on the user's screen.
+  * Actions: `DISPLAY_STOCK` (loads historical candles & indicators from local Parquet storage into the desktop viewer), `OPEN_WINDOW` (opens custom window), `ADD_ANNOTATION` (draws support/resistance `hline`, trendlines, boxes, or buy/sell `trade_marker`), `REMOVE_ANNOTATION` (removes drawing object), `SET_TOPBAR` (displays metrics in topbar grid), `STATUS` (checks viewer connection & open windows), `CLOSE_WINDOW` (closes window).
+
 
 
 ### 5. Chart Downloads & Data Health

@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: chart-viewer
+Version: 0.1.0
+Summary: TC2000-like desktop chart viewer controlled by an agent
+Requires-Python: >=3.10
+Requires-Dist: PySide6>=6.5.0
+Requires-Dist: msgspec>=0.18.0
+Requires-Dist: websockets>=12.0
