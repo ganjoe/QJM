@@ -106,6 +106,8 @@ class WebSocketTransport(AgentTransport):
                         backoff_ms = self.config.reconnect_backoff_initial_ms
                         self._last_received_sequence = -1
 
+                    print(f"[OK] Erfolgreich mit Agent Server verbunden!", flush=True)
+                    print(f"[INFO] Desktop Viewer ist betriebsbereit. Warte auf Chart-Befehle vom Agenten...\n", flush=True)
                     logger.info(f"Connected to {self.url}")
                     # Notify handshake readiness
                     self._on_connection_established()

@@ -41,24 +41,27 @@ for /d %%D in ("C:\Program Files\Python3*") do (
 echo ========================================================
 echo FEHLER: Kein funktionierendes Python auf Windows gefunden.
 echo ========================================================
-echo.
-echo Der Befehl 'python' verweist auf den Microsoft Store Alias.
-echo.
-echo Option 1: Schnellinstallation in der Windows PowerShell:
-echo   winget install Python.Python.3.12
-echo.
-echo Option 2: Von der offiziellen Website herunterladen:
-echo   https://www.python.org/downloads/
-echo   (WICHTIG: Beim Setup den Haken bei 'Add python.exe to PATH' setzen!)
-echo.
 pause
 exit /b 1
 
 :found_python
 echo Verwende Python: %PY_CMD%
-echo Verbinde mit Agent Server auf Linux (ws://10.20.0.23:8765)...
 echo.
 
+REM --- 1. Auto-Sync from Linux Server ---
+echo [1/3] Synchronisiere neueste Version vom Server (http://10.20.0.23:8766)...
+curl.exe -s -f -m 3 "http://10.20.0.23:8766/api/sync" -o "%~dp0src_bundle.tar" >nul 2>&1
+if exist "%~dp0src_bundle.tar" (
+    tar.exe -xf "%~dp0src_bundle.tar" -C "%~dp0."
+    del /f /q "%~dp0src_bundle.tar" >nul 2>&1
+    echo [OK] Code erfolgreich auf den neuesten Stand aktualisiert!
+) else (
+    echo [INFO] Server-Sync uebersprungen - Server offline oder unveraendert.
+)
+echo.
+
+REM --- 2. Check Dependencies ---
+echo [2/3] Pruefe Python-Abhaengigkeiten (PySide6, msgspec, websockets)...
 %PY_CMD% -c "import PySide6, msgspec, websockets" >nul 2>&1
 if errorlevel 1 goto :install_deps
 goto :run_app
@@ -68,12 +71,16 @@ echo Installiere erforderliche Pakete (PySide6, msgspec, websockets)...
 %PY_CMD% -m pip install PySide6 msgspec websockets
 if errorlevel 1 (
     echo.
-    echo Fehler bei der Installation der Abhängigkeiten.
+    echo Fehler bei der Installation der Abhaengigkeiten.
     pause
     exit /b 1
 )
 
 :run_app
+echo [3/3] Starte Desktop Chart Viewer Client...
+echo Verbinde mit ws://10.20.0.23:8765...
+echo.
+
 set PYTHONPATH=%~dp0src;%PYTHONPATH%
 %PY_CMD% "%~dp0src\chart_viewer\run_viewer.py" --ws ws://10.20.0.23:8765
 

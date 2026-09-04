@@ -87,14 +87,25 @@ class AnnotationsLayer(ChartLayer):
         painter.setPen(pen)
 
         if ann.type == "hline":
-            # Horizontal line across full canvas at price
+            # Horizontal line across chart area at price
             if ann.anchors:
                 a0 = ann.anchors[0]
                 price = a0.get("price", 0.0) if isinstance(a0, dict) else (a0.price or 0.0)
             else:
                 price = 0.0
             y = y_trans.price_to_y(price)
-            painter.drawLine(0, int(y), width, int(y))
+            chart_w = x_trans.viewport_width_px
+            painter.drawLine(0, int(y), int(chart_w), int(y))
+
+            # Price label badge in Y-axis scale gutter
+            badge_rect = QRectF(chart_w + 2, y - 9, 66, 18)
+            painter.fillRect(badge_rect, color)
+            painter.setPen(QColor("#FFFFFF"))
+            font = QFont(painter.font())
+            font.setPointSize(8)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, f"{price:.2f}")
 
         elif ann.type == "trendline" and len(ann.anchors) >= 2:
             p1 = self._anchor_to_pos(ann.anchors[0], x_trans, y_trans)

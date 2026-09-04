@@ -173,6 +173,9 @@ class ViewerApp(QObject):
         if not win_id:
             return
 
+        symbol = payload.get("symbol", "")
+        print(f"[CHART] Öffne Chart-Fenster '{win_id}' ({symbol})...", flush=True)
+
         if win_id not in self.windows:
             win = ChartWindow(window_id=win_id, config=self.config)
             self.windows[win_id] = win

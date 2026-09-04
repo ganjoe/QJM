@@ -36,6 +36,10 @@ class InteractionStateMachine:
         if self.state == InteractionState.IDLE:
             self.state = InteractionState.PANNING
 
+    def start_scaling_y(self) -> None:
+        if self.state == InteractionState.IDLE:
+            self.state = InteractionState.SCALING_Y
+
     def cancel(self) -> None:
         """Escape key cancels active tool immediately (Section 7 highest priority)."""
         self.state = InteractionState.IDLE

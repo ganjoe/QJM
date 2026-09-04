@@ -104,7 +104,16 @@ class YAxisTransform:
 
     def manual_scale(self, factor: float) -> None:
         """Manually scale Y-axis range (manual zoom)."""
-        mid = (self.p_top + self.p_bottom) / 2.0
-        half_span = (self.p_top - self.p_bottom) / 2.0 * factor
-        self.p_top = mid + half_span
-        self.p_bottom = mid - half_span
+        if self.mode == "linear":
+            mid = (self.p_top + self.p_bottom) / 2.0
+            half_span = (self.p_top - self.p_bottom) / 2.0 * factor
+            self.p_top = mid + half_span
+            self.p_bottom = mid - half_span
+        else:
+            mid = (self.l_top + self.l_bottom) / 2.0
+            half_span = (self.l_top - self.l_bottom) / 2.0 * factor
+            self.l_top = mid + half_span
+            self.l_bottom = mid - half_span
+            self.p_top = math.exp(self.l_top)
+            self.p_bottom = math.exp(self.l_bottom)
+

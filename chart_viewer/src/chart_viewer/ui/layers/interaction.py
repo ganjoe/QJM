@@ -127,25 +127,31 @@ class InteractionLayer(ChartLayer):
     ) -> None:
         p1 = self.measure_start_pos
         p2 = self.crosshair_pos
+        if not p1 or not p2:
+            return
 
-        rx = min(p1.x(), p2.x())
-        ry = min(p1.y(), p2.y())
-        rw = abs(p2.x() - p1.x())
-        rh = abs(p2.y() - p1.y())
-        rect = QRectF(rx, ry, rw, rh)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # Translucent bounding box
-        fill_color = QColor("#2962FF")
-        fill_color.setAlpha(35)
-        painter.fillRect(rect, fill_color)
+        # 1. Pure straight line (Gerade) connecting start (p1) and end (p2)
+        line_pen = QPen(QColor("#2962FF"))
+        line_pen.setWidth(2)
+        line_pen.setStyle(Qt.PenStyle.SolidLine)
+        painter.setPen(line_pen)
+        painter.drawLine(p1, p2)
 
-        border_pen = QPen(QColor("#2962FF"))
-        border_pen.setWidth(1)
-        border_pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(border_pen)
-        painter.drawRect(rect)
+        # Distinct endpoint anchor handles (outer ring + inner dot)
+        painter.setPen(QPen(QColor("#2962FF"), 2))
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawEllipse(p1, 5.0, 5.0)
+        painter.drawEllipse(p2, 5.0, 5.0)
 
-        # Delta metrics calculation
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor("#2962FF")))
+        painter.drawEllipse(p1, 2.0, 2.0)
+        painter.drawEllipse(p2, 2.0, 2.0)
+
+        # 2. Delta metrics calculation
         current_price = y_trans.y_to_price(p2.y())
         delta_price = current_price - self.measure_start_price
         start_p = self.measure_start_price if self.measure_start_price != 0 else 1.0
@@ -153,16 +159,61 @@ class InteractionLayer(ChartLayer):
 
         current_bar = x_trans.x_to_bar(p2.x())
         delta_bars = int(abs(current_bar - self.measure_start_bar))
+        days = delta_bars if self.bar_duration == 86400 else max(1, int(delta_bars * self.bar_duration / 86400))
 
-        sign = "+" if delta_price >= 0 else ""
-        info_text = f"{sign}{delta_price:.2f} ({sign}{delta_pct:.2f}%)\n{delta_bars} bars"
+        is_pos = delta_price >= 0
+        accent_color = QColor("#00E676" if is_pos else "#FF5252")
+        arrow = "▲" if is_pos else "▼"
+        sign = "+" if is_pos else ""
 
-        # Draw floating info badge
-        info_rect = QRectF(p2.x() + 10, p2.y() - 40, 130, 40)
-        painter.fillRect(info_rect, QColor(0, 0, 0, 180))
-        painter.setPen(QColor("#00E676" if delta_price >= 0 else "#FF5252"))
-        font = painter.font()
-        font.setPointSize(9)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(info_rect, Qt.AlignmentFlag.AlignCenter, info_text)
+        # 3. TC2000-Style Floating Infobox Card
+        card_w = 185.0
+        card_h = 72.0
+
+        bx = p2.x() + 18.0
+        if bx + card_w > width - 72.0:
+            bx = p2.x() - card_w - 18.0
+        if bx < 10.0:
+            bx = 10.0
+
+        by = p2.y() - card_h - 12.0
+        if by < 10.0:
+            by = p2.y() + 16.0
+        if by + card_h > height - 25.0:
+            by = height - 25.0 - card_h
+
+        card_rect = QRectF(bx, by, card_w, card_h)
+
+        # Subtle shadow
+        painter.fillRect(card_rect.translated(2, 2), QColor(0, 0, 0, 90))
+
+        # Card background with glassmorphism border
+        painter.setBrush(QBrush(QColor(18, 22, 30, 245)))
+        painter.setPen(QPen(QColor(55, 65, 85), 1.5))
+        painter.drawRoundedRect(card_rect, 6, 6)
+
+        # Header: Delta % and Delta $
+        header_font = QFont(painter.font())
+        header_font.setPointSize(11)
+        header_font.setBold(True)
+        painter.setFont(header_font)
+        painter.setPen(accent_color)
+        header_text = f"{arrow} {sign}{delta_pct:.2f}% ({sign}{delta_price:.2f} $)"
+        painter.drawText(QRectF(bx + 12, by + 8, card_w - 24, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, header_text)
+
+        # Line 2: Bars & Days
+        sub_font = QFont(painter.font())
+        sub_font.setPointSize(9)
+        sub_font.setBold(False)
+        painter.setFont(sub_font)
+        painter.setPen(QColor("#D1D4DC"))
+        line2_text = f"{delta_bars} Bars • {days} Tage"
+        painter.drawText(QRectF(bx + 12, by + 30, card_w - 24, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line2_text)
+
+        # Line 3: Start -> End Price
+        painter.setPen(QColor("#848E9C"))
+        line3_text = f"{self.measure_start_price:.2f} $ → {current_price:.2f} $"
+        painter.drawText(QRectF(bx + 12, by + 48, card_w - 24, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line3_text)
+
+        painter.restore()
+

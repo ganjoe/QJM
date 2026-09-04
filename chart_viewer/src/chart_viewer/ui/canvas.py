@@ -76,6 +76,8 @@ class ChartCanvas(QWidget):
         if win_data.timeframe:
             duration = win_data.timeframe.to_seconds()
 
+        self.layer1_bg.set_time_base(base_ts, duration)
+        self.layer1_bg.set_axis_mode(win_data.y_axis_mode)
         self.layer2_data.set_data(win_data.bars, win_data.overlays, win_data.style_defaults)
         self.layer3_ann.set_annotations(win_data.annotations, base_ts, duration)
         self.layer4_interaction.set_time_base(base_ts, duration)
@@ -122,8 +124,10 @@ class ChartCanvas(QWidget):
         super().resizeEvent(event)
         w = max(1.0, float(self.width()))
         h = max(1.0, float(self.height()))
-        self.x_trans.viewport_width_px = w
-        self.y_trans.viewport_height_px = h
+        chart_w = max(1.0, w - 70.0)
+        chart_h = max(1.0, h - 22.0)
+        self.x_trans.viewport_width_px = chart_w
+        self.y_trans.viewport_height_px = chart_h
         self._update_y_range()
         self.mark_layers_dirty()
 
@@ -172,8 +176,61 @@ class ChartCanvas(QWidget):
         delta = pos - self._last_mouse_pos
         self._last_mouse_pos = pos
 
+        chart_w = max(1.0, float(self.width()) - 70.0)
+        chart_h = max(1.0, float(self.height()) - 22.0)
+
         # Update Crosshair position
         self.layer4_interaction.set_crosshair(pos)
+
+        # State machine dispatch for active dragging
+        if self.sm.state == InteractionState.SCALING_Y:
+            # Dragging on Y-axis scale (Section 7)
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+            dy = pos.y() - self._drag_start_pos.y()
+            self._drag_start_pos = pos
+            scale_factor = 1.0 - (dy * 0.008)
+            if scale_factor > 0:
+                self.y_trans.manual_scale(scale_factor)
+                self.mark_layers_dirty()
+            return
+
+        elif self.sm.state == InteractionState.PANNING:
+            self.x_trans.pan(delta.x())
+            self._update_y_range()
+            self.mark_layers_dirty()
+            return
+
+        elif self.sm.state == InteractionState.MEASURING:
+            # Only Layer 4 repainted during measuring!
+            self.update()
+            return
+
+        elif self.sm.state == InteractionState.DRAGGING_ANNOTATION:
+            # Dragging annotation: optimistic update
+            ann_id = self.sm.active_annotation_id
+            if ann_id and self.window_data and ann_id in self.window_data.annotations:
+                ann = self.window_data.annotations[ann_id]
+                anchor_idx = self.sm.active_anchor_index
+                new_price = self.y_trans.y_to_price(pos.y())
+                bar_idx = self.x_trans.x_to_bar(pos.x())
+                duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
+                new_t = int(self.window_data.bars[0].t_open + bar_idx * duration) if self.window_data.bars else 0
+
+                if anchor_idx is not None and anchor_idx < len(ann.anchors):
+                    ann.anchors[anchor_idx].price = new_price
+                    ann.anchors[anchor_idx].t = new_t
+                else:
+                    # Move entire annotation
+                    for anchor in ann.anchors:
+                        anchor.price = new_price
+                self.mark_layers_dirty()
+            return
+
+        # Idle hover: cursor selection
+        if pos.x() >= chart_w and pos.y() < chart_h:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
 
         # Check edge data request
         if self.window_data and self.window_data.bars:
@@ -187,48 +244,31 @@ class ChartCanvas(QWidget):
             ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
             self.crosshair_moved.emit(ts, bar_idx)
 
-        # State machine dispatch
-        if self.sm.state == InteractionState.PANNING:
-            self.x_trans.pan(delta.x())
-            self._update_y_range()
-            self.mark_layers_dirty()
-
-        elif self.sm.state == InteractionState.MEASURING:
-            # Only Layer 4 repainted during measuring!
-            self.update()
-
-        elif self.sm.state == InteractionState.DRAGGING_ANNOTATION:
-            # Dragging annotation: optimistic update
-            ann_id = self.sm.active_annotation_id
-            if ann_id and self.window_data and ann_id in self.window_data.annotations:
-                ann = self.window_data.annotations[ann_id]
-                anchor_idx = self.sm.active_anchor_index
-                new_price = self.y_trans.y_to_price(pos.y())
-                duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
-                new_t = int(self.window_data.bars[0].t_open + bar_idx * duration) if self.window_data.bars else 0
-
-                if anchor_idx is not None and anchor_idx < len(ann.anchors):
-                    ann.anchors[anchor_idx].price = new_price
-                    ann.anchors[anchor_idx].t = new_t
-                else:
-                    # Move entire annotation
-                    for anchor in ann.anchors:
-                        anchor.price = new_price
-                self.mark_layers_dirty()
-
-        else:
-            # Idle mouse move: only Layer 4 needs repaint!
-            self.update()
+        # Repaint Layer 4 (Crosshair)
+        self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position()
         self._drag_start_pos = pos
+
+        chart_w = max(1.0, float(self.width()) - 70.0)
+        chart_h = max(1.0, float(self.height()) - 22.0)
 
         if event.button() == Qt.MouseButton.MiddleButton:
             # Middle click + drag -> Panning (Section 7)
             self.sm.start_panning()
 
         elif event.button() == Qt.MouseButton.LeftButton:
+            if pos.x() >= chart_w and pos.y() < chart_h:
+                # Drag on Y-axis -> Manual Y-scaling, sets y_axis_mode = manual (Section 7)
+                if self.window_data:
+                    self.window_data.y_axis_mode = "manual"
+                    self.layer1_bg.set_axis_mode("manual")
+                self.sm.start_scaling_y()
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+                self.mark_layers_dirty()
+                return
+
             # Hit-test annotations (handles -> lines -> empty space)
             base_ts = self.window_data.bars[0].t_open if (self.window_data and self.window_data.bars) else 0
             duration = self.window_data.timeframe.to_seconds() if (self.window_data and self.window_data.timeframe) else 86400
@@ -248,14 +288,15 @@ class ChartCanvas(QWidget):
                 self.sm.start_dragging_annotation(ann_id, anchor_idx)
                 self.mark_layers_dirty()
             else:
-                # Left click on empty chart -> Measuring Tool (Section 7)
-                self.layer3_ann.selected_annotation_id = None
-                self.sm.start_measuring()
-                price = self.y_trans.y_to_price(pos.y())
-                bar_idx = self.x_trans.x_to_bar(pos.x())
-                ts = int(base_ts + bar_idx * duration)
-                self.layer4_interaction.start_measuring(pos, price, bar_idx, ts)
-                self.mark_layers_dirty()
+                # Left click on empty chart area -> Measuring Tool (Section 7)
+                if pos.x() < chart_w and pos.y() < chart_h:
+                    self.layer3_ann.selected_annotation_id = None
+                    self.sm.start_measuring()
+                    price = self.y_trans.y_to_price(pos.y())
+                    bar_idx = self.x_trans.x_to_bar(pos.x())
+                    ts = int(base_ts + bar_idx * duration)
+                    self.layer4_interaction.start_measuring(pos, price, bar_idx, ts)
+                    self.mark_layers_dirty()
 
         elif event.button() == Qt.MouseButton.RightButton:
             # Right-click context menu (Section 7)
@@ -296,6 +337,20 @@ class ChartCanvas(QWidget):
                 ]
                 self.annotation_moved.emit(ann_id, {"anchors": anchors_payload})
 
+        elif prior_state == InteractionState.SCALING_Y:
+            chart_w = max(1.0, float(self.width()) - 70.0)
+            if event.position().x() < chart_w:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        pos = event.position()
+        chart_w = max(1.0, float(self.width()) - 70.0)
+        if pos.x() >= chart_w:
+            # Double-click on Y-axis -> Reset axes to Auto!
+            self._on_reset_axes()
+        else:
+            super().mouseDoubleClickEvent(event)
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         modifiers = event.modifiers()
         angle = event.angleDelta().y()
@@ -306,6 +361,7 @@ class ChartCanvas(QWidget):
             # Shift + Wheel -> Manual Y-Zoom, sets y_axis_mode = manual (Section 7)
             if self.window_data:
                 self.window_data.y_axis_mode = "manual"
+                self.layer1_bg.set_axis_mode("manual")
             self.y_trans.manual_scale(factor)
             self.mark_layers_dirty()
         else:
@@ -333,5 +389,7 @@ class ChartCanvas(QWidget):
     def _on_reset_axes(self) -> None:
         if self.window_data:
             self.window_data.y_axis_mode = "auto"
+        self.layer1_bg.set_axis_mode("auto")
         self._update_y_range()
         self.mark_layers_dirty()
+

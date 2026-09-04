@@ -63,6 +63,15 @@
       * **`import_watchlist`**: Use when **bulk importing new watchlists from text/files** with automatic verification of local Parquet chart data availability.
       * **`manage_feature_calculation`**: System-level background daemon control (GET_STATUS, TRIGGER, SET_SCHEDULE).
         * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.
+      * **`manage_chart_viewer`**: Controls the native TC2000-style desktop chart viewer running on the user's screen.
+        * Actions:
+          * `'DISPLAY_STOCK'`: Loads historical candles & indicators from local Parquet storage into the desktop viewer (e.g. `ticker: "NVDA"`).
+          * `'OPEN_WINDOW'`: Opens or registers a custom chart window.
+          * `'ADD_ANNOTATION'`: Draws support/resistance lines (`hline`), trendlines, rectangles, or buy/sell trade markers (`trade_marker`).
+          * `'REMOVE_ANNOTATION'`: Removes a drawing object by ID.
+          * `'SET_TOPBAR'`: Displays formatted status/metric blocks in the chart topbar (e.g. Minervini Stage 2 rating, ATR, Stop-loss level).
+          * `'STATUS'`: Checks viewer connection & open windows.
+          * `'CLOSE_WINDOW'`: Closes a chart window.
 
       ### B. Trading, Execution & Portfolio (`openbrain-pta`)
       * **`get_quote`**: Use to fetch the **single real-time current market price** of a ticker from Interactive Brokers (IBKR).
@@ -118,6 +127,12 @@
          → Call `manage_chart_downloads(action: "TICKER_STATUS", tickers: ["AAPL"])`.
       9. **"Add ticker 4GLD to database."**
          → Call `add_ticker(tickers: ["4GLD"])`.
+      10. **"Show me the chart of NVDA on my screen / in the chart viewer."**
+          → Call `manage_chart_viewer(action: "DISPLAY_STOCK", ticker: "NVDA")`.
+      11. **"Draw a support line at 120.50 on NVDA."**
+          → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
+      12. **"Close the NVDA chart window."**
+          → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
 
       ---
 

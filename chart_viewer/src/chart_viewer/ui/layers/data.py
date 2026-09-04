@@ -43,6 +43,12 @@ class DataLayer(ChartLayer):
         if not self.bars:
             return
 
+        chart_w = x_trans.viewport_width_px
+        chart_h = y_trans.viewport_height_px
+
+        painter.save()
+        painter.setClipRect(0, 0, int(chart_w), int(chart_h))
+
         candle_w = x_trans.candle_width_px
         is_thin_bar = candle_w < self.config.thin_bar_threshold_px
 
@@ -54,8 +60,8 @@ class DataLayer(ChartLayer):
         min_idx = max(0, math.floor(x_trans.min_visible_bar_index))
         max_idx = min(len(self.bars) - 1, math.ceil(x_trans.right_index))
 
-        # Volume baseline (bottom 20% of canvas)
-        vol_height = height * 0.20
+        # Volume baseline (bottom 20% of chart area)
+        vol_height = chart_h * 0.20
         max_vol = max((b.volume for b in self.bars[min_idx : max_idx + 1]), default=1.0)
         if max_vol <= 0:
             max_vol = 1.0
@@ -64,12 +70,12 @@ class DataLayer(ChartLayer):
         for i in range(min_idx, max_idx + 1):
             bar = self.bars[i]
             x_center = x_trans.bar_to_x(i)
-            if x_center + candle_w < 0 or x_center - candle_w > width:
+            if x_center + candle_w < 0 or x_center - candle_w > chart_w:
                 continue
 
             color_info = resolve_bar_color(bar, self.series_style, self.config)
             vol_h = (bar.volume / max_vol) * vol_height
-            vol_y = height - vol_h
+            vol_y = chart_h - vol_h
 
             vol_color = QColor(color_info.border_color)
             vol_color.setAlpha(60)  # Subtle translucent volume

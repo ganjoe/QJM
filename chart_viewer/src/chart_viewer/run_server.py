@@ -42,6 +42,28 @@ def main():
                     "layout_ledger": agent.layout_ledger,
                 }
                 self.wfile.write(json.dumps(res).encode("utf-8"))
+
+            elif self.path == "/api/sync" or self.path == "/api/sync_bundle":
+                import io, tarfile, os
+                try:
+                    base_dir = os.path.dirname(os.path.abspath(__file__))
+                    src_dir = os.path.abspath(os.path.join(base_dir, ".."))
+                    buf = io.BytesIO()
+                    with tarfile.open(fileobj=buf, mode="w") as tar:
+                        tar.add(src_dir, arcname="src", filter=lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti)
+                    data = buf.getvalue()
+
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-tar")
+                    self.send_header("Content-Disposition", 'attachment; filename="src_bundle.tar"')
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except Exception as e:
+                    logger.exception(f"Error serving sync bundle: {e}")
+                    self.send_response(500)
+                    self.end_headers()
+
             else:
                 self.send_response(404)
                 self.end_headers()

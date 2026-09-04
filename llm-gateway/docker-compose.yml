@@ -84,6 +84,7 @@ services:
       - mcp-pta
       - mcp-pca
       - mcp-cda
+      - chart-viewer-server
     restart: unless-stopped
 
   # ============================================
@@ -222,6 +223,7 @@ services:
       STOCK_DATA_NODE_URL: http://stock-data-node:8002
       PORT: "8790"
       AGENT_ID: "pca"
+      CHART_VIEWER_API_URL: http://chart-viewer-server:8766
     ports:
       - "8790:8790"
     extra_hosts:
@@ -231,6 +233,27 @@ services:
         aliases:
           - mcp-pca
           - llm-gw-mcp-pca
+
+  # ============================================
+  # Chart Viewer Server — Agent WebSocket & HTTP Control API
+  # ============================================
+  chart-viewer-server:
+    build:
+      context: ../chart_viewer
+      dockerfile: Dockerfile.server
+    image: llm-gw-chart-viewer-server:latest
+    container_name: qjm-chart-viewer-server
+    restart: unless-stopped
+    volumes:
+      - ../chart_viewer/src:/app/src:ro
+      - ../chart_viewer/run_server.py:/app/run_server.py:ro
+    ports:
+      - "8765:8765"
+      - "8766:8766"
+    networks:
+      default:
+        aliases:
+          - chart-viewer-server
 
   # ============================================
   # CDA MCP Server — Chart Download & Data Ingestion Agent
