@@ -378,9 +378,19 @@ class ViewerApp(QObject):
 
         request_id = payload.get("request_id", "")
         target_win_id = payload.get("window_id")
-        target_width = int(payload.get("width", self.config.screenshot_width))
-        target_height = int(payload.get("height", self.config.screenshot_height))
+
+        is_hires = bool(
+            payload.get("hires")
+            or payload.get("resolution") in ("hires", "800x600")
+            or payload.get("mode") == "hires"
+        )
+        default_w = self.config.screenshot_hires_width if is_hires else self.config.screenshot_width
+        default_h = self.config.screenshot_hires_height if is_hires else self.config.screenshot_height
+
+        target_width = int(payload.get("width", default_w))
+        target_height = int(payload.get("height", default_h))
         mode = payload.get("mode", self.config.screenshot_mode)
+        sharpen_amount = float(payload.get("sharpen_amount", self.config.screenshot_sharpen_amount))
 
         screenshots = []
 
@@ -396,38 +406,47 @@ class ViewerApp(QObject):
                 if pixmap.isNull():
                     continue
 
+                # Ensure 1:1 pixel mapping for accurate downsampling
+                src_img = pixmap.toImage()
+                src_img.setDevicePixelRatio(1.0)
+
                 if mode == "stretch":
-                    scaled_img = pixmap.scaled(
+                    scaled_img = src_img.scaled(
                         target_width,
                         target_height,
                         Qt.AspectRatioMode.IgnoreAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
-                    ).toImage()
+                    )
                 elif mode == "fit":
-                    scaled_img = pixmap.scaled(
+                    scaled_img = src_img.scaled(
                         target_width,
                         target_height,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
-                    ).toImage()
+                    )
                 else:
                     # Default: "letterbox" on background color to preserve aspect ratio without distortion
                     bg_color = QColor(self.config.default_background_color)
                     final_img = QImage(target_width, target_height, QImage.Format.Format_ARGB32_Premultiplied)
                     final_img.fill(bg_color)
 
-                    scaled_pix = pixmap.scaled(
+                    scaled_sub = src_img.scaled(
                         target_width,
                         target_height,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
                     )
                     painter = QPainter(final_img)
-                    x_offset = (target_width - scaled_pix.width()) // 2
-                    y_offset = (target_height - scaled_pix.height()) // 2
-                    painter.drawPixmap(x_offset, y_offset, scaled_pix)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                    x_offset = (target_width - scaled_sub.width()) // 2
+                    y_offset = (target_height - scaled_sub.height()) // 2
+                    painter.drawImage(x_offset, y_offset, scaled_sub)
                     painter.end()
                     scaled_img = final_img
+
+                # Apply edge sharpening to eliminate downscaling blur
+                if sharpen_amount > 0:
+                    scaled_img = self._sharpen_image(scaled_img, factor=sharpen_amount)
 
                 ba = QByteArray()
                 buffer = QBuffer(ba)
@@ -438,6 +457,7 @@ class ViewerApp(QObject):
                 symbol = getattr(win, "symbol", "")
                 if not symbol and getattr(win, "canvas", None) and getattr(win.canvas, "window_data", None):
                     symbol = getattr(win.canvas.window_data, "symbol", "")
+
 
 
                 screenshots.append({
@@ -462,4 +482,42 @@ class ViewerApp(QObject):
             self.transport.send_command(resp_env)
         except Exception as e:
             logger.error(f"Failed to send screenshot.response: {e}")
+
+    @staticmethod
+    def _sharpen_image(img: QImage, factor: float = 0.5) -> QImage:
+        """Edge sharpening using Qt QPainter difference blend to eliminate blur on downscaled charts."""
+        from PySide6.QtGui import QPainter
+        from PySide6.QtCore import Qt
+
+        w, h = img.width(), img.height()
+        if w < 10 or h < 10:
+            return img
+
+        # Fast 2x downscale/upscale to extract smooth base
+        blurred = img.scaled(
+            w // 2, h // 2,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ).scaled(
+            w, h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        # Highpass delta
+        highpass = img.copy()
+        p1 = QPainter(highpass)
+        p1.setCompositionMode(QPainter.CompositionMode.CompositionMode_Difference)
+        p1.drawImage(0, 0, blurred)
+        p1.end()
+
+        # Blend edges back onto image with Screen mode to sharpen lines/fonts
+        sharpened = img.copy()
+        p2 = QPainter(sharpened)
+        p2.setOpacity(min(1.0, max(0.0, factor)))
+        p2.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        p2.drawImage(0, 0, highpass)
+        p2.end()
+        return sharpened
+
 

@@ -291,10 +291,19 @@ def main():
                                 import time
                                 from chart_viewer.config import GLOBAL_CONFIG
 
+                                is_hires = bool(
+                                    cmd.get("hires")
+                                    or cmd.get("resolution") in ("hires", "800x600")
+                                    or cmd.get("mode") == "hires"
+                                )
+                                default_w = GLOBAL_CONFIG.screenshot_hires_width if is_hires else GLOBAL_CONFIG.screenshot_width
+                                default_h = GLOBAL_CONFIG.screenshot_hires_height if is_hires else GLOBAL_CONFIG.screenshot_height
+
                                 timeout = float(cmd.get("timeout_sec", GLOBAL_CONFIG.screenshot_timeout_sec))
-                                width = cmd.get("width", GLOBAL_CONFIG.screenshot_width)
-                                height = cmd.get("height", GLOBAL_CONFIG.screenshot_height)
+                                width = int(cmd.get("width", default_w))
+                                height = int(cmd.get("height", default_h))
                                 mode = cmd.get("mode", GLOBAL_CONFIG.screenshot_mode)
+                                sharpen_amount = float(cmd.get("sharpen_amount", GLOBAL_CONFIG.screenshot_sharpen_amount))
                                 out_dir = cmd.get("output_dir", GLOBAL_CONFIG.screenshot_output_dir)
 
                                 os.makedirs(out_dir, exist_ok=True)
@@ -305,7 +314,10 @@ def main():
                                     height=height,
                                     mode=mode,
                                     timeout_s=timeout,
+                                    sharpen_amount=sharpen_amount,
+                                    hires=is_hires,
                                 )
+
 
                                 capture_id = snap_res.get("request_id", f"snap_{int(time.time())}")
                                 saved_files = []

@@ -62,9 +62,12 @@ export function registerChartViewerTools(server: McpServer) {
           ttl_ms: z.number().optional().describe("Optional time-to-live in milliseconds"),
         }).optional().describe("Topbar block definition for SET_TOPBAR"),
         limit: z.number().optional().default(300).describe("Number of historical candles to load (Default 300)"),
+        resolution: z.enum(["standard", "hires", "640x480", "800x600"]).optional().default("standard").describe("Screenshot resolution: 'standard' (640x480) or 'hires' (800x600)"),
+        hires: z.boolean().optional().describe("Shortcut to capture high-resolution 800x600 screenshots"),
       },
     },
-    async ({ action, ticker, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit }: any) => {
+    async ({ action, ticker, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, resolution, hires }: any) => {
+
       try {
         const tf = timeframe || "1D";
 
@@ -263,8 +266,11 @@ export function registerChartViewerTools(server: McpServer) {
             body: JSON.stringify({
               action: "SCREENSHOT",
               window_id: window_id || undefined,
+              resolution,
+              hires,
             }),
           });
+
 
           if (!res.ok) {
             const errText = await res.text();

@@ -157,6 +157,8 @@ class ChartAgent:
         height: Optional[int] = None,
         mode: Optional[str] = None,
         timeout_s: float = 10.0,
+        sharpen_amount: Optional[float] = None,
+        hires: Optional[bool] = None,
     ) -> dict:
         """Send screenshot.request command to viewer clients and wait for response."""
         import threading
@@ -177,6 +179,11 @@ class ChartAgent:
             payload["height"] = height
         if mode:
             payload["mode"] = mode
+        if sharpen_amount is not None:
+            payload["sharpen_amount"] = sharpen_amount
+        if hires is not None:
+            payload["hires"] = hires
+
 
         env = make_envelope(
             msg_type="screenshot.request",

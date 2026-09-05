@@ -51,9 +51,12 @@ class ViewerConfig:
     # Screenshot settings (for agent UI debugging)
     screenshot_width: int = 640
     screenshot_height: int = 480
+    screenshot_hires_width: int = 800
+    screenshot_hires_height: int = 600
     screenshot_timeout_sec: float = 10.0
     screenshot_output_dir: str = "/home/daniel/QJM/dsh_playground"
     screenshot_mode: str = "letterbox"  # 'letterbox', 'fit', or 'stretch'
+    screenshot_sharpen_amount: float = 0.5  # Edge enhancement to eliminate downscaling blur
 
     @classmethod
     def from_env(cls) -> ViewerConfig:
@@ -76,10 +79,14 @@ class ViewerConfig:
             margin_bottom_pct=float(os.getenv("CV_MARGIN_BOTTOM_PCT", "0.05")),
             screenshot_width=int(os.getenv("CV_SCREENSHOT_WIDTH", "640")),
             screenshot_height=int(os.getenv("CV_SCREENSHOT_HEIGHT", "480")),
+            screenshot_hires_width=int(os.getenv("CV_SCREENSHOT_HIRES_WIDTH", "800")),
+            screenshot_hires_height=int(os.getenv("CV_SCREENSHOT_HIRES_HEIGHT", "600")),
             screenshot_timeout_sec=float(os.getenv("CV_SCREENSHOT_TIMEOUT_SEC", "10.0")),
             screenshot_output_dir=os.getenv("CV_SCREENSHOT_DIR", "/home/daniel/QJM/dsh_playground"),
             screenshot_mode=os.getenv("CV_SCREENSHOT_MODE", "letterbox"),
+            screenshot_sharpen_amount=float(os.getenv("CV_SCREENSHOT_SHARPEN_AMOUNT", "0.5")),
         )
+
 
 
 GLOBAL_CONFIG = ViewerConfig.from_env()

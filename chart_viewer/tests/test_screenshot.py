@@ -88,3 +88,30 @@ def test_screenshot_disk_save():
 
         assert os.path.exists(filepath)
         assert os.path.getsize(filepath) == len(fake_png)
+
+
+def test_screenshot_hires_800x600(qapp):
+    """When hires=True is requested, screenshot captures 800x600 PNG."""
+    viewer_transport, agent_transport = create_in_process_pair()
+    agent = ChartAgent(transport=agent_transport)
+    app = ViewerApp(transport=viewer_transport)
+
+    agent.start()
+    app.start()
+
+    agent.open_window(window_id="test_win_hires", symbol="MSFT")
+    qapp.processEvents()
+
+    res = agent.request_screenshots(window_id="test_win_hires", hires=True, timeout_s=2.0)
+    assert res is not None
+    assert len(res["screenshots"]) == 1
+
+    shot = res["screenshots"][0]
+    assert shot["window_id"] == "test_win_hires"
+    assert shot["symbol"] == "MSFT"
+    assert shot["width"] == 800
+    assert shot["height"] == 600
+
+    png_bytes = base64.b64decode(shot["image_base64"])
+    assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+
