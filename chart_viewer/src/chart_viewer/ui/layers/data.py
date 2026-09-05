@@ -242,3 +242,29 @@ class DataLayer(ChartLayer):
             if upper_points and lower_points:
                 poly = QPolygonF(upper_points + list(reversed(lower_points)))
                 painter.drawPolygon(poly)
+
+        elif ov_type == "histogram":
+            hist_color = QColor(color)
+            hist_color.setAlpha(style.get("alpha", 70))
+            painter.setBrush(QBrush(hist_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            
+            # Find max value for scaling at the bottom 20%
+            valid_vals = [get_pt_values(pt)[1] for pt in overlay.values if get_pt_values(pt)[1] is not None]
+            max_val = max(valid_vals) if valid_vals else 1.0
+            if max_val == 0: max_val = 1.0
+            hist_height = height * 0.2
+            y_base = float(height)
+
+            candle_w = max(1.0, x_trans.candle_width_px * 0.8)
+            for pt in overlay.values:
+                try:
+                    t, val, _ = get_pt_values(pt)
+                    idx = get_bar_idx(t)
+                    x = x_trans.bar_to_x(idx)
+                    
+                    bar_h = (val / max_val) * hist_height
+                    bar_rect = QRectF(x - candle_w / 2.0, y_base - bar_h, candle_w, bar_h)
+                    painter.drawRect(bar_rect)
+                except Exception:
+                    continue

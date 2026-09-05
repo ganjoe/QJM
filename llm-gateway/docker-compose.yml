@@ -244,12 +244,19 @@ services:
     image: llm-gw-chart-viewer-server:latest
     container_name: qjm-chart-viewer-server
     restart: unless-stopped
+    environment:
+      - PCA_SERVICE_URL=http://pca-service:8791
     volumes:
       - ../chart_viewer/src:/app/src:ro
       - ../chart_viewer/run_server.py:/app/run_server.py:ro
+      - ../dsh_playground:/home/daniel/QJM/dsh_playground:rw
+      - ../dsh_playground:/dsh_playground:rw
     ports:
+
       - "8765:8765"
       - "8766:8766"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       default:
         aliases:

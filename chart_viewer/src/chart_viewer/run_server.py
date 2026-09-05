@@ -22,6 +22,32 @@ def main():
     logger.info(f"=== Chart Agent WebSocket Server active on ws://0.0.0.0:{port} ===")
     logger.info("Waiting for Desktop Viewer clients (e.g. from your Windows PC)...")
 
+    import threading
+    import urllib.request
+    
+    def on_ready():
+        if not agent.layout_ledger:
+            logger.info("No active windows on connect, triggering default chart from last state...")
+            def send_default():
+                try:
+                    import os
+                    payload = b'{"action":"DISPLAY_STOCK","symbol":"NVDA","preset":"qmaggi"}'
+                    if os.path.exists("/tmp/last_chart_state.json"):
+                        with open("/tmp/last_chart_state.json", "rb") as f:
+                            payload = f.read()
+                    
+                    req = urllib.request.Request(
+                        "http://127.0.0.1:8766/api/command",
+                        data=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    urllib.request.urlopen(req)
+                except Exception as e:
+                    logger.error(f"Failed to load default chart: {e}")
+            threading.Thread(target=send_default, daemon=True).start()
+            
+    agent.on_viewer_ready_callback = on_ready
+
     # Start HTTP Control API on port 8766 for MCP tools
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import json
@@ -175,8 +201,154 @@ def main():
                         server_transport.send_command(env)
                         result = {"status": "ok", "action": action, "window_id": win_id}
 
+                    elif action == "DISPLAY_STOCK":
+                        # Save the command state so it can be restored on connect/restart
+                        try:
+                            with open("/tmp/last_chart_state.json", "w") as f:
+                                json.dump(cmd, f)
+                        except Exception as e:
+                            logger.warning(f"Failed to save last_chart_state: {e}")
+
+                        # Full orchestration: fetch data from PCA-Service, build overlays, push to viewer
+                        from chart_viewer.orchestrator import build_display_stock
+                        symbol = cmd.get("symbol")
+                        if not symbol:
+                            result = {"error": "Missing 'symbol' parameter"}
+                        else:
+                            try:
+                                display_cmd = build_display_stock(
+                                    symbol=symbol,
+                                    indicators=cmd.get("indicators"),
+                                    preset=cmd.get("preset"),
+                                    timeframe=cmd.get("timeframe_str", "1D"),
+                                    limit=cmd.get("limit", 300),
+                                    position=cmd.get("position"),
+                                    size=cmd.get("size"),
+                                    topbar_metrics=cmd.get("topbar_metrics"),
+                                    window_id=cmd.get("window_id"),
+                                )
+
+                                # Extract and execute as OPEN_WINDOW
+                                ds_symbol = display_cmd["symbol"]
+                                ds_tf = display_cmd["timeframe"]
+                                ds_win_id = display_cmd["window_id"]
+                                ds_sync_group = display_cmd.get("sync_group_id", "stocks")
+
+                                agent.open_window(
+                                    window_id=ds_win_id,
+                                    symbol=ds_symbol,
+                                    timeframe_unit=ds_tf.get("unit", "D"),
+                                    multiplier=ds_tf.get("multiplier", 1),
+                                    sync_group_id=ds_sync_group,
+                                    position=display_cmd.get("position"),
+                                    size=display_cmd.get("size"),
+                                )
+
+                                snap = {
+                                    "symbol": ds_symbol,
+                                    "timeframe": ds_tf,
+                                    "sync_group_id": ds_sync_group,
+                                    "bars": display_cmd["bars"],
+                                    "overlays": display_cmd.get("overlays", []),
+                                    "annotations": display_cmd.get("annotations", []),
+                                }
+                                agent.send_snapshot(ds_win_id, snap)
+
+                                # Set topbar if provided
+                                topbar = display_cmd.get("topbar")
+                                if topbar:
+                                    from chart_viewer.models.envelope import make_envelope as mk_env, MessageKind as MK
+                                    tb_env = mk_env(
+                                        msg_type="topbar.set_block",
+                                        payload={
+                                            "block_id": topbar.get("block_id", "info_block"),
+                                            "position": {"row": 0, "col": 0},
+                                            "content": topbar.get("content", ""),
+                                        },
+                                        kind=MK.COMMAND,
+                                        window_id=ds_win_id,
+                                    )
+                                    server_transport.send_command(tb_env)
+
+                                result = {
+                                    "status": "ok",
+                                    "action": action,
+                                    "window_id": ds_win_id,
+                                    "bars": len(display_cmd["bars"]),
+                                    "overlays": len(display_cmd.get("overlays", [])),
+                                }
+                            except Exception as de:
+                                logger.error(f"DISPLAY_STOCK failed: {de}")
+                                result = {"error": f"DISPLAY_STOCK failed: {str(de)}"}
+
+                    elif action in ("SCREENSHOT", "CAPTURE_SCREENSHOT"):
+                        if not server_transport._clients:
+                            result = {"error": "No Desktop Viewer clients connected"}
+                        else:
+                            try:
+                                import base64
+                                import os
+                                import time
+                                from chart_viewer.config import GLOBAL_CONFIG
+
+                                timeout = float(cmd.get("timeout_sec", GLOBAL_CONFIG.screenshot_timeout_sec))
+                                width = cmd.get("width", GLOBAL_CONFIG.screenshot_width)
+                                height = cmd.get("height", GLOBAL_CONFIG.screenshot_height)
+                                mode = cmd.get("mode", GLOBAL_CONFIG.screenshot_mode)
+                                out_dir = cmd.get("output_dir", GLOBAL_CONFIG.screenshot_output_dir)
+
+                                os.makedirs(out_dir, exist_ok=True)
+
+                                snap_res = agent.request_screenshots(
+                                    window_id=win_id,
+                                    width=width,
+                                    height=height,
+                                    mode=mode,
+                                    timeout_s=timeout,
+                                )
+
+                                capture_id = snap_res.get("request_id", f"snap_{int(time.time())}")
+                                saved_files = []
+
+                                for s in snap_res.get("screenshots", []):
+                                    w_id = s.get("window_id", "win")
+                                    b64_data = s.get("image_base64", "")
+                                    if not b64_data:
+                                        continue
+
+                                    clean_win_id = str(w_id).replace(":", "_").replace("/", "_").replace("\\", "_")
+                                    filename = f"screenshot_{capture_id}_{clean_win_id}.png"
+                                    filepath = os.path.join(out_dir, filename)
+
+                                    img_bytes = base64.b64decode(b64_data)
+                                    with open(filepath, "wb") as f:
+                                        f.write(img_bytes)
+
+                                    saved_files.append({
+                                        "window_id": w_id,
+                                        "symbol": s.get("symbol", ""),
+                                        "filename": filename,
+                                        "filepath": filepath,
+                                        "width": s.get("width", width),
+                                        "height": s.get("height", height),
+                                        "bytes": len(img_bytes),
+                                    })
+
+                                result = {
+                                    "status": "ok",
+                                    "action": action,
+                                    "capture_id": capture_id,
+                                    "count": len(saved_files),
+                                    "output_dir": out_dir,
+                                    "files": saved_files,
+                                }
+                            except Exception as se:
+                                logger.error(f"Screenshot failed: {se}")
+                                result = {"error": f"Screenshot failed: {str(se)}"}
+
                     else:
                         result = {"error": f"Unknown action or missing window_id: {action}"}
+
 
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")

@@ -27,8 +27,9 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.
 * **`manage_chart_viewer`**: Controls the native TC2000-style desktop chart viewer running on the user's screen.
   * Actions:
-    * `'DISPLAY_STOCK'`: Loads historical candles & indicators from local Parquet storage into the desktop viewer (e.g. `ticker: "NVDA"`).
-    * `'OPEN_WINDOW'`: Opens or registers a custom chart window.
+    * `'DISPLAY_STOCK'`: Loads historical candles, indicators, and topbar metrics into the desktop viewer (e.g. `ticker: "NVDA"`, optional `preset`: `'default'` [SMA 50/200 + BB 20], `'trend_template'` [6 Minervini SMAs + Topbar RS/Minervini/ADR], `'momentum'` [EMA 8/21], `'clean'` [candles only] OR any dynamically created user preset like `'qmaggi'`).
+    * `'OPEN_WINDOW'`: Registers a custom window.
+  * **`manage_chart_presets`**: Manage dynamically created chart presets (CRUD) and their overlay indicators (like SMA/EMA). Use `CREATE`, `GET`, `LIST`, `UPDATE`, `DELETE`. Specify `preset_id` and the `members` (features like `sma_10`, `ema_20`, `bb_20`, `adr_1_pct`) to automatically render them.
     * `'ADD_ANNOTATION'`: Draws support/resistance lines (`hline`), trendlines, rectangles, or buy/sell trade markers (`trade_marker`).
     * `'REMOVE_ANNOTATION'`: Removes a drawing object by ID.
     * `'SET_TOPBAR'`: Displays formatted status/metric blocks in the chart topbar (e.g. Minervini Stage 2 rating, ATR, Stop-loss level).

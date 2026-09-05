@@ -21,7 +21,9 @@ class ChartAgent:
         self.layout_ledger: Dict[str, dict] = {}
         self.series_data: Dict[str, dict] = {}
         self.received_events: List[Envelope] = []
+        self._pending_screenshots: Dict[str, dict] = {}
         self._seq = 0
+        self.on_viewer_ready_callback = None
 
     def start(self) -> None:
         self.transport.connect()
@@ -50,10 +52,21 @@ class ChartAgent:
             # Viewer requested full resync -> push layout.restore
             self.restore_layout()
 
+        elif envelope.type == "screenshot.response":
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            req_id = payload.get("request_id")
+            if req_id and req_id in self._pending_screenshots:
+                entry = self._pending_screenshots[req_id]
+                entry["result"] = payload
+                entry["event"].set()
+
+
     def _handle_viewer_ready(self, envelope: Envelope) -> None:
         """Viewer connected -> push stored layout if any (Section 11)."""
         logger.info("Viewer ready, restoring layout...")
         self.restore_layout()
+        if getattr(self, "on_viewer_ready_callback", None):
+            self.on_viewer_ready_callback()
 
     def open_window(
         self,
@@ -136,3 +149,48 @@ class ChartAgent:
         # Push snapshots for each window
         for win_id, snap in self.series_data.items():
             self.send_snapshot(win_id, snap)
+
+    def request_screenshots(
+        self,
+        window_id: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        mode: Optional[str] = None,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        """Send screenshot.request command to viewer clients and wait for response."""
+        import threading
+        import uuid
+        from datetime import datetime
+
+        req_id = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        event = threading.Event()
+        self._pending_screenshots[req_id] = {"event": event, "result": None}
+
+        payload: dict = {
+            "request_id": req_id,
+            "window_id": window_id,
+        }
+        if width:
+            payload["width"] = width
+        if height:
+            payload["height"] = height
+        if mode:
+            payload["mode"] = mode
+
+        env = make_envelope(
+            msg_type="screenshot.request",
+            payload=payload,
+            kind=MessageKind.COMMAND,
+            sequence=self._next_seq(),
+        )
+        self.transport.send_command(env)
+
+        completed = event.wait(timeout=timeout_s)
+        entry = self._pending_screenshots.pop(req_id, None)
+
+        if not completed or not entry or entry["result"] is None:
+            raise TimeoutError(f"Screenshot request timed out after {timeout_s}s")
+
+        return entry["result"]
+

@@ -48,6 +48,13 @@ class ViewerConfig:
     default_text_color: str = "#D1D4DC"
     default_crosshair_color: str = "#758696"
 
+    # Screenshot settings (for agent UI debugging)
+    screenshot_width: int = 640
+    screenshot_height: int = 480
+    screenshot_timeout_sec: float = 10.0
+    screenshot_output_dir: str = "/home/daniel/QJM/dsh_playground"
+    screenshot_mode: str = "letterbox"  # 'letterbox', 'fit', or 'stretch'
+
     @classmethod
     def from_env(cls) -> ViewerConfig:
         """Create config populated from environment variables with fallbacks."""
@@ -67,7 +74,13 @@ class ViewerConfig:
             hit_test_radius_px=float(os.getenv("CV_HIT_TEST_RADIUS_PX", "6.0")),
             margin_top_pct=float(os.getenv("CV_MARGIN_TOP_PCT", "0.05")),
             margin_bottom_pct=float(os.getenv("CV_MARGIN_BOTTOM_PCT", "0.05")),
+            screenshot_width=int(os.getenv("CV_SCREENSHOT_WIDTH", "640")),
+            screenshot_height=int(os.getenv("CV_SCREENSHOT_HEIGHT", "480")),
+            screenshot_timeout_sec=float(os.getenv("CV_SCREENSHOT_TIMEOUT_SEC", "10.0")),
+            screenshot_output_dir=os.getenv("CV_SCREENSHOT_DIR", "/home/daniel/QJM/dsh_playground"),
+            screenshot_mode=os.getenv("CV_SCREENSHOT_MODE", "letterbox"),
         )
 
 
 GLOBAL_CONFIG = ViewerConfig.from_env()
+

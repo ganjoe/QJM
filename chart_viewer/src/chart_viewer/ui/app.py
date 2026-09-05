@@ -133,6 +133,8 @@ class ViewerApp(QObject):
                         series_id=ov.get("series_id", ""),
                         values=ov.get("values", []),
                         style=ov.get("style", {}),
+                        pane=ov.get("pane", "main"),
+                        origin=ov.get("origin", "bottom"),
                     )
                 win_data.overlays[ov.overlay_id] = ov
                 if win_id in self.windows:
@@ -167,6 +169,10 @@ class ViewerApp(QObject):
             self.windows.clear()
             self._send_viewer_ready()
 
+        elif msg_type == "screenshot.request":
+            self._handle_screenshot_request(payload)
+
+
     def _handle_window_open(self, payload: dict, message_id: bytes) -> None:
         """Create and show a new chart window (Section 8)."""
         win_id = payload.get("window_id")
@@ -178,7 +184,9 @@ class ViewerApp(QObject):
 
         if win_id not in self.windows:
             win = ChartWindow(window_id=win_id, config=self.config)
+            win.symbol = symbol
             self.windows[win_id] = win
+
 
             # Register in EventHub
             ws = WindowState(
@@ -361,3 +369,97 @@ class ViewerApp(QObject):
             self.transport.send_command(ack_env)
         except Exception:
             pass
+
+    def _handle_screenshot_request(self, payload: dict) -> None:
+        """Capture screenshot of open windows and return base64 images to agent."""
+        import base64
+        from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
+        from PySide6.QtGui import QImage, QPainter, QColor
+
+        request_id = payload.get("request_id", "")
+        target_win_id = payload.get("window_id")
+        target_width = int(payload.get("width", self.config.screenshot_width))
+        target_height = int(payload.get("height", self.config.screenshot_height))
+        mode = payload.get("mode", self.config.screenshot_mode)
+
+        screenshots = []
+
+        # Filter target windows
+        if target_win_id and target_win_id in self.windows:
+            target_windows = [(target_win_id, self.windows[target_win_id])]
+        else:
+            target_windows = list(self.windows.items())
+
+        for win_id, win in target_windows:
+            try:
+                pixmap = win.grab()
+                if pixmap.isNull():
+                    continue
+
+                if mode == "stretch":
+                    scaled_img = pixmap.scaled(
+                        target_width,
+                        target_height,
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ).toImage()
+                elif mode == "fit":
+                    scaled_img = pixmap.scaled(
+                        target_width,
+                        target_height,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ).toImage()
+                else:
+                    # Default: "letterbox" on background color to preserve aspect ratio without distortion
+                    bg_color = QColor(self.config.default_background_color)
+                    final_img = QImage(target_width, target_height, QImage.Format.Format_ARGB32_Premultiplied)
+                    final_img.fill(bg_color)
+
+                    scaled_pix = pixmap.scaled(
+                        target_width,
+                        target_height,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    painter = QPainter(final_img)
+                    x_offset = (target_width - scaled_pix.width()) // 2
+                    y_offset = (target_height - scaled_pix.height()) // 2
+                    painter.drawPixmap(x_offset, y_offset, scaled_pix)
+                    painter.end()
+                    scaled_img = final_img
+
+                ba = QByteArray()
+                buffer = QBuffer(ba)
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                scaled_img.save(buffer, "PNG")
+                b64_data = base64.b64encode(bytes(ba.data())).decode("ascii")
+
+                symbol = getattr(win, "symbol", "")
+                if not symbol and getattr(win, "canvas", None) and getattr(win.canvas, "window_data", None):
+                    symbol = getattr(win.canvas.window_data, "symbol", "")
+
+
+                screenshots.append({
+                    "window_id": win_id,
+                    "symbol": symbol,
+                    "width": scaled_img.width(),
+                    "height": scaled_img.height(),
+                    "image_base64": b64_data,
+                })
+            except Exception as e:
+                logger.error(f"Failed to capture screenshot for window {win_id}: {e}")
+
+        resp_env = make_envelope(
+            msg_type="screenshot.response",
+            payload={
+                "request_id": request_id,
+                "screenshots": screenshots,
+            },
+            kind=MessageKind.EVENT,
+        )
+        try:
+            self.transport.send_command(resp_env)
+        except Exception as e:
+            logger.error(f"Failed to send screenshot.response: {e}")
+

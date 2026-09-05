@@ -1,32 +1,135 @@
-"""ChartCanvas widget with strict 4-layer composition according to Section 6.2, 7, & 9."""
+"""ChartCanvas widget with multi-pane support via QSplitter according to Section 6.2, 7, & 9."""
 
 from __future__ import annotations
+import json
+import os
 import time
-from typing import Callable, Optional
+import math
+from typing import Callable, Dict, List, Optional
 from PySide6.QtCore import Qt, QPointF, Signal, QRectF
-from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent
+from PySide6.QtWidgets import QWidget, QSplitter, QVBoxLayout
+from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QFont, QColor, QPen
 
 from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
-from chart_viewer.coords.y_axis import YAxisTransform
 from chart_viewer.core.state_manager import WindowData
-from chart_viewer.ui.layers.background import BackgroundLayer
-from chart_viewer.ui.layers.data import DataLayer
-from chart_viewer.ui.layers.annotations import AnnotationsLayer
-from chart_viewer.ui.layers.interaction import InteractionLayer
-from chart_viewer.ui.interaction.state_machine import InteractionStateMachine, InteractionState
-from chart_viewer.ui.interaction.hit_test import hit_test_annotations
-from chart_viewer.ui.context_menu import ChartContextMenu
+from chart_viewer.models.entities import Overlay
+from chart_viewer.ui.pane import ChartPane
+
+# Persistence path for splitter heights keyed by pane count
+_SPLITTER_PREFS_PATH = os.path.join(os.path.expanduser("~"), ".chart_viewer_splitter.json")
+
+X_AXIS_HEIGHT = 22.0
+Y_AXIS_WIDTH = 70.0
+
+
+class XAxisBar(QWidget):
+    """Thin widget that renders only the shared X-axis time labels."""
+
+    def __init__(self, x_trans: XAxisTransform, config: ViewerConfig, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.x_trans = x_trans
+        self.config = config
+        self.base_timestamp: int = 0
+        self.bar_duration: int = 86400
+        self._crosshair_x: Optional[float] = None
+        self.setFixedHeight(int(X_AXIS_HEIGHT))
+
+    def set_time_base(self, base_ts: int, duration: int) -> None:
+        self.base_timestamp = base_ts
+        self.bar_duration = max(1, duration)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        w = self.width()
+        h = self.height()
+        if w <= 0 or h <= 0:
+            return
+
+        painter = QPainter(self)
+        try:
+            chart_w = max(10.0, w - Y_AXIS_WIDTH)
+
+            # Background
+            painter.fillRect(QRectF(0, 0, chart_w, h), QColor("#161922"))
+            painter.fillRect(QRectF(chart_w, 0, Y_AXIS_WIDTH, h), QColor("#12141B"))
+
+            # Top border
+            border_pen = QPen(QColor("#2A2E39"))
+            border_pen.setWidth(1)
+            painter.setPen(border_pen)
+            painter.drawLine(0, 0, w, 0)
+            painter.drawLine(int(chart_w), 0, int(chart_w), h)
+
+            # Time labels
+            from datetime import datetime, timezone
+            visible_bars = self.x_trans.visible_bars
+            step_bars = max(8, int(visible_bars / 7))
+            min_idx = math.floor(self.x_trans.min_visible_bar_index)
+            max_idx = math.ceil(self.x_trans.right_index)
+
+            tick_pen = QPen(QColor("#434958"))
+            tick_pen.setWidth(1)
+
+            scale_font = QFont(painter.font())
+            scale_font.setPointSize(9)
+            painter.setFont(scale_font)
+
+            first_step = (min_idx // step_bars) * step_bars
+            for idx in range(first_step, max_idx + 1, step_bars):
+                x = self.x_trans.bar_to_x(idx)
+                if 0 <= x <= chart_w:
+                    painter.setPen(tick_pen)
+                    painter.drawLine(int(x), 0, int(x), 3)
+
+                    if self.base_timestamp > 0:
+                        t_sec = self.base_timestamp + int(idx * self.bar_duration)
+                        try:
+                            dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
+                            date_str = dt.strftime("%d. %b")
+                        except Exception:
+                            date_str = f"{idx}"
+                        painter.setPen(QColor("#848E9C"))
+                        painter.drawText(
+                            QRectF(x - 35, 3, 70, 16),
+                            Qt.AlignmentFlag.AlignCenter,
+                            date_str,
+                        )
+
+            # Crosshair time badge
+            if self._crosshair_x is not None and self.base_timestamp > 0:
+                cx = int(self._crosshair_x)
+                bar_idx = self.x_trans.x_to_bar(cx)
+                t_sec = self.base_timestamp + int(bar_idx * self.bar_duration)
+                try:
+                    dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
+                    time_str = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    time_str = f"Bar {int(bar_idx)}"
+                badge_w = 100
+                badge_h = 18
+                badge_rect = QRectF(cx - badge_w / 2.0, 1, badge_w, badge_h)
+                painter.fillRect(badge_rect, QColor("#363A45"))
+                painter.setPen(QColor("#FFFFFF"))
+                badge_font = QFont(painter.font())
+                badge_font.setPointSize(8)
+                painter.setFont(badge_font)
+                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, time_str)
+        finally:
+            painter.end()
+
+    def set_crosshair_x(self, x: Optional[float]) -> None:
+        self._crosshair_x = x
+        self.update()
 
 
 class ChartCanvas(QWidget):
-    """Native Chart Canvas widget implementing 4-layer cached rendering."""
+    """Multi-pane chart canvas with shared X-axis and per-pane Y-axes."""
 
     crosshair_moved = Signal(int, float)  # (timestamp, bar_index_fraction)
     annotation_moved = Signal(str, dict)  # (annotation_id, updated_anchors)
     data_request_more = Signal()
-    axis_mode_forced = Signal(str)  # ("log_forced_to_linear")
+    axis_mode_forced = Signal(str)
 
     def __init__(
         self,
@@ -41,355 +144,293 @@ class ChartCanvas(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # Coordinate transforms
+        # Shared X-axis transform (same object for all panes)
         self.x_trans = XAxisTransform(config=self.config)
-        self.y_trans = YAxisTransform(config=self.config)
 
-        # Layers 1 - 4
-        self.layer1_bg = BackgroundLayer(config=self.config)
-        self.layer2_data = DataLayer(config=self.config)
-        self.layer3_ann = AnnotationsLayer(config=self.config)
-        self.layer4_interaction = InteractionLayer(config=self.config)
+        # Layout
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
 
-        # Cache for Layers 1-3
-        self._layers_123_pixmap: Optional[QPixmap] = None
-        self._layers_123_dirty: bool = True
+        # Splitter for panes
+        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._splitter.setHandleWidth(3)
+        self._splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #2A2E39;
+            }
+            QSplitter::handle:hover {
+                background-color: #434958;
+            }
+        """)
+        self._layout.addWidget(self._splitter, stretch=1)
 
-        # Interaction State Machine
-        self.sm = InteractionStateMachine()
-        self._last_mouse_pos = QPointF(0, 0)
-        self._drag_start_pos = QPointF(0, 0)
+        # X-axis bar at the bottom
+        self._x_axis_bar = XAxisBar(self.x_trans, self.config, self)
+        self._layout.addWidget(self._x_axis_bar, stretch=0)
+
+        # Pane registry: pane_id → ChartPane
+        self._panes: Dict[str, ChartPane] = {}
+        self._pane_order: List[str] = []  # Ordered pane IDs (main first)
 
         # Reference data
         self.window_data: Optional[WindowData] = None
 
-    def set_window_data(self, win_data: WindowData) -> None:
-        """Bind window data cache and mark cached layers dirty."""
-        self.window_data = win_data
-        symbol_text = f"{win_data.symbol}"
-        if win_data.timeframe:
-            symbol_text += f" • {win_data.timeframe.to_string()}"
-        self.layer1_bg.set_watermark(symbol_text)
+        # Save splitter on change
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
+    def set_window_data(self, win_data: WindowData) -> None:
+        """Bind window data and rebuild panes as needed."""
+        self.window_data = win_data
+
+        # Determine required panes
+        pane_overlays = win_data.get_panes()  # {pane_id: [overlays]}
+        required_pane_ids = ["main"]  # Main always exists
+        for pane_id in pane_overlays:
+            if pane_id != "main" and pane_id not in required_pane_ids:
+                required_pane_ids.append(pane_id)
+
+        # Rebuild panes if pane set changed
+        if required_pane_ids != self._pane_order:
+            self._rebuild_panes(required_pane_ids)
+
+        # Time base
         base_ts = win_data.bars[0].t_open if win_data.bars else 0
         duration = 86400
         if win_data.timeframe:
             duration = win_data.timeframe.to_seconds()
+        self._x_axis_bar.set_time_base(base_ts, duration)
 
-        self.layer1_bg.set_time_base(base_ts, duration)
-        self.layer1_bg.set_axis_mode(win_data.y_axis_mode)
-        self.layer2_data.set_data(win_data.bars, win_data.overlays, win_data.style_defaults)
-        self.layer3_ann.set_annotations(win_data.annotations, base_ts, duration)
-        self.layer4_interaction.set_time_base(base_ts, duration)
+        # Distribute data to panes
+        main_pane = self._panes.get("main")
+        if main_pane:
+            main_overlays = {ov.overlay_id: ov for ov in pane_overlays.get("main", [])}
+            main_pane.set_data(win_data.bars, main_overlays, win_data.style_defaults)
+            main_pane.watermark_text = f"{win_data.symbol}"
+            if win_data.timeframe:
+                main_pane.watermark_text += f" • {win_data.timeframe.to_string()}"
+            main_pane.base_timestamp = base_ts
+            main_pane.bar_duration = duration
 
+        for pane_id, overlays in pane_overlays.items():
+            if pane_id == "main":
+                continue
+            pane = self._panes.get(pane_id)
+            if pane:
+                ov_dict = {ov.overlay_id: ov for ov in overlays}
+                pane.set_data(win_data.bars, ov_dict)
+                pane.base_timestamp = base_ts
+                pane.bar_duration = duration
+
+        # Init x-axis
         if win_data.bars:
-            # Set initial right_index if not initialized
             if self.x_trans.right_index == 0.0:
                 self.x_trans.right_index = float(len(win_data.bars) - 1)
 
-        self._update_y_range()
+        # Update all Y ranges
+        self._update_all_y_ranges()
         self.mark_layers_dirty()
+
+    def _rebuild_panes(self, pane_ids: List[str]) -> None:
+        """Tear down old panes and create new ones for the given pane IDs."""
+        # Remove old panes
+        for pane_id in list(self._panes.keys()):
+            pane = self._panes.pop(pane_id)
+            self._splitter.widget(0)  # force layout
+            pane.setParent(None)
+            pane.deleteLater()
+
+        # Remove all widgets from splitter
+        while self._splitter.count() > 0:
+            w = self._splitter.widget(0)
+            w.setParent(None)
+
+        self._pane_order = pane_ids
+
+        # Create panes
+        for pane_id in pane_ids:
+            is_main = (pane_id == "main")
+            pane = ChartPane(
+                pane_id=pane_id,
+                x_trans=self.x_trans,
+                is_main=is_main,
+                config=self.config,
+                parent=self._splitter,
+            )
+            self._panes[pane_id] = pane
+            self._splitter.addWidget(pane)
+            # Connect crosshair distribution
+            pane.crosshair_moved_signal.connect(self._on_pane_crosshair_moved)
+
+        # Restore or set default splitter sizes
+        self._restore_splitter_sizes(len(pane_ids))
+
+    def _restore_splitter_sizes(self, pane_count: int) -> None:
+        """Load saved splitter sizes for this pane count, or use defaults."""
+        try:
+            if os.path.exists(_SPLITTER_PREFS_PATH):
+                with open(_SPLITTER_PREFS_PATH, "r") as f:
+                    prefs = json.load(f)
+                key = str(pane_count)
+                if key in prefs:
+                    self._splitter.setSizes(prefs[key])
+                    return
+        except Exception:
+            pass
+
+        # Default: main gets 70%, rest splits 30% equally
+        total = self._splitter.height() or 700
+        if pane_count <= 1:
+            self._splitter.setSizes([total])
+        else:
+            main_h = int(total * 0.7)
+            rest_h = int((total * 0.3) / (pane_count - 1))
+            sizes = [main_h] + [rest_h] * (pane_count - 1)
+            self._splitter.setSizes(sizes)
+
+    def _save_splitter_sizes(self) -> None:
+        """Persist current splitter sizes keyed by pane count."""
+        pane_count = len(self._pane_order)
+        if pane_count < 1:
+            return
+        try:
+            prefs = {}
+            if os.path.exists(_SPLITTER_PREFS_PATH):
+                with open(_SPLITTER_PREFS_PATH, "r") as f:
+                    prefs = json.load(f)
+            prefs[str(pane_count)] = self._splitter.sizes()
+            with open(_SPLITTER_PREFS_PATH, "w") as f:
+                json.dump(prefs, f)
+        except Exception:
+            pass
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        self._save_splitter_sizes()
+        # Repaint all panes (they might need new Y-ranges)
+        self._update_all_y_ranges()
+        self.mark_layers_dirty()
+
+    def _update_all_y_ranges(self) -> None:
+        """Update Y-range for all panes."""
+        for pane in self._panes.values():
+            pane.update_y_range()
+
+    def _on_pane_crosshair_moved(self, source_pane_id: str, x_px: float, y_px: float) -> None:
+        """Distribute crosshair from one pane to all panes."""
+        if x_px < 0:
+            # Mouse left the pane — clear all crosshairs
+            for pane in self._panes.values():
+                pane.set_crosshair(None, None, False)
+            self._x_axis_bar.set_crosshair_x(None)
+            return
+
+        # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
+        for pane_id, pane in self._panes.items():
+            is_active = (pane_id == source_pane_id)
+            pane.set_crosshair(x_px, y_px if is_active else None, is_active)
+
+        # Time badge on X-axis bar
+        self._x_axis_bar.set_crosshair_x(x_px)
+
+        # Emit crosshair_moved for inter-window sync
+        if self.window_data and self.window_data.bars:
+            bar_idx = self.x_trans.x_to_bar(x_px)
+            duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
+            ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
+            self.crosshair_moved.emit(ts, bar_idx)
 
     def mark_layers_dirty(self) -> None:
-        """Flag Layers 1-3 as dirty for next repaint."""
-        self._layers_123_dirty = True
-        self.update()
+        """Mark all panes dirty for repaint."""
+        for pane in self._panes.values():
+            pane.mark_dirty()
+        self._x_axis_bar.update()
 
-    def _update_y_range(self) -> None:
-        """Recalculate auto Y-range for visible bars."""
-        if not self.window_data or not self.window_data.bars:
+    # ── Delegated interaction (zoom, pan, crosshair) ─────────────────
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            # Shift+Wheel → delegate to the pane under cursor for Y-zoom
+            super().wheelEvent(event)
             return
 
-        if self.window_data.y_axis_mode == "manual":
+        # Regular wheel → X-axis zoom (shared)
+        angle = event.angleDelta().y()
+        factor = 1.15 if angle > 0 else (1.0 / 1.15)
+        mouse_pos = event.position()
+        changed = self.x_trans.zoom(factor, anchor_mouse_x=mouse_pos.x())
+        if changed:
+            self._update_all_y_ranges()
+            self.mark_layers_dirty()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._is_panning = True
+            self._pan_start = event.position()
             return
-
-        bars = self.window_data.bars
-        min_idx = max(0, int(self.x_trans.min_visible_bar_index))
-        max_idx = min(len(bars) - 1, int(self.x_trans.right_index))
-
-        if min_idx > max_idx:
-            return
-
-        visible_slice = bars[min_idx : max_idx + 1]
-        p_min = min(b.low for b in visible_slice)
-        p_max = max(b.high for b in visible_slice)
-
-        req_mode = "log" if self.window_data.y_axis_mode == "log" else "linear"
-        forced = self.y_trans.fit_range(p_min, p_max, requested_mode=req_mode)
-
-        if forced:
-            self.axis_mode_forced.emit("log_forced_to_linear")
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        w = max(1.0, float(self.width()))
-        h = max(1.0, float(self.height()))
-        chart_w = max(1.0, w - 70.0)
-        chart_h = max(1.0, h - 22.0)
-        self.x_trans.viewport_width_px = chart_w
-        self.y_trans.viewport_height_px = chart_h
-        self._update_y_range()
-        self.mark_layers_dirty()
-
-    def paintEvent(self, event) -> None:
-        w = self.width()
-        h = self.height()
-        if w <= 0 or h <= 0:
-            return
-
-        # Section 6.2: Ensure Layers 1-3 are cached in offscreen QPixmap
-        if self._layers_123_dirty or self._layers_123_pixmap is None or self._layers_123_pixmap.size() != self.size():
-            pixmap = QPixmap(self.size())
-            pix_painter = QPainter(pixmap)
-            try:
-                pix_painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-
-                # Draw Layer 1 (Background)
-                self.layer1_bg.render(pix_painter, self.x_trans, self.y_trans, w, h)
-                # Draw Layer 2 (Data)
-                self.layer2_data.render(pix_painter, self.x_trans, self.y_trans, w, h)
-                # Draw Layer 3 (Annotations)
-                self.layer3_ann.render(pix_painter, self.x_trans, self.y_trans, w, h)
-            except Exception as e:
-                import logging
-                logging.getLogger("ChartCanvas").exception(f"Error rendering chart layers: {e}")
-            finally:
-                pix_painter.end()
-
-            self._layers_123_pixmap = pixmap
-            self._layers_123_dirty = False
-
-        # Blit cached Layers 1-3 to screen
-        screen_painter = QPainter(self)
-        try:
-            screen_painter.drawPixmap(0, 0, self._layers_123_pixmap)
-
-            # Draw Layer 4 (Interaction) live on top (sub-millisecond!)
-            self.layer4_interaction.render(screen_painter, self.x_trans, self.y_trans, w, h)
-        finally:
-            screen_painter.end()
-
-    # --- Mouse & Interaction Events (Section 7) ---
+        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        pos = event.position()
-        delta = pos - self._last_mouse_pos
-        self._last_mouse_pos = pos
-
-        chart_w = max(1.0, float(self.width()) - 70.0)
-        chart_h = max(1.0, float(self.height()) - 22.0)
-
-        # Update Crosshair position
-        self.layer4_interaction.set_crosshair(pos)
-
-        # State machine dispatch for active dragging
-        if self.sm.state == InteractionState.SCALING_Y:
-            # Dragging on Y-axis scale (Section 7)
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
-            dy = pos.y() - self._drag_start_pos.y()
-            self._drag_start_pos = pos
-            scale_factor = 1.0 - (dy * 0.008)
-            if scale_factor > 0:
-                self.y_trans.manual_scale(scale_factor)
-                self.mark_layers_dirty()
-            return
-
-        elif self.sm.state == InteractionState.PANNING:
+        if getattr(self, "_is_panning", False):
+            delta = event.position() - self._pan_start
+            self._pan_start = event.position()
             self.x_trans.pan(delta.x())
-            self._update_y_range()
+            self._update_all_y_ranges()
             self.mark_layers_dirty()
             return
 
-        elif self.sm.state == InteractionState.MEASURING:
-            # Only Layer 4 repainted during measuring!
-            self.update()
-            return
-
-        elif self.sm.state == InteractionState.DRAGGING_ANNOTATION:
-            # Dragging annotation: optimistic update
-            ann_id = self.sm.active_annotation_id
-            if ann_id and self.window_data and ann_id in self.window_data.annotations:
-                ann = self.window_data.annotations[ann_id]
-                anchor_idx = self.sm.active_anchor_index
-                new_price = self.y_trans.y_to_price(pos.y())
-                bar_idx = self.x_trans.x_to_bar(pos.x())
-                duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
-                new_t = int(self.window_data.bars[0].t_open + bar_idx * duration) if self.window_data.bars else 0
-
-                if anchor_idx is not None and anchor_idx < len(ann.anchors):
-                    ann.anchors[anchor_idx].price = new_price
-                    ann.anchors[anchor_idx].t = new_t
-                else:
-                    # Move entire annotation
-                    for anchor in ann.anchors:
-                        anchor.price = new_price
-                self.mark_layers_dirty()
-            return
-
-        # Idle hover: cursor selection
-        if pos.x() >= chart_w and pos.y() < chart_h:
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
-        else:
-            self.setCursor(Qt.CursorShape.CrossCursor)
-
-        # Check edge data request
+        # Data request check
         if self.window_data and self.window_data.bars:
             if self.x_trans.should_request_more_data(0.0):
                 self.data_request_more.emit()
 
-        # Emit Crosshair Broadcast
+        # Crosshair broadcast
+        pos = event.position()
         bar_idx = self.x_trans.x_to_bar(pos.x())
         if self.window_data and self.window_data.bars:
             duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
             ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
             self.crosshair_moved.emit(ts, bar_idx)
 
-        # Repaint Layer 4 (Crosshair)
-        self.update()
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        pos = event.position()
-        self._drag_start_pos = pos
-
-        chart_w = max(1.0, float(self.width()) - 70.0)
-        chart_h = max(1.0, float(self.height()) - 22.0)
-
-        if event.button() == Qt.MouseButton.MiddleButton:
-            # Middle click + drag -> Panning (Section 7)
-            self.sm.start_panning()
-
-        elif event.button() == Qt.MouseButton.LeftButton:
-            if pos.x() >= chart_w and pos.y() < chart_h:
-                # Drag on Y-axis -> Manual Y-scaling, sets y_axis_mode = manual (Section 7)
-                if self.window_data:
-                    self.window_data.y_axis_mode = "manual"
-                    self.layer1_bg.set_axis_mode("manual")
-                self.sm.start_scaling_y()
-                self.setCursor(Qt.CursorShape.SizeVerCursor)
-                self.mark_layers_dirty()
-                return
-
-            # Hit-test annotations (handles -> lines -> empty space)
-            base_ts = self.window_data.bars[0].t_open if (self.window_data and self.window_data.bars) else 0
-            duration = self.window_data.timeframe.to_seconds() if (self.window_data and self.window_data.timeframe) else 86400
-            ann_id, anchor_idx = hit_test_annotations(
-                pos,
-                self.window_data.annotations if self.window_data else {},
-                self.x_trans,
-                self.y_trans,
-                base_ts,
-                duration,
-                radius=self.config.hit_test_radius_px,
-            )
-
-            if ann_id:
-                # Dragging annotation (Section 7)
-                self.layer3_ann.selected_annotation_id = ann_id
-                self.sm.start_dragging_annotation(ann_id, anchor_idx)
-                self.mark_layers_dirty()
-            else:
-                # Left click on empty chart area -> Measuring Tool (Section 7)
-                if pos.x() < chart_w and pos.y() < chart_h:
-                    self.layer3_ann.selected_annotation_id = None
-                    self.sm.start_measuring()
-                    price = self.y_trans.y_to_price(pos.y())
-                    bar_idx = self.x_trans.x_to_bar(pos.x())
-                    ts = int(base_ts + bar_idx * duration)
-                    self.layer4_interaction.start_measuring(pos, price, bar_idx, ts)
-                    self.mark_layers_dirty()
-
-        elif event.button() == Qt.MouseButton.RightButton:
-            # Right-click context menu (Section 7)
-            base_ts = self.window_data.bars[0].t_open if (self.window_data and self.window_data.bars) else 0
-            duration = self.window_data.timeframe.to_seconds() if (self.window_data and self.window_data.timeframe) else 86400
-            ann_id, _ = hit_test_annotations(
-                pos,
-                self.window_data.annotations if self.window_data else {},
-                self.x_trans,
-                self.y_trans,
-                base_ts,
-                duration,
-                radius=self.config.hit_test_radius_px,
-            )
-            ChartContextMenu.show_menu(
-                parent=self,
-                global_pos=event.globalPosition().toPoint(),
-                hit_annotation_id=ann_id,
-                on_delete_annotation=self._on_delete_annotation,
-                on_reset_axes=self._on_reset_axes,
-            )
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        prior_state, ann_id = self.sm.release()
-
-        if prior_state == InteractionState.MEASURING:
-            # Discard measurement immediately without persistence (Section 7)
-            self.layer4_interaction.stop_measuring()
-            self.update()
-
-        elif prior_state == InteractionState.DRAGGING_ANNOTATION and ann_id:
-            # Send optimistic annotation.moved message to agent (Section 7)
-            if self.window_data and ann_id in self.window_data.annotations:
-                ann = self.window_data.annotations[ann_id]
-                anchors_payload = [
-                    {"t": a.t, "price": a.price, "x_px": a.x_px, "y_px": a.y_px, "mode": a.mode}
-                    for a in ann.anchors
-                ]
-                self.annotation_moved.emit(ann_id, {"anchors": anchors_payload})
-
-        elif prior_state == InteractionState.SCALING_Y:
-            chart_w = max(1.0, float(self.width()) - 70.0)
-            if event.position().x() < chart_w:
-                self.setCursor(Qt.CursorShape.CrossCursor)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        pos = event.position()
-        chart_w = max(1.0, float(self.width()) - 70.0)
-        if pos.x() >= chart_w:
-            # Double-click on Y-axis -> Reset axes to Auto!
-            self._on_reset_axes()
-        else:
-            super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        modifiers = event.modifiers()
-        angle = event.angleDelta().y()
-        factor = 1.15 if angle > 0 else (1.0 / 1.15)
-        mouse_pos = event.position()
-
-        if modifiers & Qt.KeyboardModifier.ShiftModifier:
-            # Shift + Wheel -> Manual Y-Zoom, sets y_axis_mode = manual (Section 7)
-            if self.window_data:
-                self.window_data.y_axis_mode = "manual"
-                self.layer1_bg.set_axis_mode("manual")
-            self.y_trans.manual_scale(factor)
-            self.mark_layers_dirty()
-        else:
-            # Wheel -> X-Zoom with fixed cursor anchor (Section 7)
-            changed = self.x_trans.zoom(factor, anchor_mouse_x=mouse_pos.x())
-            if changed:
-                self._update_y_range()
-                self.mark_layers_dirty()
+        if getattr(self, "_is_panning", False) and event.button() == Qt.MouseButton.MiddleButton:
+            self._is_panning = False
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            # Esc -> Cancel active tool/drag, discard overlay (highest priority, Section 7)
-            self.sm.cancel()
-            self.layer4_interaction.stop_measuring()
-            self.layer3_ann.selected_annotation_id = None
-            self.mark_layers_dirty()
+            # Reset all pane Y-axes to auto
+            for pane in self._panes.values():
+                pane.y_axis_mode = "auto"
+                pane.update_y_range()
+                pane.mark_dirty()
         else:
             super().keyPressEvent(event)
 
-    def _on_delete_annotation(self, ann_id: str) -> None:
-        if self.window_data and ann_id in self.window_data.annotations:
-            self.window_data.annotations.pop(ann_id, None)
-            self.mark_layers_dirty()
+    # ── Backward compatibility properties ─────────────────────────────
+    # These allow old code in app.py, window.py etc. to still work
 
-    def _on_reset_axes(self) -> None:
-        if self.window_data:
-            self.window_data.y_axis_mode = "auto"
-        self.layer1_bg.set_axis_mode("auto")
-        self._update_y_range()
-        self.mark_layers_dirty()
+    @property
+    def y_trans(self):
+        """Return main pane's Y-transform for backward compat."""
+        main = self._panes.get("main")
+        return main.y_trans if main else None
 
+    @property
+    def layer4_interaction(self):
+        """Stub for crosshair compat — returns self to absorb calls."""
+        return self
+
+    # Stubs for interaction layer compatibility
+    crosshair_pos = None
+
+    def set_crosshair(self, pos):
+        self.crosshair_pos = pos
+
+    def start_measuring(self, *args, **kwargs):
+        pass
+
+    def stop_measuring(self):
+        pass

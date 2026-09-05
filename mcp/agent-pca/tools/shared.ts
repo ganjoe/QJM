@@ -24,15 +24,7 @@ export const log = {
   error: (msg: string) => console.error(`[ERROR] ${new Date().toISOString()} ${msg}`),
 };
 
-// --- Telemetry Helper ---
-export async function sendTelemetry(text: string) {
-  try {
-    await fetch("http://nexus-service:7734/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from_agent: AGENT_ID, to: "all", text, msg_type: "telemetry" }),
-    });
-  } catch (e: any) {
-    log.warn(`Telemetry failed: ${e.message}`);
-  }
+// --- Telemetry Helper (no-op, Nexus service discontinued) ---
+export async function sendTelemetry(_text: string) {
+  // Legacy: was sending to nexus-service:7734. Now a no-op.
 }

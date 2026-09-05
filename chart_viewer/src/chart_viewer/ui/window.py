@@ -27,6 +27,7 @@ class ChartWindow(QMainWindow):
         super().__init__(parent)
         self.window_id = window_id
         self.config = config or GLOBAL_CONFIG
+        self.symbol: str = ""
 
         self.setWindowTitle(f"Chart Viewer — {window_id}")
         self.resize(1000, 700)
@@ -53,7 +54,9 @@ class ChartWindow(QMainWindow):
         self.status_bar.showMessage("Ready")
 
     def bind_data(self, win_data: WindowData) -> None:
+        self.symbol = win_data.symbol
         self.setWindowTitle(f"{win_data.symbol} ({win_data.timeframe.to_string() if win_data.timeframe else ''}) — {self.window_id}")
+
         self.canvas.set_window_data(win_data)
         # Apply any initial topbar blocks
         for block in win_data.topbar_blocks.values():

@@ -134,7 +134,11 @@ export function registerYouTubeTools(server: McpServer) {
           .from("yt_videos")
           .select("video_id, title, duration, published_at, status, error_msg")
           .eq("channel", targetHandle)
-          .order("published_at", { ascending: false })
+          // nullsFirst: false is required here — Postgres/PostgREST default for
+          // DESC order is NULLS FIRST, which would otherwise push videos with an
+          // unknown published_at (legacy rows, failed date extraction) to the
+          // very top and make old/undated videos masquerade as "the latest one".
+          .order("published_at", { ascending: false, nullsFirst: false })
           .limit(limit || 10);
 
         if (error) throw error;
@@ -150,7 +154,12 @@ export function registerYouTubeTools(server: McpServer) {
           return `${idx + 1}. 📅 ${dateStr} - **${v.title}** (${durationStr}) - [${v.status}] (ID: ${v.video_id})`;
         }).join("\n");
 
-        return { content: [{ type: "text", text: `Übersicht der Videos für ${targetHandle}:\n\n${formatted}` }] };
+        const unknownDateCount = videos.filter((v: any) => !v.published_at).length;
+        const warning = unknownDateCount > 0
+          ? `\n\n⚠️ ${unknownDateCount} Video(s) ohne bekanntes Upload-Datum wurden ans Ende sortiert und stellen NICHT zwangsläufig die neuesten Videos dar — die Datumsermittlung ist für diese Einträge fehlgeschlagen.`
+          : "";
+
+        return { content: [{ type: "text", text: `Übersicht der Videos für ${targetHandle}:\n\n${formatted}${warning}` }] };
       } catch (err: any) {
         return { content: [{ type: "text", text: `Fehler: ${err.message}` }], isError: true };
       }

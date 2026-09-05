@@ -76,6 +76,8 @@ class Overlay(msgspec.Struct):
     series_id: str
     values: list[OverlayPoint]
     style: dict = {}
+    pane: str = "main"                                      # Pane this overlay belongs to
+    origin: Literal["bottom", "center"] = "bottom"          # Histogram origin mode
 
 
 class Anchor(msgspec.Struct):

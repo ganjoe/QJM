@@ -89,6 +89,23 @@ def calculate_bollinger(df: pd.DataFrame, source: str, periods: List[int], std_d
     return result
 
 
+def calculate_adr_pct(df: pd.DataFrame, periods: List[int]) -> Dict[str, List[Optional[float]]]:
+    """Calculate Average Daily Range percentage (ADR%).
+    ADR% = SMA of (High / Low - 1) * 100
+    If period=1, it is just the daily range percentage.
+    """
+    # Daily range percentage
+    dr_pct = (df["high"] / df["low"] - 1.0) * 100.0
+    series_dict = {}
+    for p in periods:
+        if p == 1:
+            res = dr_pct
+        else:
+            res = dr_pct.rolling(window=p).mean()
+        series_dict[f"adr_{p}_pct"] = [None if np.isnan(v) else round(float(v), 4) for v in res]
+    return series_dict
+
+
 def calculate_stochastic(df: pd.DataFrame, k_period: int, d_period: int, slowing: int) -> Dict[str, List[Optional[float]]]:
     low_min = df["low"].rolling(window=k_period).min()
     high_max = df["high"].rolling(window=k_period).max()
@@ -147,6 +164,11 @@ async def calculate_indicator_endpoint(req: IndicatorRequest):
             raise HTTPException(status_code=400, detail="Für BOLLINGER muss mindestens eine Periode (period oder periods) angegeben werden.")
         std = req.std_dev if req.std_dev is not None else 2.0
         series_dict = calculate_bollinger(df, src, periods, std)
+
+    elif ind_type == "ADR_PCT":
+        if not periods:
+            raise HTTPException(status_code=400, detail="Für ADR_PCT muss mindestens eine Periode (period oder periods) angegeben werden.")
+        series_dict = calculate_adr_pct(df, periods)
 
     elif ind_type == "STOCHASTIC":
         k_p = req.k_period or 14

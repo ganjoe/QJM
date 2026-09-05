@@ -104,12 +104,39 @@ function determineTargetLang(meta: any): string {
   return "en";
 }
 
+/**
+ * Resolve a usable ISO published_at timestamp from a yt-dlp JSON entry.
+ * yt-dlp exposes the date in different fields depending on extraction mode:
+ * - "upload_date" (YYYYMMDD string): present in full/per-video extraction.
+ * - "timestamp" / "release_timestamp" (epoch seconds): present when
+ *   --extractor-args "youtubetab:approximate_date" is used in flat-playlist mode.
+ * Falls back to "" (unknown) only if none of these are present, instead of
+ * silently producing null further down the pipeline.
+ */
+function derivePublishedAt(data: any): string {
+  if (data.upload_date && typeof data.upload_date === "string" && data.upload_date.length === 8) {
+    return `${data.upload_date.substring(0, 4)}-${data.upload_date.substring(4, 6)}-${data.upload_date.substring(6, 8)}T00:00:00Z`;
+  }
+  const epochSeconds = data.timestamp ?? data.release_timestamp;
+  if (typeof epochSeconds === "number" && epochSeconds > 0) {
+    return new Date(epochSeconds * 1000).toISOString();
+  }
+  return "";
+}
+
 async function getChannelVideos(channelUrl: string, limit?: number, signal?: AbortSignal) {
   const target = channelUrl.includes("/videos") ? channelUrl : channelUrl.replace(/\/?$/, "/videos");
   const useFlat = limit === undefined || limit > 30;
 
   const args = ["--cookies", YT_COOKIES_PATH, "--dump-json", "--skip-download"];
-  if (useFlat) args.push("--flat-playlist");
+  if (useFlat) {
+    args.push("--flat-playlist");
+    // Flat-playlist mode normally omits upload_date entirely. This flag asks the
+    // youtubetab extractor to derive an approximate upload date/timestamp per
+    // entry (e.g. "3 weeks ago" -> resolved date) so published_at is never left
+    // null just because we took the fast listing path.
+    args.push("--extractor-args", "youtubetab:approximate_date");
+  }
   if (limit !== undefined) args.push("--playlist-end", String(limit));
   args.push(target);
 
@@ -127,9 +154,7 @@ async function getChannelVideos(channelUrl: string, limit?: number, signal?: Abo
         videoId: data.id,
         title: data.title || "Unknown",
         duration: data.duration || 0,
-        publishedAt: data.upload_date
-          ? `${data.upload_date.substring(0, 4)}-${data.upload_date.substring(4, 6)}-${data.upload_date.substring(6, 8)}T00:00:00Z`
-          : "",
+        publishedAt: derivePublishedAt(data),
         targetLang: useFlat ? "en" : determineTargetLang(data),
       });
     } catch {

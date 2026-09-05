@@ -39,6 +39,14 @@ class WindowData:
     def get_bar_timestamps(self) -> List[int]:
         return [b.t_open for b in self.bars]
 
+    def get_panes(self) -> Dict[str, List[Overlay]]:
+        """Group overlays by their pane field. Returns {pane_id: [overlays]}."""
+        panes: Dict[str, List[Overlay]] = {}
+        for ov in self.overlays.values():
+            pane_id = ov.pane or "main"
+            panes.setdefault(pane_id, []).append(ov)
+        return panes
+
 
 class StateManager:
     """Stateless in-memory store for the Viewer process."""
@@ -133,6 +141,8 @@ class StateManager:
                     series_id=ov.get("series_id", ""),
                     values=values,
                     style=ov.get("style", {}),
+                    pane=ov.get("pane", "main"),
+                    origin=ov.get("origin", "bottom"),
                 )
                 win_data.overlays[ov_obj.overlay_id] = ov_obj
 
