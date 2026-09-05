@@ -32,6 +32,7 @@ cmd = {
     "action": "DISPLAY_STOCK",
     "symbol": symbol,
     "preset": preset,
+    "limit": 1500,
 }
 
 try:

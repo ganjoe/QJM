@@ -10,7 +10,7 @@ from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
 class ResolvedBarColor:
     border_color: str
     fill_color: str | None  # None indicates hollow
-    border_width: int = 4
+    border_width: int = 1
     is_hollow: bool = False
 
 
@@ -23,23 +23,23 @@ def resolve_bar_color(
 
     1. Bar.color_override / Bar.fill_override
     2. Series.style_defaults
-    3. Global Application Defaults:
-       - Up: Blue filled (#2962FF)
-       - Down: Violet hollow (#7B1FA2, 4px border)
+    3. Global Application Defaults (TC2000 style: thin 1px lines):
+       - Up: Blue hollow (1px border)
+       - Down: Magenta filled (1px border)
     """
     cfg = config or GLOBAL_CONFIG
     is_up = bar.close >= bar.open
 
     # Tier 3: Global Defaults
     if is_up:
-        def_border = cfg.default_up_color  # #2962FF
-        def_fill = cfg.default_up_color
-        def_hollow = False
-    else:
-        def_border = cfg.default_down_color  # #7B1FA2
+        def_border = cfg.default_up_color
         def_fill = None
         def_hollow = True
-    def_width = 4
+    else:
+        def_border = cfg.default_down_color
+        def_fill = cfg.default_down_color
+        def_hollow = False
+    def_width = 1
 
     # Tier 2: Series Style Defaults
     series_style = series_style or {}

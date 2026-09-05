@@ -32,17 +32,21 @@ class ViewerConfig:
     hit_test_radius_px: float = 6.0  # Handle & line detection radius
 
     # Axes & Padding
-    margin_top_pct: float = 0.05  # 5% margin top
-    margin_bottom_pct: float = 0.05  # 5% margin bottom
+    margin_top_pct: float = 0.15  # Default 15% headroom top
+    margin_bottom_pct: float = 0.08  # Default 8% margin bottom
+    min_padding_px: float = 25.0  # Guaranteed minimum pixel padding top and bottom
+    right_margin_pct: float = 0.10  # 10% pinned margin on the right side
+    touch_left_border: bool = True  # Rule: Chart touches left window edge (x=0) during X-zoom and layout
+    y_handle_hit_radius_px: float = 8.0  # TC2000 Y-axis mini-arrow handle hit test radius
     default_candle_width_px: float = 8.0
     min_candle_width_px: float = 1.0
     max_candle_width_px: float = 60.0
     configured_wick_px: int = 1
 
     # Default styling (Application Defaults: 3rd priority tier)
-    # Up: Blue filled (#2962FF), Down: Violet hollow (#7B1FA2), 4px border (or 1-4px)
-    default_up_color: str = "#2962FF"
-    default_down_color: str = "#7B1FA2"
+    # Up: Blue hollow (#3877FF), Down: Magenta filled (#E040FB), 1px thin border (TC2000 style)
+    default_up_color: str = "#3877FF"
+    default_down_color: str = "#E040FB"
     default_background_color: str = "#131722"
     default_grid_color: str = "#2A2E39"
     default_text_color: str = "#D1D4DC"
@@ -75,8 +79,12 @@ class ViewerConfig:
             future_space_bars=int(os.getenv("CV_FUTURE_SPACE_BARS", "15")),
             thin_bar_threshold_px=float(os.getenv("CV_THIN_BAR_THRESHOLD_PX", "3.0")),
             hit_test_radius_px=float(os.getenv("CV_HIT_TEST_RADIUS_PX", "6.0")),
-            margin_top_pct=float(os.getenv("CV_MARGIN_TOP_PCT", "0.05")),
-            margin_bottom_pct=float(os.getenv("CV_MARGIN_BOTTOM_PCT", "0.05")),
+            margin_top_pct=float(os.getenv("CV_MARGIN_TOP_PCT", "0.15")),
+            margin_bottom_pct=float(os.getenv("CV_MARGIN_BOTTOM_PCT", "0.08")),
+            min_padding_px=float(os.getenv("CV_MIN_PADDING_PX", "25.0")),
+            right_margin_pct=float(os.getenv("CV_RIGHT_MARGIN_PCT", "0.10")),
+            touch_left_border=os.getenv("CV_TOUCH_LEFT_BORDER", "true").lower() in ("true", "1", "yes"),
+            y_handle_hit_radius_px=float(os.getenv("CV_Y_HANDLE_HIT_RADIUS_PX", "8.0")),
             screenshot_width=int(os.getenv("CV_SCREENSHOT_WIDTH", "640")),
             screenshot_height=int(os.getenv("CV_SCREENSHOT_HEIGHT", "480")),
             screenshot_hires_width=int(os.getenv("CV_SCREENSHOT_HIRES_WIDTH", "800")),

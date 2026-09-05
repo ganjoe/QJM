@@ -34,7 +34,7 @@ def test_state_machine_escape_cancels_immediately():
 
 
 def test_canvas_measure_tool_lifecycle(qapp):
-    """Test canvas mouse interaction for measure tool lifecycle."""
+    """Test pane mouse interaction for measure tool lifecycle."""
     canvas = ChartCanvas(window_id="test-win")
     canvas.resize(800, 600)
 
@@ -44,8 +44,11 @@ def test_canvas_measure_tool_lifecycle(qapp):
         Bar(t_open=2000, t_close=3000, open=105.0, high=115.0, low=95.0, close=110.0),
     ]
     canvas.set_window_data(win_data)
+    main_pane = canvas._panes.get("main")
+    assert main_pane is not None
+    main_pane.resize(800, 500)
 
-    # 1. Simulate mouse press on empty chart (e.g. at 200, 300)
+    # 1. Simulate mouse press on empty chart area (e.g. at 200, 300)
     press_event = QMouseEvent(
         QMouseEvent.Type.MouseButtonPress,
         QPointF(200, 300),
@@ -53,11 +56,10 @@ def test_canvas_measure_tool_lifecycle(qapp):
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    canvas.mousePressEvent(press_event)
+    main_pane.mousePressEvent(press_event)
 
-    assert canvas.sm.state == InteractionState.MEASURING
-    assert canvas.layer4_interaction.is_measuring is True
-    assert canvas.layer4_interaction.measure_start_pos == QPointF(200, 300)
+    assert main_pane._is_measuring is True
+    assert main_pane._measure_start_pos == QPointF(200, 300)
 
     # 2. Simulate mouse move (measuring active)
     move_event = QMouseEvent(
@@ -67,8 +69,8 @@ def test_canvas_measure_tool_lifecycle(qapp):
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    canvas.mouseMoveEvent(move_event)
-    assert canvas.layer4_interaction.is_measuring is True
+    main_pane.mouseMoveEvent(move_event)
+    assert main_pane._is_measuring is True
 
     # 3. Simulate mouse release -> MUST immediately discard measurement and never persist
     release_event = QMouseEvent(
@@ -78,10 +80,9 @@ def test_canvas_measure_tool_lifecycle(qapp):
         Qt.MouseButton.NoButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    canvas.mouseReleaseEvent(release_event)
+    main_pane.mouseReleaseEvent(release_event)
 
-    assert canvas.sm.state == InteractionState.IDLE
-    assert canvas.layer4_interaction.is_measuring is False
-    assert canvas.layer4_interaction.measure_start_pos is None
+    assert main_pane._is_measuring is False
+    assert main_pane._measure_start_pos is None
     # Verify no persistent annotations were added
     assert len(win_data.annotations) == 0

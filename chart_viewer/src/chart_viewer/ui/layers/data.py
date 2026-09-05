@@ -57,8 +57,8 @@ class DataLayer(ChartLayer):
         effective_wick_px = max(1, min(configured_wick, max(1, int(candle_w - 1))))
 
         # Determine visible bar index range
-        min_idx = max(0, math.floor(x_trans.min_visible_bar_index))
-        max_idx = min(len(self.bars) - 1, math.ceil(x_trans.right_index))
+        min_idx = max(0, math.floor(x_trans.x_to_bar(0.0) - 1))
+        max_idx = min(len(self.bars) - 1, math.ceil(x_trans.x_to_bar(chart_w) + 1))
 
         # Volume baseline (bottom 20% of chart area)
         vol_height = chart_h * 0.20
@@ -122,28 +122,30 @@ class DataLayer(ChartLayer):
 
             else:
                 # Regular Candlestick Mode
-                # Wick
-                wick_pen = QPen(border_qcolor)
-                wick_pen.setStyle(pen_style)
-                wick_pen.setWidth(effective_wick_px)
-                painter.setPen(wick_pen)
-                painter.drawLine(int(x_center), int(y_high), int(x_center), int(y_low))
-
-                # Body
                 body_top = min(y_open, y_close)
                 body_bottom = max(y_open, y_close)
                 body_h = max(1.0, body_bottom - body_top)
                 body_w = max(2.0, candle_w * 0.8)
                 body_rect = QRectF(x_center - body_w / 2.0, body_top, body_w, body_h)
 
+                # Wicks: Thin 1px line, drawn outside the body
+                wick_pen = QPen(border_qcolor)
+                wick_pen.setStyle(pen_style)
+                wick_pen.setWidth(1)
+                painter.setPen(wick_pen)
+                if y_high < body_top:
+                    painter.drawLine(int(x_center), int(y_high), int(x_center), int(body_top))
+                if y_low > body_bottom:
+                    painter.drawLine(int(x_center), int(body_bottom), int(x_center), int(y_low))
+
+                # Body: Thin 1px border
                 body_pen = QPen(border_qcolor)
                 body_pen.setStyle(pen_style)
-                body_pen.setWidth(color_info.border_width)
+                body_pen.setWidth(1)
                 painter.setPen(body_pen)
 
                 if color_info.is_hollow or color_info.fill_color is None:
                     painter.setBrush(Qt.BrushStyle.NoBrush)
-                    # For hollow down-candle with background color inside
                     bg_fill = QColor(self.config.default_background_color)
                     painter.fillRect(body_rect, bg_fill)
                     painter.drawRect(body_rect)

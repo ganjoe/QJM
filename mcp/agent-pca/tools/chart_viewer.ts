@@ -96,7 +96,7 @@ export function registerChartViewerTools(server: McpServer) {
           }
           const sym = ticker.toUpperCase();
           const targetWinId = window_id || `win_${sym.toLowerCase()}_${tf.toLowerCase()}`;
-          const cappedLimit = Math.min(Math.max(20, limit || 300), 1000);
+          const cappedLimit = Math.min(Math.max(20, limit || 1500), 2000);
           const selectedPreset = preset || "default";
 
           log.info(`[chart_viewer] DISPLAY_STOCK: ${sym} with preset '${selectedPreset}'...`);

@@ -221,7 +221,7 @@ def main():
                                     indicators=cmd.get("indicators"),
                                     preset=cmd.get("preset"),
                                     timeframe=cmd.get("timeframe_str", "1D"),
-                                    limit=cmd.get("limit", 300),
+                                    limit=cmd.get("limit") or 1500,
                                     position=cmd.get("position"),
                                     size=cmd.get("size"),
                                     topbar_metrics=cmd.get("topbar_metrics"),

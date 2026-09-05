@@ -6,23 +6,23 @@ from chart_viewer.config import ViewerConfig
 
 
 def test_tier3_global_defaults():
-    cfg = ViewerConfig(default_up_color="#2962FF", default_down_color="#7B1FA2")
+    cfg = ViewerConfig(default_up_color="#3877FF", default_down_color="#E040FB")
 
-    # Up candle (close >= open)
+    # Up candle (close >= open): Hollow, 1px border
     up_bar = Bar(t_open=1, t_close=2, open=100.0, high=105.0, low=95.0, close=102.0)
     up_color = resolve_bar_color(up_bar, config=cfg)
-    assert up_color.border_color == "#2962FF"
-    assert up_color.fill_color == "#2962FF"
-    assert up_color.is_hollow is False
-    assert up_color.border_width == 4
+    assert up_color.border_color == "#3877FF"
+    assert up_color.fill_color is None  # Hollow
+    assert up_color.is_hollow is True
+    assert up_color.border_width == 1
 
-    # Down candle (close < open)
+    # Down candle (close < open): Filled, 1px border
     down_bar = Bar(t_open=1, t_close=2, open=100.0, high=105.0, low=95.0, close=98.0)
     down_color = resolve_bar_color(down_bar, config=cfg)
-    assert down_color.border_color == "#7B1FA2"
-    assert down_color.fill_color is None  # Hollow
-    assert down_color.is_hollow is True
-    assert down_color.border_width == 4
+    assert down_color.border_color == "#E040FB"
+    assert down_color.fill_color == "#E040FB"  # Filled
+    assert down_color.is_hollow is False
+    assert down_color.border_width == 1
 
 
 def test_tier2_series_style():

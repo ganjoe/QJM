@@ -8,7 +8,7 @@ import math
 from typing import Callable, Dict, List, Optional
 from PySide6.QtCore import Qt, QPointF, Signal, QRectF
 from PySide6.QtWidgets import QWidget, QSplitter, QVBoxLayout
-from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QFont, QColor, QPen
+from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QResizeEvent, QFont, QColor, QPen
 
 from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
@@ -165,9 +165,8 @@ class ChartCanvas(QWidget):
         """)
         self._layout.addWidget(self._splitter, stretch=1)
 
-        # X-axis bar at the bottom
-        self._x_axis_bar = XAxisBar(self.x_trans, self.config, self)
-        self._layout.addWidget(self._x_axis_bar, stretch=0)
+        # X-axis bar reference for backward compatibility
+        self._x_axis_bar: Optional[XAxisBar] = None
 
         # Pane registry: pane_id → ChartPane
         self._panes: Dict[str, ChartPane] = {}
@@ -199,7 +198,6 @@ class ChartCanvas(QWidget):
         duration = 86400
         if win_data.timeframe:
             duration = win_data.timeframe.to_seconds()
-        self._x_axis_bar.set_time_base(base_ts, duration)
 
         # Distribute data to panes
         main_pane = self._panes.get("main")
@@ -222,10 +220,17 @@ class ChartCanvas(QWidget):
                 pane.base_timestamp = base_ts
                 pane.bar_duration = duration
 
-        # Init x-axis
+        # Init x-axis: latest bar always pinned at 10% right margin
         if win_data.bars:
-            if self.x_trans.right_index == 0.0:
-                self.x_trans.right_index = float(len(win_data.bars) - 1)
+            latest_idx = float(len(win_data.bars) - 1)
+            self.x_trans.latest_bar_index = latest_idx
+            self.x_trans.right_index = latest_idx
+            self.x_trans.pin_to_right = True
+            chart_w = max(10.0, self.width() - Y_AXIS_WIDTH)
+            if chart_w > 10.0:
+                self.x_trans.set_viewport_width(chart_w)
+            else:
+                self.x_trans.ensure_touches_left()
 
         # Update all Y ranges
         self._update_all_y_ranges()
@@ -248,7 +253,7 @@ class ChartCanvas(QWidget):
         self._pane_order = pane_ids
 
         # Create panes
-        for pane_id in pane_ids:
+        for i, pane_id in enumerate(pane_ids):
             is_main = (pane_id == "main")
             pane = ChartPane(
                 pane_id=pane_id,
@@ -257,10 +262,20 @@ class ChartCanvas(QWidget):
                 config=self.config,
                 parent=self._splitter,
             )
+            # Rule: X-axis date/time legend belongs in the pane UNDER the chart (index 1),
+            # or in the main chart pane if single pane!
+            if len(pane_ids) > 1:
+                pane.draw_x_axis = (i == 1)
+            else:
+                pane.draw_x_axis = is_main
+
             self._panes[pane_id] = pane
             self._splitter.addWidget(pane)
-            # Connect crosshair distribution
+            stretch = 7 if is_main else 2
+            self._splitter.setStretchFactor(i, stretch)
+            # Connect crosshair distribution and X-pan
             pane.crosshair_moved_signal.connect(self._on_pane_crosshair_moved)
+            pane.x_pan_requested.connect(self._on_x_pan)
 
         # Restore or set default splitter sizes
         self._restore_splitter_sizes(len(pane_ids))
@@ -315,13 +330,24 @@ class ChartCanvas(QWidget):
         for pane in self._panes.values():
             pane.update_y_range()
 
+    def _on_x_pan(self, delta_px: float) -> None:
+        """Handle horizontal X-axis pan from mouse drag (right-click or middle-click)."""
+        self.x_trans.pin_to_right = False
+        self.x_trans.pan(delta_px)
+        self._update_all_y_ranges()
+        self.mark_layers_dirty()
+        if self.window_data and self.window_data.bars:
+            if self.x_trans.should_request_more_data(0.0):
+                self.data_request_more.emit()
+
     def _on_pane_crosshair_moved(self, source_pane_id: str, x_px: float, y_px: float) -> None:
         """Distribute crosshair from one pane to all panes."""
         if x_px < 0:
             # Mouse left the pane — clear all crosshairs
             for pane in self._panes.values():
                 pane.set_crosshair(None, None, False)
-            self._x_axis_bar.set_crosshair_x(None)
+            if self._x_axis_bar:
+                self._x_axis_bar.set_crosshair_x(None)
             return
 
         # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
@@ -329,8 +355,9 @@ class ChartCanvas(QWidget):
             is_active = (pane_id == source_pane_id)
             pane.set_crosshair(x_px, y_px if is_active else None, is_active)
 
-        # Time badge on X-axis bar
-        self._x_axis_bar.set_crosshair_x(x_px)
+        # Time badge on X-axis bar (if present)
+        if self._x_axis_bar:
+            self._x_axis_bar.set_crosshair_x(x_px)
 
         # Emit crosshair_moved for inter-window sync
         if self.window_data and self.window_data.bars:
@@ -343,9 +370,17 @@ class ChartCanvas(QWidget):
         """Mark all panes dirty for repaint."""
         for pane in self._panes.values():
             pane.mark_dirty()
-        self._x_axis_bar.update()
+        if self._x_axis_bar:
+            self._x_axis_bar.update()
 
     # ── Delegated interaction (zoom, pan, crosshair) ─────────────────
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        chart_w = max(10.0, self.width() - Y_AXIS_WIDTH)
+        self.x_trans.set_viewport_width(chart_w)
+        self._update_all_y_ranges()
+        self.mark_layers_dirty()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -356,16 +391,35 @@ class ChartCanvas(QWidget):
         # Regular wheel → X-axis zoom (shared)
         angle = event.angleDelta().y()
         factor = 1.15 if angle > 0 else (1.0 / 1.15)
-        mouse_pos = event.position()
-        changed = self.x_trans.zoom(factor, anchor_mouse_x=mouse_pos.x())
+        
+        is_pinned = getattr(self.x_trans, "pin_to_right", True)
+        if is_pinned:
+            # Rule: If at the right edge, X-Zoom ALWAYS enforces the 10% right margin rule
+            if self.window_data and self.window_data.bars:
+                latest_idx = float(len(self.window_data.bars) - 1)
+                self.x_trans.latest_bar_index = latest_idx
+                self.x_trans.right_index = latest_idx
+            changed = self.x_trans.zoom(factor, pin_to_right=True)
+        else:
+            # User is panned into history: zoom smoothly around mouse cursor
+            changed = self.x_trans.zoom(
+                factor,
+                anchor_mouse_x=event.position().x(),
+                pin_to_right=False,
+            )
+
         if changed:
             self._update_all_y_ranges()
             self.mark_layers_dirty()
+            if self.window_data and self.window_data.bars:
+                if self.x_trans.should_request_more_data(0.0):
+                    self.data_request_more.emit()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
             self._is_panning = True
             self._pan_start = event.position()
+            self.x_trans.pin_to_right = False
             return
         super().mousePressEvent(event)
 
@@ -373,9 +427,7 @@ class ChartCanvas(QWidget):
         if getattr(self, "_is_panning", False):
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
-            self.x_trans.pan(delta.x())
-            self._update_all_y_ranges()
-            self.mark_layers_dirty()
+            self._on_x_pan(delta.x())
             return
 
         # Data request check
@@ -394,16 +446,22 @@ class ChartCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if getattr(self, "_is_panning", False) and event.button() == Qt.MouseButton.MiddleButton:
+        if getattr(self, "_is_panning", False) and event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
             self._is_panning = False
+            if hasattr(self.x_trans, "latest_bar_index") and self.x_trans.latest_bar_index >= 0:
+                if self.x_trans.right_index >= self.x_trans.latest_bar_index:
+                    self.x_trans.right_index = self.x_trans.latest_bar_index
+                    self.x_trans.pin_to_right = True
             return
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            # Reset all pane Y-axes to auto
+            # Reset all pane Y-axes to auto and re-pin right margin
+            self.x_trans.pin_to_right = True
             for pane in self._panes.values():
                 pane.y_axis_mode = "auto"
+                pane.y_trans.reset_boundary()
                 pane.update_y_range()
                 pane.mark_dirty()
         else:
@@ -425,6 +483,10 @@ class ChartCanvas(QWidget):
 
     # Stubs for interaction layer compatibility
     crosshair_pos = None
+
+    @property
+    def is_crosshair_visible(self) -> bool:
+        return self.crosshair_pos is not None
 
     def set_crosshair(self, pos):
         self.crosshair_pos = pos
