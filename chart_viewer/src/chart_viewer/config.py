@@ -97,4 +97,4 @@ class ViewerConfig:
 
 
 
-GLOBAL_CONFIG = ViewerConfig()
+

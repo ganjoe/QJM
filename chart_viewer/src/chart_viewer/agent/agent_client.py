@@ -33,7 +33,20 @@ class ChartAgent:
         return self._seq
 
     def send_command(self, env: Envelope) -> None:
-        """Send command with backoff retry if transport is not connected."""
+        """Send command with backoff retry if transport is not connected.
+        
+        Design decision: This retries on transport-layer failures only (disconnect,
+        send exceptions). It does NOT wait for ACKs from the viewer. Rationale:
+        - The viewer always sends ACKs for commands (window.open, snapshot.full, etc.)
+        - Sequence-gap detection in the transport layer triggers resync if messages are lost
+        - Full ACK-tracking with per-message threading.Events would add complexity
+          disproportionate to the risk (WebSocket over localhost/TCP is reliable)
+        - screenshot.request is the only command that needs response correlation,
+          and it already has its own threading.Event mechanism
+        
+        If silent packet loss becomes a problem, implement ACK-based retry as specified
+        in IMPLEMENTATIONSPLAN.md Maßnahme 7.
+        """
         import time
         delays = [0.1, 0.5, 1.0]
         
