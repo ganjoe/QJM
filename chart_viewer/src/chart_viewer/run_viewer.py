@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from chart_viewer.transport.websocket import WebSocketTransport
 from chart_viewer.ui.app import ViewerApp
+from chart_viewer.config import ViewerConfig
 
 
 def main():
@@ -26,8 +27,9 @@ def main():
     app.setApplicationName("ChartViewer")
     app.setQuitOnLastWindowClosed(False)
 
-    transport = WebSocketTransport(url=args.ws)
-    viewer = ViewerApp(transport=transport)
+    config = ViewerConfig.from_env()
+    transport = WebSocketTransport(url=args.ws, config=config)
+    viewer = ViewerApp(transport=transport, config=config)
 
     print(f"Connecting to Agent Server at {args.ws}...")
     viewer.start()

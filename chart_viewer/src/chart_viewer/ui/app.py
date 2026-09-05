@@ -28,7 +28,7 @@ class ViewerApp(QObject):
     def __init__(
         self,
         transport: AgentTransport,
-        config: ViewerConfig | None = None,
+        config: ViewerConfig,
         parent: QObject | None = None,
     ):
         super().__init__(parent)

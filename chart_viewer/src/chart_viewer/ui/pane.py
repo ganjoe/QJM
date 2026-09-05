@@ -150,21 +150,23 @@ class ChartPane(QWidget):
                 p_min = min(p_min, min(b.low for b in visible_bars))
                 p_max = max(p_max, max(b.high for b in visible_bars))
 
-        # Value range from pre-indexed overlays (sub-microsecond binary search)
-        indexed_ovs = getattr(self, "_indexed_overlays", {})
-        for item in indexed_ovs.values():
-            indices = item["indices"]
-            if not indices:
-                continue
-            i_start = bisect.bisect_left(indices, min_idx)
-            i_end = bisect.bisect_right(indices, max_idx_val)
-            for _, val, val2 in item["pts"][i_start:i_end]:
-                if val is not None:
-                    if val < p_min: p_min = val
-                    if val > p_max: p_max = val
-                if val2 is not None:
-                    if val2 < p_min: p_min = val2
-                    if val2 > p_max: p_max = val2
+        # Value range from pre-indexed overlays
+        # Rule: In the main pane, Price dictates the scale. Overlays (like distant SMAs) should not squash the chart.
+        if not self.is_main:
+            indexed_ovs = getattr(self, "_indexed_overlays", {})
+            for item in indexed_ovs.values():
+                indices = item["indices"]
+                if not indices:
+                    continue
+                i_start = bisect.bisect_left(indices, min_idx)
+                i_end = bisect.bisect_right(indices, max_idx_val)
+                for _, val, val2 in item["pts"][i_start:i_end]:
+                    if val is not None:
+                        if val < p_min: p_min = val
+                        if val > p_max: p_max = val
+                    if val2 is not None:
+                        if val2 < p_min: p_min = val2
+                        if val2 > p_max: p_max = val2
 
         if p_min == float("inf") or p_max == float("-inf"):
             return
