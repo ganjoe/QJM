@@ -97,5 +97,4 @@ class ViewerConfig:
 
 
 
-GLOBAL_CONFIG = ViewerConfig.from_env()
-
+GLOBAL_CONFIG = ViewerConfig()

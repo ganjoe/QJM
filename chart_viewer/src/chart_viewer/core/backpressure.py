@@ -3,7 +3,7 @@
 from __future__ import annotations
 import threading
 from typing import Callable, Dict, Optional
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 
 
 class TickCoalescer:
@@ -20,7 +20,7 @@ class TickCoalescer:
         config: ViewerConfig | None = None,
     ):
         self.on_flush = on_flush
-        self.config = config or GLOBAL_CONFIG
+        self.config = config
         self._slots: Dict[str, dict] = {}
         self._dirty: Dict[str, bool] = {}
         self._lock = threading.Lock()

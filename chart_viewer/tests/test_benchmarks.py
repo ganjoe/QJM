@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Performance benchmarks and acceptance verification according to Section 9 & Criteria 6, 7."""
 
 import time
@@ -71,7 +72,7 @@ def test_criterion_6_1000_ticks_per_second_backpressure_no_backlog():
 
 def test_section_9_crosshair_frame_time_under_8ms(qapp):
     """Section 9: Frame-Zeit bei Crosshair-Bewegung < 8 ms (≈120 FPS) bei 500 sichtbaren Kerzen."""
-    canvas = ChartCanvas("win-bench")
+    canvas = ChartCanvas(window_id="win-bench", config=ViewerConfig())
     canvas.resize(1000, 700)
 
     # 500 synthetic candles

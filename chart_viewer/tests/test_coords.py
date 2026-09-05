@@ -170,11 +170,13 @@ def test_x_axis_touches_left_window_edge():
     assert x_trans.bar_to_x(0.0) < 0.0, "Zoom-in expands history past left edge"
     assert math.isclose(x_trans.bar_to_x(59.0), 900.0, abs_tol=1e-3)
 
-    # 3. Zoom out: candle width can decrease smoothly down to min_candle_width_px (1.0px)
+    # 3. Zoom out: candle width can decrease smoothly down to touch_left_border limit
     for _ in range(15):
         x_trans.zoom(0.7)
 
-    assert math.isclose(x_trans.candle_width_px, 1.0, abs_tol=1e-3), "Zoom-out reaches min_candle_width_px"
+    # Since touch_left_border is True, it should stop zooming out when all 60 bars are visible.
+    # 900px / 59 intervals = 15.2542 px
+    assert math.isclose(x_trans.candle_width_px, 900.0 / 59.0, abs_tol=1e-3), "Zoom-out reaches touch_left_border limit"
     assert math.isclose(x_trans.bar_to_x(59.0), 900.0, abs_tol=1e-3), "Latest bar remains pinned at 10% margin"
 
     # 4. Pan cannot drag bar 0 into the screen past origin

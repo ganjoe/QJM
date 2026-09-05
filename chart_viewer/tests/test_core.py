@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Tests for EventHub, Backpressure, and StateManager (Section 3, 4, 11 & Criterion 2)."""
 
 from chart_viewer.core.event_hub import EventHub

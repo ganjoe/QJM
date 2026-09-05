@@ -32,14 +32,16 @@ MODEL_MAP = {
     "gemini-3-pro": "gemini-3.1-pro-preview",
     "pro": "gemini-3.1-pro-preview",
     "reasoning": "gemini-3.1-pro-preview",
+    "gemini-3.8-flash": "gemini-3.8-flash",
     "gemini-3.6-flash": "gemini-3.6-flash",
-    "gemini-3-flash": "gemini-3.6-flash",
-    "fast": "gemini-3.6-flash",
-    "flash": "gemini-3.6-flash",
+    "gemini-3-flash": "gemini-3.8-flash",
+    "fast": "gemini-3.8-flash",
+    "flash": "gemini-3.8-flash",
     "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
     "lite": "gemini-3.5-flash-lite",
-    "auto": "gemini-3.6-flash",
+    "free": "gemini-3.5-flash-lite",
+    "auto": "gemini-3.8-flash",
 }
 
 # ---------------------------------------------------------------------------

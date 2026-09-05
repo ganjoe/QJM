@@ -1,9 +1,5 @@
 schema_version = 1
 
-[llm_clients.lmstudio]
-format = "openai_chat"
-base_url = "http://host.docker.internal:1234/v1"
-
 [llm_clients.gemini]
 format = "openai_chat"
 base_url = "http://dashboard:9000/api/gemini/v1"
@@ -12,76 +8,56 @@ base_url = "http://dashboard:9000/api/gemini/v1"
 format = "openai_chat"
 base_url = "http://host.docker.internal:11434/v1"
 
-[llm_clients.ollama_gpu]
-format = "openai_chat"
-base_url = "http://host.docker.internal:11435/v1"
-
-[llm_clients.ollama]
-format = "openai_chat"
-base_url = "http://host.docker.internal:11435/v1"
-
-[llm_clients.openrouter]
-format = "openai_chat"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[targets.local_model]
-id = "default"
-llm_client = "lmstudio"
-
+# --- Targets (Google Gemini) ---
 [targets.gemini_31_pro]
 id = "gemini-3.1-pro-preview"
 llm_client = "gemini"
 
-[targets.gemini_36_flash]
-id = "gemini-3.6-flash"
+[targets.gemini_flash]
+id = "gemini-3.8-flash"
 llm_client = "gemini"
 
-[targets.gemini_35_lite]
+[targets.gemini_free_lite]
 id = "gemini-3.5-flash-lite"
 llm_client = "gemini"
 
-[targets.gemini_35_flash]
-id = "gemini-3.5-flash"
-llm_client = "gemini"
-
+# --- Targets (Embeddings CPU) ---
 [targets.ollama_embed_cpu]
 id = "qwen3-embedding:8b"
 llm_client = "ollama_cpu"
 
-[targets.ollama_embed_gpu]
-id = "qwen3-embedding:8b"
-llm_client = "ollama_gpu"
-
-[targets.ollama_embed]
-id = "qwen3-embedding:8b"
-llm_client = "ollama_gpu"
-
-[targets.openrouter]
-id = "openrouter/auto"
-llm_client = "openrouter"
-
-[routes.local]
-id = "local"
+# --- Routes ---
+[routes.pro]
+id = "pro"
 type = "passthrough"
-target = "local_model"
+target = "gemini_31_pro"
 
 [routes.reasoning]
 id = "reasoning"
 type = "passthrough"
 target = "gemini_31_pro"
 
+[routes.flash]
+id = "flash"
+type = "passthrough"
+target = "gemini_flash"
+
 [routes.fast]
 id = "fast"
 type = "passthrough"
-target = "gemini_35_lite"
+target = "gemini_flash"
+
+[routes.free]
+id = "free"
+type = "passthrough"
+target = "gemini_free_lite"
 
 [routes.auto]
 id = "auto"
 type = "llm_classifier"
 mode = "capability"
-classifier_target = "gemini_35_lite"
-weak_target = "local_model"
+classifier_target = "gemini_free_lite"
+weak_target = "gemini_free_lite"
 strong_target = "gemini_31_pro"
 base_threshold = 0.5
 threshold_step = 0.1
@@ -89,15 +65,10 @@ threshold_step = 0.1
 [routes.embeddings]
 id = "embeddings"
 type = "passthrough"
-target = "ollama_embed_gpu"
+target = "ollama_embed_cpu"
 
 [routes.embeddings_cpu]
 id = "embeddings_cpu"
 type = "passthrough"
 target = "ollama_embed_cpu"
-
-[routes.openrouter]
-id = "openrouter"
-type = "passthrough"
-target = "openrouter"
 

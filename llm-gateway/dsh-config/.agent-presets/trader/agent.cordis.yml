@@ -72,6 +72,7 @@
           * `'SET_TOPBAR'`: Displays formatted status/metric blocks in the chart topbar (e.g. Minervini Stage 2 rating, ATR, Stop-loss level).
           * `'STATUS'`: Checks viewer connection & open windows.
           * `'CLOSE_WINDOW'`: Closes a chart window.
+      * **`manage_chart_presets`**: Manage dynamically created chart presets (CRUD) and their overlay indicators (like SMA/EMA). Use `CREATE`, `GET`, `LIST`, `UPDATE`, `DELETE`. Specify `preset_id` and the `members` (features like `sma_10`, `ema_20`, `bb_20`, `adr_1_pct`) to automatically render them.
 
       ### B. Trading, Execution & Portfolio (`openbrain-pta`)
       * **`get_quote`**: Use to fetch the **single real-time current market price** of a ticker from Interactive Brokers (IBKR).
@@ -133,6 +134,8 @@
           → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
       12. **"Close the NVDA chart window."**
           → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
+      13. **"Ändere / erstelle das Chart-Preset qmaggi."**
+          → Call `manage_chart_presets(action: "UPDATE", preset_id: "qmaggi", members: [...])`.
 
       ---
 
@@ -158,46 +161,9 @@
   config:
     maxBytes: 65536
 
-# ── MCP Clients (Agent-Scoped) ───────────────────────────────────────────────
-
-# Instead of global registration and filtering, the MCP clients are registered
-# natively into the Trader Agent's local scope. This guarantees they are only
-# available here and eliminates startup race conditions with tools.restrict().
-- id: mcp-openbrain-cco
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: openbrain-cco
-    transport: streamable-http
-    url: !!js process.env.OPENBRAIN_CCO_MCP_URL || "http://mcp-cco:8788"
-    headers:
-      x-brain-key: !!js process.env.MCP_ACCESS_KEY
-
-- id: mcp-openbrain-pta
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: openbrain-pta
-    transport: streamable-http
-    url: !!js process.env.OPENBRAIN_PTA_MCP_URL || "http://mcp-pta:8789"
-    headers:
-      x-brain-key: !!js process.env.MCP_ACCESS_KEY
-
-- id: mcp-openbrain-pca
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: openbrain-pca
-    transport: streamable-http
-    url: !!js process.env.OPENBRAIN_PCA_MCP_URL || "http://mcp-pca:8790"
-    headers:
-      x-brain-key: !!js process.env.MCP_ACCESS_KEY
-
-- id: mcp-openbrain-cda
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: openbrain-cda
-    transport: streamable-http
-    url: !!js process.env.OPENBRAIN_CDA_MCP_URL || "http://mcp-cda:8795"
-    headers:
-      x-brain-key: !!js process.env.MCP_ACCESS_KEY
+# ── MCP Clients ─────────────────────────────────────────────────────────────
+# OpenBrain MCP clients (openbrain-cco, openbrain-pta, openbrain-pca, openbrain-cda)
+# are provided globally across all agents & sessions via cordis.patch.yml.
 
 
 # ── shell ───────────────────────────────────────────────────────────────────

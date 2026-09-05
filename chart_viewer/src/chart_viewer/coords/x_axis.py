@@ -16,13 +16,13 @@ class XAxisTransform:
     touch_left_border: bool = field(default=None)   # Rule: Chart touches left window edge (x=0)
     pin_to_right: bool = True       # When True, zooming keeps the chart tacked to the 10% right margin
     right_index: float = 0.0        # Bar index positioned at right margin (before future space)
-    config: ViewerConfig = field(default_factory=ViewerConfig.from_env)
+    config: ViewerConfig = field(default_factory=ViewerConfig)
 
     # Debounce tracking for data.request_more
     _last_data_request_time: float = 0.0
 
     def __post_init__(self):
-        cfg = self.config or GLOBAL_CONFIG
+        cfg = self.config
         if self.right_margin_pct is None:
             self.right_margin_pct = getattr(cfg, "right_margin_pct", 0.10)
         if self.touch_left_border is None:

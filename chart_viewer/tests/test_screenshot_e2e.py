@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """End-to-End Test for Screenshot Capture and Disk Saving."""
 
 import base64
@@ -24,7 +25,7 @@ def test_screenshot_e2e_multiple_windows_and_resolution(qapp):
     """Test capturing screenshots of multiple open windows and verifying 640x480 resolution."""
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()

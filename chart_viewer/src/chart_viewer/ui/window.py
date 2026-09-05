@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QStatusBar
 from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent
 
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 from chart_viewer.ui.topbar import TopBarWidget
 from chart_viewer.ui.canvas import ChartCanvas
 from chart_viewer.core.state_manager import WindowData
@@ -21,12 +21,12 @@ class ChartWindow(QMainWindow):
     def __init__(
         self,
         window_id: str,
-        config: ViewerConfig | None = None,
+        config: ViewerConfig,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.window_id = window_id
-        self.config = config or GLOBAL_CONFIG
+        self.config = config
         self.symbol: str = ""
 
         self.setWindowTitle(f"Chart Viewer — {window_id}")

@@ -190,14 +190,17 @@ def build_display_stock(
     for r in rows:
         vol = r[col_idx["volume"]]
         if vol is not None:
+            is_up = float(r[col_idx["close"]]) >= float(r[col_idx["open"]])
+            color = "#3877FF" if is_up else "#E040FB"  # TC2000 default
             vol_values.append({
                 "t": int(r[col_idx["timestamp"]]),
                 "value": float(vol),
+                "color_override": color,
             })
     overlays = [{
         "overlay_id": "volume",
         "type": "histogram",
-        "style": {"color": "#546E7A", "alpha": 60},
+        "style": {"color": "#546E7A", "alpha": 60},  # Base color fallback
         "values": vol_values,
         "pane": "volume",
         "origin": "bottom",

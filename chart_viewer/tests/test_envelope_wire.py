@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Tests for Envelope and msgspec serialization (Section 3)."""
 
 from chart_viewer.models.envelope import (

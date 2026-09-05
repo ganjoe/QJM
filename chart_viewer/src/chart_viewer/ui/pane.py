@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF, QPixmap, QMouseEvent, QWheelEvent, QResizeEvent
 
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.coords.y_axis import YAxisTransform
 from chart_viewer.models.entities import Bar, Overlay, OverlayPoint
@@ -36,16 +36,16 @@ class ChartPane(QWidget):
         self,
         pane_id: str,
         x_trans: XAxisTransform,
+        config: ViewerConfig,
         is_main: bool = False,
-        config: ViewerConfig | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.pane_id = pane_id
         self.x_trans = x_trans  # Shared reference — same object across all panes
-        self.y_trans = YAxisTransform(config=config or GLOBAL_CONFIG)
+        self.y_trans = YAxisTransform(config=config)
+        self.config = config
         self.is_main = is_main
-        self.config = config or GLOBAL_CONFIG
         self.draw_x_axis = False  # Only the pane directly under chart draws the X-axis
 
         # Data

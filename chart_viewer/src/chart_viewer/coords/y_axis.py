@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from typing import Literal
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 
 
 @dataclass
@@ -18,7 +18,7 @@ class YAxisTransform:
     p_min: float = 1.0
     p_max: float = 100.0
     is_mode_forced: bool = False
-    config: ViewerConfig = field(default_factory=ViewerConfig.from_env)
+    config: ViewerConfig = field(default_factory=ViewerConfig)
 
     # Effective computed bounds including margins
     p_top: float = 115.0
@@ -27,7 +27,7 @@ class YAxisTransform:
     l_bottom: float = 0.0
 
     def __post_init__(self):
-        cfg = self.config or GLOBAL_CONFIG
+        cfg = self.config
         if self.margin_top_pct is None:
             self.margin_top_pct = getattr(cfg, "margin_top_pct", 0.15)
         if self.margin_bottom_pct is None:

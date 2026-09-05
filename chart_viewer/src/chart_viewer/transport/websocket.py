@@ -18,7 +18,7 @@ from chart_viewer.models.envelope import (
     decode_envelope,
     make_envelope,
 )
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +28,11 @@ class WebSocketTransport(AgentTransport):
 
     def __init__(
         self,
+        config: ViewerConfig,
         url: str = "ws://127.0.0.1:8765",
-        config: ViewerConfig | None = None,
     ):
         self.url = url
-        self.config = config or GLOBAL_CONFIG
+        self.config = config
         self._handlers: List[Callable[[Envelope], None]] = []
         self._ws = None
         self._connected = False

@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Pytest configuration and QApplication fixture for headless test execution."""
 
 import os

@@ -289,22 +289,23 @@ def main():
                                 import base64
                                 import os
                                 import time
-                                from chart_viewer.config import GLOBAL_CONFIG
+                                from chart_viewer.config import ViewerConfig
+                                server_config = ViewerConfig.from_env()
 
                                 is_hires = bool(
                                     cmd.get("hires")
                                     or cmd.get("resolution") in ("hires", "800x600")
                                     or cmd.get("mode") == "hires"
                                 )
-                                default_w = GLOBAL_CONFIG.screenshot_hires_width if is_hires else GLOBAL_CONFIG.screenshot_width
-                                default_h = GLOBAL_CONFIG.screenshot_hires_height if is_hires else GLOBAL_CONFIG.screenshot_height
+                                default_w = server_config.screenshot_hires_width if is_hires else server_config.screenshot_width
+                                default_h = server_config.screenshot_hires_height if is_hires else server_config.screenshot_height
 
-                                timeout = float(cmd.get("timeout_sec", GLOBAL_CONFIG.screenshot_timeout_sec))
+                                timeout = float(cmd.get("timeout_sec", server_config.screenshot_timeout_sec))
                                 width = int(cmd.get("width", default_w))
                                 height = int(cmd.get("height", default_h))
-                                mode = cmd.get("mode", GLOBAL_CONFIG.screenshot_mode)
-                                sharpen_amount = float(cmd.get("sharpen_amount", GLOBAL_CONFIG.screenshot_sharpen_amount))
-                                out_dir = cmd.get("output_dir", GLOBAL_CONFIG.screenshot_output_dir)
+                                mode = cmd.get("mode", server_config.screenshot_mode)
+                                sharpen_amount = float(cmd.get("sharpen_amount", server_config.screenshot_sharpen_amount))
+                                out_dir = cmd.get("output_dir", server_config.screenshot_output_dir)
 
                                 os.makedirs(out_dir, exist_ok=True)
 

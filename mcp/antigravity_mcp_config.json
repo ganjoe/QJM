@@ -1,0 +1,63 @@
+{
+    "mcpServers": {
+        "openbrain-ea": {
+            "command": "/home/daniel/.deno/bin/deno",
+            "args": [
+                "run",
+                "-A",
+                "--env-file=/home/daniel/openBrain/.env",
+                "/home/daniel/openBrain/agent-ea/mcp-server/stdio.ts"
+            ],
+            "env": {
+                "SUPABASE_URL": "http://localhost:8001",
+                "SWITCHYARD_URL": "http://localhost:4000/v1",
+                "EMBED_MODEL": "embeddings",
+                "LM_STUDIO_URL": "http://localhost:1234",
+                "AGENT_ID": "ea",
+                "GLOBAL_BRAIN_ACCESS": "true"
+            }
+        },
+        "openbrain-cco": {
+            "command": "node",
+            "args": [
+                "/home/daniel/.npm/_npx/85d60ba1adc82a16/node_modules/supergateway/dist/index.js",
+                "--streamableHttp",
+                "http://127.0.0.1:8788?key=2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+            ]
+        },
+        "openbrain-pta": {
+            "command": "node",
+            "args": [
+                "/home/daniel/.npm/_npx/85d60ba1adc82a16/node_modules/supergateway/dist/index.js",
+                "--streamableHttp",
+                "http://127.0.0.1:8789?key=2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+            ]
+        },
+        "openbrain-pca": {
+            "command": "node",
+            "args": [
+                "/home/daniel/.npm/_npx/85d60ba1adc82a16/node_modules/supergateway/dist/index.js",
+                "--streamableHttp",
+                "http://127.0.0.1:8790?key=2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+            ]
+        },
+        "openbrain-cda": {
+            "command": "node",
+            "args": [
+                "/home/daniel/.npm/_npx/85d60ba1adc82a16/node_modules/supergateway/dist/index.js",
+                "--streamableHttp",
+                "http://127.0.0.1:8795?key=2902dfd74d9d845813783ebb94878f3be17d07dcec6113b792dde4bf9f2b9b1d"
+            ]
+        },
+        "openbrain-drawio": {
+            "command": "/home/daniel/.deno/bin/deno",
+            "args": [
+                "--quiet",
+                "run",
+                "-A",
+                "--env-file=/home/daniel/openBrain/.env",
+                "/home/daniel/openBrain/mcp-drawio/stdio.ts"
+            ]
+        }
+    }
+}

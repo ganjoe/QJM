@@ -61,9 +61,7 @@ services:
       - ./dsh-config:/home/node/.dsh
       - ./dsh-config:/root/.config/dsh
       - ./dsh-config:/root/.dsh
-      - ${QJM_PROJECT_DIR:-..}:/workspace/qjm
-      - ${QJM_PROJECT_DIR:-..}:/qjm
-      - ${QJM_PROJECT_DIR:-..}:/home/daniel/QJM
+      - ${QJM_PROJECT_DIR:-..}/dsh_playground:/workspace
     environment:
       - HOME=/home/node
       - PORT=3080
@@ -276,6 +274,7 @@ services:
       - switchyard
       - stock-data-node
     volumes:
+      - ../mcp/agent-cda/deno.json:/app/deno.json:ro
       - ../mcp/agent-cda/index.ts:/app/index.ts:ro
       - ../mcp/agent-cda/tools:/app/tools:ro
     environment:

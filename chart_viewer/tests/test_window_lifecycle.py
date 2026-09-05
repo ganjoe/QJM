@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Tests for Window Lifecycle and Stateless Restores (Section 8, 11 & Criteria 8, 9, 10)."""
 
 from chart_viewer.ui.app import ViewerApp
@@ -9,7 +10,7 @@ from chart_viewer.models.envelope import make_envelope, MessageKind
 def test_criterion_8_viewer_start_with_zero_windows(qapp):
     """Criterion 8: Viewer starts without any window.open command -> runs stable with 0 windows."""
     viewer_transport, agent_transport = create_in_process_pair()
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     app.start()
 
@@ -21,7 +22,7 @@ def test_criterion_9_user_closes_window_fire_and_forget(qapp):
     """Criterion 9: User closes a window -> window.closed arrives at agent, viewer does not wait for ACK."""
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()
@@ -58,7 +59,7 @@ def test_criterion_10_viewer_restart_layout_restore(qapp):
     agent.start()
 
     # 1. First viewer session
-    app1 = ViewerApp(transport=viewer_transport1)
+    app1 = ViewerApp(config=ViewerConfig(), transport=viewer_transport1)
     app1.start()
 
     agent.open_window(window_id="win-crypto", symbol="BTCUSDT")
@@ -82,7 +83,7 @@ def test_criterion_10_viewer_restart_layout_restore(qapp):
     agent_transport2.on_event(agent._on_envelope)
     agent_transport2.connect()
 
-    app2 = ViewerApp(transport=viewer_transport2)
+    app2 = ViewerApp(config=ViewerConfig(), transport=viewer_transport2)
     # App2 starts empty (0 windows)
     assert len(app2.windows) == 0
 

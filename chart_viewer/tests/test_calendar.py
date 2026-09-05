@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Tests for Calendar continuous arithmetic and Binance weekly anchor (Section 2.1 & Criterion 11)."""
 
 from datetime import datetime, timezone

@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """End-to-end integration test for Criterion 2: Multi-Window Crosshair Sync & Downtime Clamping."""
 
 from chart_viewer.ui.app import ViewerApp
@@ -16,7 +17,7 @@ def test_criterion_2_multi_window_crosshair_sync_with_downtime_clamping(qapp):
     """
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()

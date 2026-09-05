@@ -32,6 +32,27 @@ class ChartAgent:
         self._seq += 1
         return self._seq
 
+    def send_command(self, env: Envelope) -> None:
+        """Send command with backoff retry if transport is not connected."""
+        import time
+        delays = [0.1, 0.5, 1.0]
+        
+        for attempt, delay in enumerate(delays, start=1):
+            connected = getattr(self.transport, "_connected", True)
+            if not connected:
+                logger.warning(f"Transport not connected, retrying in {delay}s (attempt {attempt})")
+                time.sleep(delay)
+                continue
+            try:
+                self.transport.send_command(env)
+                return
+            except Exception as e:
+                logger.warning(f"Transport send failed, retrying in {delay}s (attempt {attempt}): {e}")
+                time.sleep(delay)
+        
+        # Final attempt
+        self.transport.send_command(env)
+
     def _on_envelope(self, envelope: Envelope) -> None:
         self.received_events.append(envelope)
         logger.info(f"Agent received: {envelope.type} (kind={envelope.kind})")
@@ -96,7 +117,7 @@ class ChartAgent:
             window_id=window_id,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
     def send_snapshot(self, window_id: str, snapshot_data: dict) -> None:
         """Push initial/updated full snapshot to window."""
@@ -108,7 +129,7 @@ class ChartAgent:
             window_id=window_id,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
     def append_bar(self, window_id: str, bar_data: dict) -> None:
         """Push completed candle."""
@@ -119,7 +140,7 @@ class ChartAgent:
             window_id=window_id,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
     def send_tick(self, window_id: str, price: float, volume: float = 0.0) -> None:
         """Push real-time price tick (fire-and-forget, coalesced)."""
@@ -130,7 +151,7 @@ class ChartAgent:
             window_id=window_id,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
     def restore_layout(self) -> None:
         """Section 11: Push layout.restore containing all open windows."""
@@ -144,7 +165,7 @@ class ChartAgent:
             kind=MessageKind.COMMAND,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
         # Push snapshots for each window
         for win_id, snap in self.series_data.items():
@@ -191,7 +212,7 @@ class ChartAgent:
             kind=MessageKind.COMMAND,
             sequence=self._next_seq(),
         )
-        self.transport.send_command(env)
+        self.send_command(env)
 
         completed = event.wait(timeout=timeout_s)
         entry = self._pending_screenshots.pop(req_id, None)

@@ -16,7 +16,7 @@ def test_screenshot_zero_windows(qapp):
     """When 0 windows are open, screenshot.request returns empty screenshots list."""
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()
@@ -32,7 +32,7 @@ def test_screenshot_with_open_window(qapp):
     """When a window is open, screenshot.request captures 640x480 PNG."""
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()
@@ -94,7 +94,7 @@ def test_screenshot_hires_800x600(qapp):
     """When hires=True is requested, screenshot captures 800x600 PNG."""
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)
-    app = ViewerApp(transport=viewer_transport)
+    app = ViewerApp(config=ViewerConfig(), transport=viewer_transport)
 
     agent.start()
     app.start()

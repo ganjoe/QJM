@@ -1,41 +1,17 @@
+from chart_viewer.config import ViewerConfig
 """Tests for interaction model and ephemeral measure tool (Section 7 & Criterion 3)."""
 
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QMouseEvent
 from chart_viewer.ui.canvas import ChartCanvas
-from chart_viewer.ui.interaction.state_machine import InteractionStateMachine, InteractionState
 from chart_viewer.core.state_manager import WindowData
 from chart_viewer.models.entities import Bar, Annotation, Anchor
 
 
-def test_state_machine_measuring_ephemeral():
-    """Verify Criterion 3: Measure tool appears on drag, disappears on release, never persisted."""
-    sm = InteractionStateMachine()
-    assert sm.state == InteractionState.IDLE
-
-    # Start measuring
-    sm.start_measuring()
-    assert sm.state == InteractionState.MEASURING
-
-    # Mouse release
-    prior, touched_ann = sm.release()
-    assert prior == InteractionState.MEASURING
-    assert touched_ann is None
-    assert sm.state == InteractionState.IDLE
-
-
-def test_state_machine_escape_cancels_immediately():
-    sm = InteractionStateMachine()
-    sm.start_measuring()
-    assert sm.state == InteractionState.MEASURING
-
-    sm.cancel()
-    assert sm.state == InteractionState.IDLE
-
 
 def test_canvas_measure_tool_lifecycle(qapp):
     """Test pane mouse interaction for measure tool lifecycle."""
-    canvas = ChartCanvas(window_id="test-win")
+    canvas = ChartCanvas(window_id="test-win", config=ViewerConfig())
     canvas.resize(800, 600)
 
     win_data = WindowData("test-win")

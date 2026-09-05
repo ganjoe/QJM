@@ -59,7 +59,7 @@ def test_tier1_bar_override():
         color_override="#FFFF00",  # Yellow override
         fill_override="hollow",
     )
-    res = resolve_bar_color(bar, series_style=series_style)
+    res = resolve_bar_color(bar, config=ViewerConfig(), series_style=series_style)
     assert res.border_color == "#FFFF00"
     assert res.fill_color is None
     assert res.is_hollow is True

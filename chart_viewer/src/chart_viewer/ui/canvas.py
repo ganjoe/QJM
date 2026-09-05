@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QPointF, Signal, QRectF
 from PySide6.QtWidgets import QWidget, QSplitter, QVBoxLayout
 from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QResizeEvent, QFont, QColor, QPen
 
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.core.state_manager import WindowData
 from chart_viewer.models.entities import Overlay
@@ -23,104 +23,6 @@ X_AXIS_HEIGHT = 22.0
 Y_AXIS_WIDTH = 70.0
 
 
-class XAxisBar(QWidget):
-    """Thin widget that renders only the shared X-axis time labels."""
-
-    def __init__(self, x_trans: XAxisTransform, config: ViewerConfig, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.x_trans = x_trans
-        self.config = config
-        self.base_timestamp: int = 0
-        self.bar_duration: int = 86400
-        self._crosshair_x: Optional[float] = None
-        self.setFixedHeight(int(X_AXIS_HEIGHT))
-
-    def set_time_base(self, base_ts: int, duration: int) -> None:
-        self.base_timestamp = base_ts
-        self.bar_duration = max(1, duration)
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        w = self.width()
-        h = self.height()
-        if w <= 0 or h <= 0:
-            return
-
-        painter = QPainter(self)
-        try:
-            chart_w = max(10.0, w - Y_AXIS_WIDTH)
-
-            # Background
-            painter.fillRect(QRectF(0, 0, chart_w, h), QColor("#161922"))
-            painter.fillRect(QRectF(chart_w, 0, Y_AXIS_WIDTH, h), QColor("#12141B"))
-
-            # Top border
-            border_pen = QPen(QColor("#2A2E39"))
-            border_pen.setWidth(1)
-            painter.setPen(border_pen)
-            painter.drawLine(0, 0, w, 0)
-            painter.drawLine(int(chart_w), 0, int(chart_w), h)
-
-            # Time labels
-            from datetime import datetime, timezone
-            visible_bars = self.x_trans.visible_bars
-            step_bars = max(8, int(visible_bars / 7))
-            min_idx = math.floor(self.x_trans.min_visible_bar_index)
-            max_idx = math.ceil(self.x_trans.right_index)
-
-            tick_pen = QPen(QColor("#434958"))
-            tick_pen.setWidth(1)
-
-            scale_font = QFont(painter.font())
-            scale_font.setPointSize(9)
-            painter.setFont(scale_font)
-
-            first_step = (min_idx // step_bars) * step_bars
-            for idx in range(first_step, max_idx + 1, step_bars):
-                x = self.x_trans.bar_to_x(idx)
-                if 0 <= x <= chart_w:
-                    painter.setPen(tick_pen)
-                    painter.drawLine(int(x), 0, int(x), 3)
-
-                    if self.base_timestamp > 0:
-                        t_sec = self.base_timestamp + int(idx * self.bar_duration)
-                        try:
-                            dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
-                            date_str = dt.strftime("%d. %b")
-                        except Exception:
-                            date_str = f"{idx}"
-                        painter.setPen(QColor("#848E9C"))
-                        painter.drawText(
-                            QRectF(x - 35, 3, 70, 16),
-                            Qt.AlignmentFlag.AlignCenter,
-                            date_str,
-                        )
-
-            # Crosshair time badge
-            if self._crosshair_x is not None and self.base_timestamp > 0:
-                cx = int(self._crosshair_x)
-                bar_idx = self.x_trans.x_to_bar(cx)
-                t_sec = self.base_timestamp + int(bar_idx * self.bar_duration)
-                try:
-                    dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
-                    time_str = dt.strftime("%Y-%m-%d")
-                except Exception:
-                    time_str = f"Bar {int(bar_idx)}"
-                badge_w = 100
-                badge_h = 18
-                badge_rect = QRectF(cx - badge_w / 2.0, 1, badge_w, badge_h)
-                painter.fillRect(badge_rect, QColor("#363A45"))
-                painter.setPen(QColor("#FFFFFF"))
-                badge_font = QFont(painter.font())
-                badge_font.setPointSize(8)
-                painter.setFont(badge_font)
-                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, time_str)
-        finally:
-            painter.end()
-
-    def set_crosshair_x(self, x: Optional[float]) -> None:
-        self._crosshair_x = x
-        self.update()
 
 
 class ChartCanvas(QWidget):
@@ -134,12 +36,12 @@ class ChartCanvas(QWidget):
     def __init__(
         self,
         window_id: str,
-        config: ViewerConfig | None = None,
+        config: ViewerConfig,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.window_id = window_id
-        self.config = config or GLOBAL_CONFIG
+        self.config = config
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -165,8 +67,7 @@ class ChartCanvas(QWidget):
         """)
         self._layout.addWidget(self._splitter, stretch=1)
 
-        # X-axis bar reference for backward compatibility
-        self._x_axis_bar: Optional[XAxisBar] = None
+
 
         # Pane registry: pane_id → ChartPane
         self._panes: Dict[str, ChartPane] = {}
@@ -258,8 +159,8 @@ class ChartCanvas(QWidget):
             pane = ChartPane(
                 pane_id=pane_id,
                 x_trans=self.x_trans,
-                is_main=is_main,
                 config=self.config,
+                is_main=is_main,
                 parent=self._splitter,
             )
             # Rule: X-axis date/time legend belongs in the pane UNDER the chart (index 1),
@@ -346,8 +247,7 @@ class ChartCanvas(QWidget):
             # Mouse left the pane — clear all crosshairs
             for pane in self._panes.values():
                 pane.set_crosshair(None, None, False)
-            if self._x_axis_bar:
-                self._x_axis_bar.set_crosshair_x(None)
+
             return
 
         # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
@@ -355,9 +255,7 @@ class ChartCanvas(QWidget):
             is_active = (pane_id == source_pane_id)
             pane.set_crosshair(x_px, y_px if is_active else None, is_active)
 
-        # Time badge on X-axis bar (if present)
-        if self._x_axis_bar:
-            self._x_axis_bar.set_crosshair_x(x_px)
+
 
         # Emit crosshair_moved for inter-window sync
         if self.window_data and self.window_data.bars:
@@ -370,8 +268,7 @@ class ChartCanvas(QWidget):
         """Mark all panes dirty for repaint."""
         for pane in self._panes.values():
             pane.mark_dirty()
-        if self._x_axis_bar:
-            self._x_axis_bar.update()
+
 
     # ── Delegated interaction (zoom, pan, crosshair) ─────────────────
 
@@ -467,32 +364,3 @@ class ChartCanvas(QWidget):
         else:
             super().keyPressEvent(event)
 
-    # ── Backward compatibility properties ─────────────────────────────
-    # These allow old code in app.py, window.py etc. to still work
-
-    @property
-    def y_trans(self):
-        """Return main pane's Y-transform for backward compat."""
-        main = self._panes.get("main")
-        return main.y_trans if main else None
-
-    @property
-    def layer4_interaction(self):
-        """Stub for crosshair compat — returns self to absorb calls."""
-        return self
-
-    # Stubs for interaction layer compatibility
-    crosshair_pos = None
-
-    @property
-    def is_crosshair_visible(self) -> bool:
-        return self.crosshair_pos is not None
-
-    def set_crosshair(self, pos):
-        self.crosshair_pos = pos
-
-    def start_measuring(self, *args, **kwargs):
-        pass
-
-    def stop_measuring(self):
-        pass

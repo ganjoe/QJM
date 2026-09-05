@@ -1,3 +1,4 @@
+from chart_viewer.config import ViewerConfig
 """Tests for validation rules (Section 2.3)."""
 
 from chart_viewer.models.entities import Bar

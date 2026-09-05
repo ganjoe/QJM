@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from chart_viewer.models.entities import Bar
-from chart_viewer.config import GLOBAL_CONFIG, ViewerConfig
+from chart_viewer.config import ViewerConfig
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class ResolvedBarColor:
 def resolve_bar_color(
     bar: Bar,
     series_style: dict | None = None,
-    config: ViewerConfig | None = None,
+    config: ViewerConfig = None,
 ) -> ResolvedBarColor:
     """Resolve candle color following strict 3-tier priority:
 
@@ -27,7 +27,7 @@ def resolve_bar_color(
        - Up: Blue hollow (1px border)
        - Down: Magenta filled (1px border)
     """
-    cfg = config or GLOBAL_CONFIG
+    cfg = config
     is_up = bar.close >= bar.open
 
     # Tier 3: Global Defaults
