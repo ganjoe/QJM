@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PCA_SERVICE_URL, log } from "./shared.ts";
+import { PCA_SERVICE_URL, log, supabase } from "./shared.ts";
 
 export const CHART_VIEWER_API_URL = Deno.env.get("CHART_VIEWER_API_URL") || "http://host.docker.internal:8766";
 
@@ -14,6 +14,7 @@ export function registerChartViewerTools(server: McpServer) {
       description: "Controls the TC2000-style native desktop chart viewer running on the user's screen.\n\n" +
         "ACTIONS:\n" +
         "- DISPLAY_STOCK: Open/update a chart window for a stock ticker (e.g. 'NVDA', 'AAPL', 'MSFT'). Automatically loads historical OHLCV data, precalculated or on-the-fly indicators, and topbar metrics from Supabase registry using presets ('default', 'trend_template', 'momentum', 'clean').\n" +
+        "- DISPLAY_WATCHLIST: Opens a watchlist window. Provide `list_name` to load from Supabase OR `ticker` with comma-separated symbols (e.g. 'AAPL,MSFT,NVDA').\n" +
         "- OPEN_WINDOW: Open or register a chart window with custom parameters.\n" +
         "- ADD_ANNOTATION: Draw support/resistance lines (`hline`), trendlines, rectangles, or buy/sell trade markers (`trade_marker`) on a specific window.\n" +
         "- REMOVE_ANNOTATION: Remove a drawing object by ID.\n" +
@@ -25,6 +26,7 @@ export function registerChartViewerTools(server: McpServer) {
       inputSchema: {
         action: z.enum([
           "DISPLAY_STOCK",
+          "DISPLAY_WATCHLIST",
           "OPEN_WINDOW",
           "ADD_ANNOTATION",
           "REMOVE_ANNOTATION",
@@ -34,7 +36,8 @@ export function registerChartViewerTools(server: McpServer) {
           "SCREENSHOT",
         ]).describe("The action to perform"),
 
-        ticker: z.string().optional().describe("Stock ticker symbol (e.g. 'NVDA', 'AAPL') for DISPLAY_STOCK or OPEN_WINDOW"),
+        ticker: z.string().optional().describe("Stock ticker symbol (or comma-separated symbols for DISPLAY_WATCHLIST)"),
+        list_name: z.string().optional().describe("Supabase list name for DISPLAY_WATCHLIST (e.g. 'current_positions')"),
         preset: z.string().optional().default("default").describe("Indicator preset name: e.g. 'default', 'trend_template', 'momentum', 'clean', or custom user preset like 'qmaggi' created via manage_chart_presets"),
         timeframe: z.string().optional().default("1D").describe("Candle timeframe (e.g. '1D', '5min')"),
         window_id: z.string().optional().describe("Target chart window ID (defaults to 'win_{ticker}_1d')"),
@@ -66,7 +69,7 @@ export function registerChartViewerTools(server: McpServer) {
         hires: z.boolean().optional().describe("Shortcut to capture high-resolution 800x600 screenshots"),
       },
     },
-    async ({ action, ticker, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, resolution, hires }: any) => {
+    async ({ action, ticker, list_name, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, resolution, hires }: any) => {
 
       try {
         const tf = timeframe || "1D";
@@ -291,6 +294,59 @@ export function registerChartViewerTools(server: McpServer) {
                 count: data.count,
                 output_dir: data.output_dir,
                 files: data.files,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 8. DISPLAY_WATCHLIST
+        if (action === "DISPLAY_WATCHLIST") {
+          let symbols: string[] = [];
+          const actualListName = list_name || window_id || "watchlist";
+
+          if (list_name) {
+            log.info(`[chart_viewer] Fetching watchlist '${list_name}' from Supabase...`);
+            const { data, error } = await supabase
+              .from("pca_watchlists")
+              .select("ticker")
+              .eq("list_name", list_name);
+
+            if (error) throw new Error(`Supabase error: ${error.message}`);
+            if (!data || data.length === 0) {
+              throw new Error(`Watchlist '${list_name}' is empty or does not exist.`);
+            }
+            symbols = data.map((row: any) => row.ticker);
+          } else if (ticker) {
+            symbols = ticker.split(",").map((s: string) => s.trim().toUpperCase()).filter((s: string) => s.length > 0);
+          } else {
+            throw new Error("Either 'list_name' or 'ticker' (comma-separated) is required for DISPLAY_WATCHLIST.");
+          }
+
+          const rows = symbols.map((sym: string) => ({
+            symbol: sym,
+            cells: { Symbol: sym }
+          }));
+
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "OPEN_WATCHLIST",
+              list_id: actualListName,
+              display_name: actualListName,
+              columns: ["Symbol"],
+              rows: rows
+            }),
+          });
+
+          const resData = await res.json();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Watchlist '${actualListName}' sent to Chart Viewer with ${symbols.length} tickers.`,
+                result: resData,
               }, null, 2),
             }],
           };

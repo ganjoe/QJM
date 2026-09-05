@@ -133,6 +133,37 @@ def main():
 
                         result = {"status": "ok", "action": action, "window_id": win_id}
 
+                    elif action == "OPEN_WATCHLIST":
+                        list_id = cmd.get("list_id")
+                        if not list_id:
+                            result = {"error": "Missing list_id"}
+                        else:
+                            agent.open_watchlist(
+                                list_id=list_id,
+                                display_name=cmd.get("display_name", list_id),
+                                columns=cmd.get("columns", []),
+                                rows=cmd.get("rows", []),
+                                color_flag=cmd.get("color_flag", 0),
+                                sort_column=cmd.get("sort_column"),
+                                sort_ascending=cmd.get("sort_ascending", True),
+                                position=cmd.get("position"),
+                                size=cmd.get("size"),
+                            )
+                            result = {"status": "ok", "action": action, "list_id": list_id}
+
+                    elif action == "UPDATE_DATA":
+                        list_id = cmd.get("list_id")
+                        if not list_id:
+                            result = {"error": "Missing list_id"}
+                        else:
+                            agent.update_watchlist_data(
+                                list_id=list_id,
+                                columns=cmd.get("columns"),
+                                rows=cmd.get("rows"),
+                                replace=cmd.get("replace", False),
+                            )
+                            result = {"status": "ok", "action": action, "list_id": list_id}
+
                     elif action in ("LOAD_CHART", "SET_SNAPSHOT") and win_id:
                         snapshot = cmd.get("snapshot", cmd)
                         agent.send_snapshot(win_id, snapshot)

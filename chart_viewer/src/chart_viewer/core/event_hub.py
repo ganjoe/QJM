@@ -16,6 +16,7 @@ class EventHub:
         self._windows: Dict[str, WindowState] = {}
         self._listeners: Dict[str, List[Callable[[Envelope], None]]] = {}
         self._crosshair_listeners: List[Callable[[dict], None]] = []
+        self._flag_listeners: Dict[int, List[Callable[[str], None]]] = {0: [], 1: [], 2: [], 3: []}
 
     def register_window(self, window_state: WindowState) -> None:
         """Register a window in the Hub."""
@@ -33,6 +34,25 @@ class EventHub:
 
     def on_crosshair_broadcast(self, listener: Callable[[dict], None]) -> None:
         self._crosshair_listeners.append(listener)
+
+    def register_for_flag(self, flag: int, listener: Callable[[str], None]) -> None:
+        """Register a callback for symbol changes on a specific color flag."""
+        if flag in self._flag_listeners:
+            self._flag_listeners[flag].append(listener)
+
+    def unregister_for_flag(self, flag: int, listener: Callable[[str], None]) -> None:
+        """Unregister a callback from a specific color flag."""
+        if flag in self._flag_listeners and listener in self._flag_listeners[flag]:
+            self._flag_listeners[flag].remove(listener)
+
+    def broadcast_symbol_to_flag(self, symbol: str, flag: int) -> None:
+        """Broadcast a new symbol to all windows listening to the given color flag."""
+        if flag in self._flag_listeners:
+            for listener in self._flag_listeners[flag]:
+                try:
+                    listener(symbol)
+                except Exception as e:
+                    logger.exception(f"Error in flag listener: {e}")
 
     def broadcast_crosshair(
         self,

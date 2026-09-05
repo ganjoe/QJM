@@ -78,6 +78,13 @@ class ChartAgent:
             if win_id:
                 logger.info(f"Agent recorded window {win_id} closed by user")
                 self.layout_ledger.pop(win_id, None)
+                self.series_data.pop(win_id, None)
+
+        elif envelope.type == "window.change_symbol":
+            win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
+            symbol = envelope.payload.get("symbol") if isinstance(envelope.payload, dict) else None
+            if win_id and symbol:
+                self._handle_window_change_symbol(win_id, symbol)
 
         elif envelope.type == "annotation.moved":
             logger.info(f"Agent recorded annotation move: {envelope.payload}")
@@ -143,6 +150,96 @@ class ChartAgent:
             sequence=self._next_seq(),
         )
         self.send_command(env)
+
+    def open_watchlist(
+        self,
+        list_id: str,
+        display_name: str,
+        columns: list[str],
+        rows: list[dict],
+        color_flag: int = 0,
+        sort_column: str | None = None,
+        sort_ascending: bool = True,
+        position: dict | None = None,
+        size: dict | None = None,
+    ) -> None:
+        """Push a watchlist to the viewer."""
+        wl_info = {
+            "window_id": list_id,
+            "list_id": list_id,
+            "display_name": display_name,
+            "columns": columns,
+            "rows": rows,
+            "color_flag": color_flag,
+            "sort_column": sort_column,
+            "sort_ascending": sort_ascending,
+        }
+        if position:
+            wl_info["position"] = position
+        if size:
+            wl_info["size"] = size
+
+        self.layout_ledger[list_id] = wl_info
+
+        env = make_envelope(
+            msg_type="watchlist.open",
+            payload=wl_info,
+            kind=MessageKind.COMMAND,
+            window_id=list_id,
+            sequence=self._next_seq(),
+        )
+        self.send_command(env)
+
+    def update_watchlist_data(self, list_id: str, columns: list[str] | None = None, rows: list[dict] | None = None, replace: bool = False) -> None:
+        """Update rows/columns of an existing watchlist."""
+        payload = {"replace": replace}
+        if columns is not None:
+            payload["columns"] = columns
+        if rows is not None:
+            payload["rows"] = rows
+
+        env = make_envelope(
+            msg_type="watchlist.data",
+            payload=payload,
+            kind=MessageKind.COMMAND,
+            window_id=list_id,
+            sequence=self._next_seq(),
+        )
+        self.send_command(env)
+
+    def _handle_window_change_symbol(self, window_id: str, new_symbol: str) -> None:
+        """Fetch new data and send snapshot.full when Chart changes symbol."""
+        logger.info(f"Agent processing symbol change for {window_id} -> {new_symbol}")
+        
+        # We need to preserve the timeframe and preset (if any) from the layout ledger
+        win_info = self.layout_ledger.get(window_id, {})
+        tf_unit = win_info.get("timeframe_unit", "D")
+        tf_mult = win_info.get("multiplier", 1)
+        
+        # We fetch via orchestrator function to get the actual data
+        # To avoid circular imports, we import it here
+        try:
+            import urllib.request
+            import json
+            import os
+            
+            # Reconstruct the DISPLAY_STOCK command and send it to our own POST API
+            # This is the cleanest way because run_server.py does all the fetching + sending
+            payload = {
+                "action": "OPEN_WINDOW",
+                "window_id": window_id,
+                "symbol": new_symbol,
+                "timeframe": {"unit": tf_unit, "multiplier": tf_mult}
+            }
+            
+            req = urllib.request.Request(
+                "http://127.0.0.1:8766/api/command",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req)
+        except Exception as e:
+            logger.error(f"Failed to fetch new symbol data: {e}")
 
     def append_bar(self, window_id: str, bar_data: dict) -> None:
         """Push completed candle."""

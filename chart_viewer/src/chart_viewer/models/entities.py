@@ -105,10 +105,32 @@ class TopBarBlock(msgspec.Struct):
 
 class WindowState(msgspec.Struct):
     window_id: str
-    symbol: str
-    timeframe: Timeframe
+    window_type: Literal["chart", "watchlist"] = "chart"
+    symbol: str | None = None
+    timeframe: Timeframe | None = None
     viewport: dict = {}  # candle_width_px, pan_offset, etc.
     y_axis_mode: Literal["auto", "manual", "log", "linear"] = "auto"
     annotations: list[Annotation] = []
     overlays: list[Overlay] = []
     sync_group_id: str | None = None
+    color_flag: int = 0
+    # watchlist-specific
+    list_id: str | None = None
+    columns: list[str] | None = None
+    sort_column: str | None = None
+    sort_ascending: bool = True
+
+
+class WatchlistRow(msgspec.Struct):
+    symbol: str
+    cells: dict[str, str | float | int]
+
+
+class WatchlistState(msgspec.Struct):
+    list_id: str
+    display_name: str
+    columns: list[str]
+    rows: list[WatchlistRow]
+    sort_column: str | None = None
+    sort_ascending: bool = True
+    color_flag: int = 0

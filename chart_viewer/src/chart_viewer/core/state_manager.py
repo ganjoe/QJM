@@ -14,6 +14,8 @@ from chart_viewer.models.entities import (
     Instrument,
     Timeframe,
     Calendar,
+    WatchlistState,
+    WatchlistRow,
 )
 from chart_viewer.models.validation import validate_bar
 
@@ -53,6 +55,45 @@ class StateManager:
 
     def __init__(self):
         self._windows: Dict[str, WindowData] = {}
+        self._watchlists: Dict[str, WatchlistState] = {}
+
+    def get_watchlist(self, window_id: str) -> Optional[WatchlistState]:
+        return self._watchlists.get(window_id)
+
+    def remove_watchlist(self, window_id: str) -> None:
+        self._watchlists.pop(window_id, None)
+
+    def apply_watchlist_snapshot(self, window_id: str, payload: dict) -> WatchlistState:
+        """Parse and store a watchlist snapshot."""
+        wl_state = msgspec.json.decode(msgspec.json.encode(payload), type=WatchlistState)
+        self._watchlists[window_id] = wl_state
+        return wl_state
+
+    def update_watchlist_data(self, window_id: str, payload: dict) -> Optional[WatchlistState]:
+        """Update rows/columns of an existing watchlist."""
+        wl_state = self._watchlists.get(window_id)
+        if not wl_state:
+            return None
+        
+        if "columns" in payload:
+            wl_state.columns = payload["columns"]
+            
+        if "rows" in payload:
+            replace = payload.get("replace", False)
+            new_rows = msgspec.json.decode(msgspec.json.encode(payload["rows"]), type=List[WatchlistRow])
+            if replace:
+                wl_state.rows = new_rows
+            else:
+                # Merge by symbol
+                existing = {r.symbol: r for r in wl_state.rows}
+                for r in new_rows:
+                    if r.symbol in existing:
+                        existing[r.symbol].cells.update(r.cells)
+                    else:
+                        existing[r.symbol] = r
+                wl_state.rows = list(existing.values())
+                
+        return wl_state
 
     def get_window_data(self, window_id: str) -> Optional[WindowData]:
         return self._windows.get(window_id)

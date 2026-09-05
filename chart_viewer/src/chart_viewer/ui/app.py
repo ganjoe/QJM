@@ -14,6 +14,7 @@ from chart_viewer.core.event_hub import EventHub
 from chart_viewer.core.state_manager import StateManager
 from chart_viewer.core.backpressure import TickCoalescer
 from chart_viewer.ui.window import ChartWindow
+from chart_viewer.ui.watchlist_window import WatchlistWindow
 from chart_viewer.models.entities import WindowState, Timeframe
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class ViewerApp(QObject):
         self.event_hub = EventHub()
         self.state_manager = StateManager()
         self.windows: Dict[str, ChartWindow] = {}
+        self.watchlists: Dict[str, WatchlistWindow] = {}
 
         # Connect Qt thread-safe signal for incoming transport events
         self.envelope_received_signal.connect(self._handle_envelope_gui_thread)
@@ -97,6 +99,15 @@ class ViewerApp(QObject):
 
         if msg_type == "window.open":
             self._handle_window_open(payload, envelope.message_id)
+
+        elif msg_type == "watchlist.open":
+            self._handle_watchlist_open(payload, envelope.message_id)
+
+        elif msg_type == "watchlist.data" and win_id:
+            wl_state = self.state_manager.apply_watchlist_snapshot(win_id, payload)
+            if win_id in self.watchlists:
+                self.watchlists[win_id].set_data(wl_state)
+            self._send_ack(envelope.message_id)
 
         elif msg_type == "snapshot.full" and win_id:
             win_data = self.state_manager.apply_snapshot(win_id, payload)
@@ -200,6 +211,12 @@ class ViewerApp(QObject):
             # Connect window signals
             win.window_closed_signal.connect(self._on_window_closed)
             win.geometry_changed_signal.connect(self._on_window_geometry_changed)
+            win.flag_changed_signal.connect(self._on_flag_changed)
+            win.symbol_change_requested.connect(self._on_symbol_change_requested)
+            
+            # Register for EventHub symbol routing
+            self.event_hub.register_for_flag(win.color_flag, win.request_symbol_change)
+
             win.canvas.crosshair_moved.connect(
                 lambda ts, idx, w_id=win_id: self.event_hub.broadcast_crosshair(w_id, ts, idx)
             )
@@ -224,6 +241,65 @@ class ViewerApp(QObject):
             win.show()
 
         self._send_ack(message_id)
+
+    def _handle_watchlist_open(self, payload: dict, message_id: bytes) -> None:
+        """Create and show a new watchlist window."""
+        win_id = payload.get("window_id") or payload.get("list_id")
+        if not win_id:
+            return
+
+        print(f"[WATCHLIST] Öffne Watchlist-Fenster '{win_id}'...", flush=True)
+
+        if win_id not in self.watchlists:
+            win = WatchlistWindow(window_id=win_id)
+            self.watchlists[win_id] = win
+
+            # Connect window signals
+            win.window_closed_signal.connect(self._on_watchlist_closed)
+            win.geometry_changed_signal.connect(self._on_window_geometry_changed)
+            win.flag_changed_signal.connect(self._on_flag_changed)
+            win.row_selected_signal.connect(self._on_watchlist_row_selected)
+
+            wl_state = self.state_manager.apply_watchlist_snapshot(win_id, payload)
+            win.set_data(wl_state)
+
+            # Position if provided
+            pos = payload.get("position")
+            if pos and "x" in pos and "y" in pos:
+                win.move(pos["x"], pos["y"])
+            size = payload.get("size")
+            if size and "width" in size and "height" in size:
+                win.resize(size["width"], size["height"])
+
+            win.show()
+
+        self._send_ack(message_id)
+
+    def _on_flag_changed(self, window_id: str, new_flag: int) -> None:
+        # Re-register ChartWindow for symbol routing
+        if window_id in self.windows:
+            win = self.windows[window_id]
+            # Since we only track the new flag, we can just unregister all and register
+            for flag in range(4):
+                self.event_hub.unregister_for_flag(flag, win.request_symbol_change)
+            self.event_hub.register_for_flag(new_flag, win.request_symbol_change)
+
+    def _on_watchlist_row_selected(self, window_id: str, symbol: str, color_flag: int) -> None:
+        """Watchlist routing symbol to ChartWindows with same flag."""
+        self.event_hub.broadcast_symbol_to_flag(symbol, color_flag)
+
+    def _on_symbol_change_requested(self, window_id: str, symbol: str) -> None:
+        """ChartWindow asking Server for new symbol data."""
+        env = make_envelope(
+            msg_type="window.change_symbol",
+            payload={"window_id": window_id, "symbol": symbol},
+            kind=MessageKind.EVENT,
+            window_id=window_id,
+        )
+        try:
+            self.transport.send_command(env)
+        except Exception as e:
+            logger.warning(f"Could not send window.change_symbol: {e}")
 
     def _handle_layout_restore(self, payload: dict) -> None:
         """Section 11: Rebuild entire window layout pushed by Agent."""
@@ -292,10 +368,25 @@ class ViewerApp(QObject):
 
     def _on_window_closed(self, window_id: str) -> None:
         """Informative fire-and-forget event to agent (Section 8)."""
-        self.windows.pop(window_id, None)
+        if window_id in self.windows:
+            win = self.windows[window_id]
+            for flag in range(4):
+                self.event_hub.unregister_for_flag(flag, win.request_symbol_change)
+            self.windows.pop(window_id)
+            
         self.event_hub.unregister_window(window_id)
         self.state_manager.remove_window(window_id)
 
+        self._send_window_closed(window_id)
+
+    def _on_watchlist_closed(self, window_id: str) -> None:
+        """Cleanup Watchlist state and notify Agent."""
+        self.watchlists.pop(window_id, None)
+        self.state_manager.remove_watchlist(window_id)
+        
+        self._send_window_closed(window_id)
+        
+    def _send_window_closed(self, window_id: str) -> None:
         env = make_envelope(
             msg_type="window.closed",
             payload={"window_id": window_id},
