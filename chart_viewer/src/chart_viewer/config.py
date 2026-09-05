@@ -62,6 +62,17 @@ class ViewerConfig:
     screenshot_mode: str = "letterbox"  # 'letterbox', 'fit', or 'stretch'
     screenshot_sharpen_amount: float = 0.5  # Edge enhancement to eliminate downscaling blur
 
+    # Keyboard navigation & Smooth scrolling / zooming
+    key_scroll_step_bars: float = 1.0  # Discrete bar step per keypress
+    key_scroll_hold_delay_ms: int = 500  # Threshold to initiate smooth scrolling (>500ms)
+    key_scroll_speed_bars_per_sec: float = 10.0  # Speed during held scrolling (bars / sec)
+    key_scroll_fps: int = 60  # Frame rate for smooth keyboard animation
+    key_zoom_step_factor: float = 1.15  # Discrete zoom factor per keypress (Arrow Up/Down)
+    key_zoom_hold_delay_ms: int = 500  # Threshold to initiate smooth zooming (>500ms)
+    key_zoom_speed_per_sec: float = 1.15  # Continuous zoom rate per second (~2x change in 5 seconds)
+    key_zoom_fps: int = 60  # Frame rate for smooth zoom animation
+    key_shift_speed_multiplier: float = 2.0  # Speed multiplier when Shift is held (immediate activation, 2x speed)
+
     @classmethod
     def from_env(cls) -> ViewerConfig:
         """Create config populated from environment variables with fallbacks."""
@@ -93,6 +104,15 @@ class ViewerConfig:
             screenshot_output_dir=os.getenv("CV_SCREENSHOT_DIR", "/home/daniel/QJM/dsh_playground"),
             screenshot_mode=os.getenv("CV_SCREENSHOT_MODE", "letterbox"),
             screenshot_sharpen_amount=float(os.getenv("CV_SCREENSHOT_SHARPEN_AMOUNT", "0.5")),
+            key_scroll_step_bars=float(os.getenv("CV_KEY_SCROLL_STEP_BARS", "1.0")),
+            key_scroll_hold_delay_ms=int(os.getenv("CV_KEY_SCROLL_HOLD_DELAY_MS", "500")),
+            key_scroll_speed_bars_per_sec=float(os.getenv("CV_KEY_SCROLL_SPEED_BARS_PER_SEC", "10.0")),
+            key_scroll_fps=int(os.getenv("CV_KEY_SCROLL_FPS", "60")),
+            key_zoom_step_factor=float(os.getenv("CV_KEY_ZOOM_STEP_FACTOR", "1.15")),
+            key_zoom_hold_delay_ms=int(os.getenv("CV_KEY_ZOOM_HOLD_DELAY_MS", "500")),
+            key_zoom_speed_per_sec=float(os.getenv("CV_KEY_ZOOM_SPEED_PER_SEC", "1.15")),
+            key_zoom_fps=int(os.getenv("CV_KEY_ZOOM_FPS", "60")),
+            key_shift_speed_multiplier=float(os.getenv("CV_KEY_SHIFT_SPEED_MULTIPLIER", "2.0")),
         )
 
 

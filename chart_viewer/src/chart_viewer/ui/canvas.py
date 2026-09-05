@@ -6,9 +6,9 @@ import os
 import time
 import math
 from typing import Callable, Dict, List, Optional
-from PySide6.QtCore import Qt, QPointF, Signal, QRectF
-from PySide6.QtWidgets import QWidget, QSplitter, QVBoxLayout
-from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QResizeEvent, QFont, QColor, QPen
+from PySide6.QtCore import Qt, QPointF, Signal, QRectF, QTimer
+from PySide6.QtWidgets import QWidget, QSplitter, QVBoxLayout, QApplication
+from PySide6.QtGui import QPainter, QPixmap, QMouseEvent, QWheelEvent, QKeyEvent, QFocusEvent, QResizeEvent, QFont, QColor, QPen, QCursor
 
 from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
@@ -78,6 +78,36 @@ class ChartCanvas(QWidget):
 
         # Save splitter on change
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # Keyboard navigation & smooth scrolling state
+        self._active_scroll_key: Optional[int] = None
+        self._last_scroll_time: float = 0.0
+        self._is_smooth_scrolling: bool = False
+
+        self._key_hold_timer = QTimer(self)
+        self._key_hold_timer.setSingleShot(True)
+        self._key_hold_timer.timeout.connect(self._on_key_hold_timeout)
+
+        scroll_fps = getattr(self.config, "key_scroll_fps", 60)
+        scroll_interval_ms = max(5, int(1000 // scroll_fps)) if scroll_fps > 0 else 16
+        self._key_scroll_timer = QTimer(self)
+        self._key_scroll_timer.setInterval(scroll_interval_ms)
+        self._key_scroll_timer.timeout.connect(self._on_smooth_scroll_tick)
+
+        # Keyboard zoom & smooth zooming state
+        self._active_zoom_key: Optional[int] = None
+        self._last_zoom_time: float = 0.0
+        self._is_smooth_zooming: bool = False
+
+        self._key_zoom_hold_timer = QTimer(self)
+        self._key_zoom_hold_timer.setSingleShot(True)
+        self._key_zoom_hold_timer.timeout.connect(self._on_key_zoom_hold_timeout)
+
+        zoom_fps = getattr(self.config, "key_zoom_fps", 60)
+        zoom_interval_ms = max(5, int(1000 // zoom_fps)) if zoom_fps > 0 else 16
+        self._key_zoom_timer = QTimer(self)
+        self._key_zoom_timer.setInterval(zoom_interval_ms)
+        self._key_zoom_timer.timeout.connect(self._on_smooth_zoom_tick)
 
     def set_window_data(self, win_data: WindowData) -> None:
         """Bind window data and rebuild panes as needed."""
@@ -352,6 +382,40 @@ class ChartCanvas(QWidget):
             return
         super().mouseReleaseEvent(event)
 
+    def _get_zoom_anchor_x(self) -> Optional[float]:
+        """Return local mouse X position if mouse is hovering within chart area, else None."""
+        try:
+            if self.underMouse():
+                global_pos = QCursor.pos()
+                local_pos = self.mapFromGlobal(global_pos)
+                chart_w = max(10.0, self.width() - Y_AXIS_WIDTH)
+                if 0.0 <= local_pos.x() <= chart_w:
+                    return float(local_pos.x())
+        except Exception:
+            pass
+        return None
+
+    def _apply_zoom(self, factor: float) -> bool:
+        """Apply zoom factor to X-axis, respecting pinning and boundaries."""
+        is_pinned = getattr(self.x_trans, "pin_to_right", True)
+        if is_pinned:
+            if self.window_data and self.window_data.bars:
+                latest_idx = float(len(self.window_data.bars) - 1)
+                self.x_trans.latest_bar_index = latest_idx
+                self.x_trans.right_index = latest_idx
+            changed = self.x_trans.zoom(factor, pin_to_right=True)
+        else:
+            anchor_x = self._get_zoom_anchor_x()
+            changed = self.x_trans.zoom(factor, anchor_mouse_x=anchor_x, pin_to_right=False)
+
+        if changed:
+            self._update_all_y_ranges()
+            self.mark_layers_dirty()
+            if self.window_data and self.window_data.bars:
+                if self.x_trans.should_request_more_data(0.0):
+                    self.data_request_more.emit()
+        return changed
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             # Reset all pane Y-axes to auto and re-pin right margin
@@ -361,6 +425,202 @@ class ChartCanvas(QWidget):
                 pane.y_trans.reset_boundary()
                 pane.update_y_range()
                 pane.mark_dirty()
-        else:
-            super().keyPressEvent(event)
+            event.accept()
+            return
+
+        is_shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        shift_mult = getattr(self.config, "key_shift_speed_multiplier", 2.0)
+
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            if event.isAutoRepeat():
+                # Ignore OS keyboard repeat; we handle holding via hold timer & smooth scroll timer
+                event.accept()
+                return
+
+            event.accept()
+            self._active_scroll_key = event.key()
+
+            # Immediate single tap: shift by configured step (multiplied if Shift is held)
+            base_step = getattr(self.config, "key_scroll_step_bars", 1.0)
+            step = (base_step * shift_mult) if is_shift else base_step
+            delta = -step if event.key() == Qt.Key.Key_Left else step
+            changed = self.x_trans.pan_bars(delta)
+            if changed:
+                self._update_all_y_ranges()
+                self.mark_layers_dirty()
+                if self.window_data and self.window_data.bars:
+                    if self.x_trans.should_request_more_data(0.0):
+                        self.data_request_more.emit()
+
+            if is_shift:
+                # Immediate activation without delay when Shift is held
+                self._is_smooth_scrolling = True
+                self._last_scroll_time = time.perf_counter()
+                self._key_scroll_timer.start()
+            else:
+                # Start hold timer for >500ms smooth scrolling
+                self._is_smooth_scrolling = False
+                hold_ms = getattr(self.config, "key_scroll_hold_delay_ms", 500)
+                self._key_hold_timer.start(hold_ms)
+            return
+
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+
+            event.accept()
+            self._active_zoom_key = event.key()
+
+            # Immediate single tap (multiplied power if Shift is held)
+            base_factor = getattr(self.config, "key_zoom_step_factor", 1.15)
+            step_factor = (base_factor ** shift_mult) if is_shift else base_factor
+            factor = step_factor if event.key() == Qt.Key.Key_Up else (1.0 / step_factor)
+            self._apply_zoom(factor)
+
+            if is_shift:
+                # Immediate activation without delay when Shift is held
+                self._is_smooth_zooming = True
+                self._last_zoom_time = time.perf_counter()
+                self._key_zoom_timer.start()
+            else:
+                self._is_smooth_zooming = False
+                hold_ms = getattr(self.config, "key_zoom_hold_delay_ms", 500)
+                self._key_zoom_hold_timer.start(hold_ms)
+            return
+
+        super().keyPressEvent(event)
+
+    def _on_key_hold_timeout(self) -> None:
+        """Triggered when key was held down longer than hold threshold (e.g. >500ms)."""
+        if self._active_scroll_key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self._is_smooth_scrolling = True
+            self._last_scroll_time = time.perf_counter()
+            self._key_scroll_timer.start()
+
+    def _on_key_zoom_hold_timeout(self) -> None:
+        """Triggered when zoom key was held down longer than hold threshold (e.g. >500ms)."""
+        if self._active_zoom_key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._is_smooth_zooming = True
+            self._last_zoom_time = time.perf_counter()
+            self._key_zoom_timer.start()
+
+    def _on_smooth_scroll_tick(self) -> None:
+        """Tick event for smooth scrolling at key_scroll_fps (~60 Hz)."""
+        if self._active_scroll_key not in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self._stop_key_scrolling()
+            return
+
+        now = time.perf_counter()
+        dt = now - self._last_scroll_time
+        self._last_scroll_time = now
+
+        # Clamp dt in case of system freeze/pause
+        dt = min(dt, 0.1)
+
+        is_shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        shift_mult = getattr(self.config, "key_shift_speed_multiplier", 2.0) if is_shift else 1.0
+
+        speed = getattr(self.config, "key_scroll_speed_bars_per_sec", 10.0) * shift_mult
+        direction = -1.0 if self._active_scroll_key == Qt.Key.Key_Left else 1.0
+        delta_bars = direction * speed * dt
+
+        changed = self.x_trans.pan_bars(delta_bars)
+        if changed:
+            self._update_all_y_ranges()
+            self.mark_layers_dirty()
+            if self.window_data and self.window_data.bars:
+                if self.x_trans.should_request_more_data(0.0):
+                    self.data_request_more.emit()
+
+    def _on_smooth_zoom_tick(self) -> None:
+        """Tick event for smooth zooming at key_zoom_fps (~60 Hz)."""
+        if self._active_zoom_key not in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._stop_key_zooming()
+            return
+
+        now = time.perf_counter()
+        dt = now - self._last_zoom_time
+        self._last_zoom_time = now
+
+        # Clamp dt in case of pause/freeze
+        dt = min(dt, 0.1)
+
+        is_shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        shift_mult = getattr(self.config, "key_shift_speed_multiplier", 2.0) if is_shift else 1.0
+
+        base_speed = getattr(self.config, "key_zoom_speed_per_sec", 1.15)
+        speed = base_speed ** shift_mult
+        factor = (speed ** dt) if self._active_zoom_key == Qt.Key.Key_Up else ((1.0 / speed) ** dt)
+        self._apply_zoom(factor)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+
+            if event.key() == self._active_scroll_key:
+                event.accept()
+                was_smooth = self._is_smooth_scrolling
+                self._stop_key_scrolling()
+
+                # Snap to bar on key release after held scrolling (user preference: "ja snap to bar")
+                if was_smooth:
+                    snapped = self.x_trans.snap_to_bar()
+                    if snapped:
+                        self._update_all_y_ranges()
+                        self.mark_layers_dirty()
+                return
+
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+
+            if event.key() == self._active_zoom_key:
+                event.accept()
+                was_smooth = self._is_smooth_zooming
+                self._stop_key_zooming()
+
+                # Snap to bar after held zoom in history
+                if was_smooth:
+                    snapped = self.x_trans.snap_to_bar()
+                    if snapped:
+                        self._update_all_y_ranges()
+                        self.mark_layers_dirty()
+                return
+
+        super().keyReleaseEvent(event)
+
+    def _stop_key_scrolling(self) -> None:
+        self._key_hold_timer.stop()
+        self._key_scroll_timer.stop()
+        self._active_scroll_key = None
+        self._is_smooth_scrolling = False
+
+    def _stop_key_zooming(self) -> None:
+        self._key_zoom_hold_timer.stop()
+        self._key_zoom_timer.stop()
+        self._active_zoom_key = None
+        self._is_smooth_zooming = False
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:
+        if self._active_scroll_key is not None:
+            was_smooth = self._is_smooth_scrolling
+            self._stop_key_scrolling()
+            if was_smooth:
+                if self.x_trans.snap_to_bar():
+                    self._update_all_y_ranges()
+                    self.mark_layers_dirty()
+
+        if self._active_zoom_key is not None:
+            was_smooth = self._is_smooth_zooming
+            self._stop_key_zooming()
+            if was_smooth:
+                if self.x_trans.snap_to_bar():
+                    self._update_all_y_ranges()
+                    self.mark_layers_dirty()
+
+        super().focusOutEvent(event)
 

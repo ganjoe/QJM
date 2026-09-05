@@ -190,6 +190,53 @@ class XAxisTransform:
             if self.right_index < min_right_idx:
                 self.right_index = min_right_idx
 
+    def pan_bars(self, delta_bars: float) -> bool:
+        """Pan viewport horizontally by delta_bars.
+
+        delta_bars > 0 moves forward in time (towards latest bar).
+        delta_bars < 0 moves backward in time (towards history).
+        Returns True if right_index changed, False if clamped.
+        """
+        old_idx = self.right_index
+        self.right_index += delta_bars
+        if delta_bars < 0:
+            self.pin_to_right = False
+
+        # Cannot pan past the latest bar into empty future margin
+        if hasattr(self, "latest_bar_index") and self.latest_bar_index >= 0:
+            if self.right_index >= self.latest_bar_index:
+                self.right_index = self.latest_bar_index
+                self.pin_to_right = True
+
+        # Rule: Chart touches the left border (cannot pan past bar 0 into empty past space)
+        if self.touch_left_border and self.candle_width_px > 0:
+            min_right_idx = self.anchor_x / self.candle_width_px
+            if self.right_index < min_right_idx:
+                self.right_index = min_right_idx
+
+        return abs(self.right_index - old_idx) > 1e-4
+
+    def snap_to_bar(self) -> bool:
+        """Snap right_index to nearest integer bar, respecting boundary clamps.
+
+        Returns True if right_index changed, False otherwise.
+        """
+        old_idx = self.right_index
+        snapped = round(self.right_index)
+
+        if hasattr(self, "latest_bar_index") and self.latest_bar_index >= 0:
+            if snapped >= self.latest_bar_index:
+                snapped = self.latest_bar_index
+                self.pin_to_right = True
+
+        if self.touch_left_border and self.candle_width_px > 0:
+            min_right_idx = self.anchor_x / self.candle_width_px
+            if snapped < min_right_idx:
+                snapped = min_right_idx
+
+        self.right_index = float(snapped)
+        return abs(self.right_index - old_idx) > 1e-4
+
     def should_request_more_data(self, earliest_loaded_bar_index: float) -> bool:
         """Check if viewport has reached the historical edge, with debouncing."""
         # Trigger if visible left edge is within 10 bars of loaded history

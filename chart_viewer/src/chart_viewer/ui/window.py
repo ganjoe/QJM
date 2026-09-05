@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QStatusBar
-from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent, QKeyEvent
 
 from chart_viewer.config import ViewerConfig
 from chart_viewer.ui.topbar import TopBarWidget
@@ -83,3 +83,17 @@ class ChartWindow(QMainWindow):
             "height": self.height(),
         }
         self.geometry_changed_signal.emit(self.window_id, geom)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Escape):
+            self.canvas.keyPressEvent(event)
+            if event.isAccepted():
+                return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self.canvas.keyReleaseEvent(event)
+            if event.isAccepted():
+                return
+        super().keyReleaseEvent(event)
