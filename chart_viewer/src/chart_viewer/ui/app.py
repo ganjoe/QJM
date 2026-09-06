@@ -180,6 +180,14 @@ class ViewerApp(QObject):
             self.windows.clear()
             self._send_viewer_ready()
 
+        elif msg_type == "window.command" and win_id:
+            command = payload.get("command") or payload.get("type")
+            if command == "close":
+                if win_id in self.windows:
+                    self.windows[win_id].close()
+                elif win_id in self.watchlists:
+                    self.watchlists[win_id].close()
+
         elif msg_type == "screenshot.request":
             self._handle_screenshot_request(payload)
 

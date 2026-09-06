@@ -98,7 +98,7 @@ class WebSocketTransport(AgentTransport):
         while self._should_run:
             try:
                 logger.info(f"Connecting to {self.url}...")
-                with ws_connect(self.url) as ws:
+                with ws_connect(self.url, max_size=None) as ws:
                     with self._lock:
                         self._ws = ws
                         self._connected = True

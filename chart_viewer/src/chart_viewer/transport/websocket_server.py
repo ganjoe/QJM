@@ -86,7 +86,7 @@ class WebSocketServerTransport(AgentTransport):
         return self._connected
 
     def _run_server(self) -> None:
-        with serve(self._handle_client, self.host, self.port) as server:
+        with serve(self._handle_client, self.host, self.port, max_size=None) as server:
             self._server = server
             server.serve_forever()
 
