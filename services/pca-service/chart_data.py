@@ -11,8 +11,8 @@ logger = logging.getLogger("pca.chart_data")
 router = APIRouter()
 
 PARQUET_BASE = Path(os.environ.get("PARQUET_BASE_PATH", "/parquet"))
-DEFAULT_CANDLE_LIMIT = int(os.environ.get("DEFAULT_CANDLE_LIMIT", "200"))
-MAX_CANDLE_LIMIT = int(os.environ.get("MAX_CANDLE_LIMIT", "2000"))
+DEFAULT_CANDLE_LIMIT = int(os.environ.get("DEFAULT_CANDLE_LIMIT", "2000"))
+MAX_CANDLE_LIMIT = int(os.environ.get("MAX_CANDLE_LIMIT", "10000"))
 
 BASE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 

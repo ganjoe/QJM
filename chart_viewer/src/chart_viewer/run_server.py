@@ -241,7 +241,7 @@ def main():
                             logger.warning(f"Failed to save last_chart_state: {e}")
 
                         # Full orchestration: fetch data from PCA-Service, build overlays, push to viewer
-                        from chart_viewer.orchestrator import build_display_stock
+                        from chart_viewer.orchestrator import build_display_stock, DEFAULT_CHART_LIMIT
                         symbol = cmd.get("symbol")
                         if not symbol:
                             result = {"error": "Missing 'symbol' parameter"}
@@ -252,7 +252,7 @@ def main():
                                     indicators=cmd.get("indicators"),
                                     preset=cmd.get("preset"),
                                     timeframe=cmd.get("timeframe_str", "1D"),
-                                    limit=cmd.get("limit") or 1500,
+                                    limit=cmd.get("limit") or DEFAULT_CHART_LIMIT,
                                     position=cmd.get("position"),
                                     size=cmd.get("size"),
                                     topbar_metrics=cmd.get("topbar_metrics"),
@@ -274,6 +274,8 @@ def main():
                                     position=display_cmd.get("position"),
                                     size=display_cmd.get("size"),
                                 )
+                                if ds_win_id in agent.layout_ledger and cmd.get("preset"):
+                                    agent.layout_ledger[ds_win_id]["preset"] = cmd.get("preset")
 
                                 snap = {
                                     "symbol": ds_symbol,

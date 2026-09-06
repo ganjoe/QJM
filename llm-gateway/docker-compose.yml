@@ -5,7 +5,6 @@
 #
 # Services:
 #   switchyard      - NVIDIA NeMo Switchyard Proxy / Router (Port 4000)
-#   dsh             - DeepSeek Harness Agent Runtime & Web-UI (Port 3080)
 #   lm-studio       - LM Studio Container mit Web-UI & REST API (Vulkan / DRI)
 #   dashboard       - Control Plane & Hardware/Docker Management (Port 9000)
 #   ollama          - (Optional) Ollama CPU Embeddings (Port 11434, Profile: ollama)
@@ -37,54 +36,6 @@ services:
     restart: unless-stopped
 
   # ============================================
-  # DeepSeek Harness (dsh) — Agent Web-UI & Runtime
-  # ============================================
-  dsh:
-    build:
-      context: ./deepseek-harness
-      dockerfile: Dockerfile
-    image: llm-gw-dsh:latest
-    container_name: llm-gw-dsh
-    user: "1000:1000"
-    security_opt:
-      - seccomp:unconfined
-    cap_add:
-      - SYS_ADMIN
-    ports:
-      - "3080:3080"
-      - "3443:3443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./deepseek-harness/entrypoint.sh:/entrypoint.sh:ro
-      - ./dsh-config:/home/node/.config/dsh
-      - ./dsh-config:/home/node/.dsh
-      - ./dsh-config:/root/.config/dsh
-      - ./dsh-config:/root/.dsh
-      - ${QJM_PROJECT_DIR:-..}/dsh_playground:/workspace
-    environment:
-      - HOME=/home/node
-      - PORT=3080
-      - HOST=0.0.0.0
-      - SHELL=/bin/bash
-      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      - DSH_WORKSPACE_DIR=/workspace
-      - SWITCHYARD_URL=http://switchyard:4000/v1
-      - SWITCHYARD_API_KEY=switchyard
-      - MCP_ACCESS_KEY=${MCP_ACCESS_KEY}
-      - OPENBRAIN_CCO_MCP_URL=${OPENBRAIN_CCO_MCP_URL:-http://mcp-cco:8788}
-      - OPENBRAIN_PTA_MCP_URL=${OPENBRAIN_PTA_MCP_URL:-http://mcp-pta:8789}
-      - OPENBRAIN_PCA_MCP_URL=${OPENBRAIN_PCA_MCP_URL:-http://mcp-pca:8790}
-      - OPENBRAIN_CDA_MCP_URL=${OPENBRAIN_CDA_MCP_URL:-http://mcp-cda:8795}
-    depends_on:
-      - switchyard
-      - mcp-cco
-      - mcp-pta
-      - mcp-pca
-      - mcp-cda
-      - chart-viewer-server
-    restart: unless-stopped
-
   # ============================================
   # CCO MCP Server — Standard MCP & Pipeline Worker
   # ============================================
@@ -184,8 +135,8 @@ services:
       - PARQUET_BASE_PATH=/parquet
       - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - DEFAULT_CANDLE_LIMIT=200
-      - MAX_CANDLE_LIMIT=2000
+      - DEFAULT_CANDLE_LIMIT=2000
+      - MAX_CANDLE_LIMIT=10000
     volumes:
       - /home/daniel/stock-data-node/data/parquet:/parquet:ro
       - /home/daniel/stock-data-node/data/watchlists:/app/watchlists:ro
@@ -208,6 +159,7 @@ services:
       - switchyard
       - pca-service
     volumes:
+      - ../mcp/agent-pca/deno.json:/app/deno.json:ro
       - ../mcp/agent-pca/index.ts:/app/index.ts:ro
       - ../mcp/agent-pca/tools:/app/tools:ro
       - /home/daniel/stock-data-node/data/parquet:/parquet:ro
@@ -244,6 +196,7 @@ services:
     restart: unless-stopped
     environment:
       - PCA_SERVICE_URL=http://pca-service:8791
+      - CV_CHART_LIMIT=2000
     volumes:
       - ../chart_viewer/src:/app/src:ro
       - ../chart_viewer/run_server.py:/app/run_server.py:ro
@@ -372,7 +325,6 @@ services:
       - DOCKER_SWITCHYARD_CONTAINER=llm-gw-switchyard
       - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
       - DOCKER_VLLM_CONTAINER=llm-gw-vllm
-      - DOCKER_DSH_CONTAINER=llm-gw-dsh
       - DOCKER_OLLAMA_CONTAINER=llm-gw-ollama-gpu
       - DOCKER_OLLAMA_CPU_CONTAINER=llm-gw-ollama-cpu
       - DOCKER_OLLAMA_GPU_CONTAINER=llm-gw-ollama-gpu

@@ -64,7 +64,7 @@ export function registerChartViewerTools(server: McpServer) {
           content: z.string().describe("Status content or metric text"),
           ttl_ms: z.number().optional().describe("Optional time-to-live in milliseconds"),
         }).optional().describe("Topbar block definition for SET_TOPBAR"),
-        limit: z.number().optional().default(300).describe("Number of historical candles to load (Default 300)"),
+        limit: z.number().optional().default(2000).describe("Number of historical candles to load (Default 2000)"),
         resolution: z.enum(["standard", "hires", "640x480", "800x600"]).optional().default("standard").describe("Screenshot resolution: 'standard' (640x480) or 'hires' (800x600)"),
         hires: z.boolean().optional().describe("Shortcut to capture high-resolution 800x600 screenshots"),
       },
@@ -99,7 +99,7 @@ export function registerChartViewerTools(server: McpServer) {
           }
           const sym = ticker.toUpperCase();
           const targetWinId = window_id || `win_${sym.toLowerCase()}_${tf.toLowerCase()}`;
-          const cappedLimit = Math.min(Math.max(20, limit || 1500), 2000);
+          const cappedLimit = Math.min(Math.max(20, limit || 2000), 10000);
           const selectedPreset = preset || "default";
 
           log.info(`[chart_viewer] DISPLAY_STOCK: ${sym} with preset '${selectedPreset}'...`);

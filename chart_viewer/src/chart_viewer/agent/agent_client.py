@@ -213,24 +213,42 @@ class ChartAgent:
         
         # We need to preserve the timeframe and preset (if any) from the layout ledger
         win_info = self.layout_ledger.get(window_id, {})
-        tf_unit = win_info.get("timeframe_unit", "D")
-        tf_mult = win_info.get("multiplier", 1)
+        tf = win_info.get("timeframe", {})
+        if isinstance(tf, dict):
+            tf_unit = tf.get("unit", "D")
+            tf_mult = tf.get("multiplier", 1)
+        else:
+            tf_unit = win_info.get("timeframe_unit", "D")
+            tf_mult = win_info.get("multiplier", 1)
+        tf_str = f"{tf_mult}{tf_unit}"
         
-        # We fetch via orchestrator function to get the actual data
-        # To avoid circular imports, we import it here
+        preset = win_info.get("preset")
+        if not preset:
+            try:
+                import json
+                with open("/tmp/last_chart_state.json", "r") as f:
+                    last_state = json.load(f)
+                    preset = last_state.get("preset", "default")
+            except Exception:
+                preset = "default"
+
+        # Reconstruct the DISPLAY_STOCK command and send it to our own POST API
+        # This is the cleanest way because run_server.py does all the fetching + sending
         try:
             import urllib.request
             import json
-            import os
             
-            # Reconstruct the DISPLAY_STOCK command and send it to our own POST API
-            # This is the cleanest way because run_server.py does all the fetching + sending
             payload = {
-                "action": "OPEN_WINDOW",
+                "action": "DISPLAY_STOCK",
                 "window_id": window_id,
                 "symbol": new_symbol,
-                "timeframe": {"unit": tf_unit, "multiplier": tf_mult}
+                "timeframe_str": tf_str,
+                "preset": preset,
             }
+            if "position" in win_info:
+                payload["position"] = win_info["position"]
+            if "size" in win_info:
+                payload["size"] = win_info["size"]
             
             req = urllib.request.Request(
                 "http://127.0.0.1:8766/api/command",

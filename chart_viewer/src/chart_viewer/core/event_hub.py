@@ -45,6 +45,10 @@ class EventHub:
         if flag in self._flag_listeners and listener in self._flag_listeners[flag]:
             self._flag_listeners[flag].remove(listener)
 
+    def has_listeners_for_flag(self, flag: int) -> bool:
+        """Check if any windows are registered for a given color flag."""
+        return bool(self._flag_listeners.get(flag, []))
+
     def broadcast_symbol_to_flag(self, symbol: str, flag: int) -> None:
         """Broadcast a new symbol to all windows listening to the given color flag."""
         if flag in self._flag_listeners:

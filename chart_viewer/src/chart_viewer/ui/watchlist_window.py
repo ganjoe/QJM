@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
 )
-from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent, QKeyEvent
 
 from chart_viewer.models.entities import WatchlistState
 from chart_viewer.ui.color_flag import ColorFlagButton
@@ -21,6 +21,7 @@ class WatchlistWindow(QMainWindow):
         super().__init__(parent)
         self.window_id = window_id
         self.color_flag: int = 0
+        self._is_populating: bool = False
         
         self.setWindowTitle(f"Watchlist — {window_id}")
         self.resize(600, 400)
@@ -74,6 +75,7 @@ class WatchlistWindow(QMainWindow):
         )
         
         self.table.cellClicked.connect(self._on_cell_clicked)
+        self.table.currentCellChanged.connect(self._on_current_cell_changed)
         layout.addWidget(self.table)
 
     def set_data(self, wl_state: WatchlistState):
@@ -82,64 +84,87 @@ class WatchlistWindow(QMainWindow):
         self.color_flag = wl_state.color_flag
         self.flag_btn.set_flag(self.color_flag)
         
-        self.table.setSortingEnabled(False)
-        self.table.clear()
-        
-        columns = wl_state.columns
-        if not columns:
-            return
+        self._is_populating = True
+        try:
+            self.table.setSortingEnabled(False)
+            self.table.clear()
             
-        self.table.setColumnCount(len(columns))
-        self.table.setHorizontalHeaderLabels(columns)
-        
-        self.table.setRowCount(len(wl_state.rows))
-        for row_idx, row_data in enumerate(wl_state.rows):
-            for col_idx, col_name in enumerate(columns):
-                val = row_data.cells.get(col_name)
-                if val is None and col_name.lower() == 'symbol':
-                    val = row_data.symbol
-                if val is None:
-                    val = ""
-                    
-                item = QTableWidgetItem()
+            columns = wl_state.columns
+            if not columns:
+                return
                 
-                # To support proper sorting for numbers
-                if isinstance(val, (int, float)):
-                    item.setData(Qt.ItemDataRole.EditRole, val)
-                else:
-                    item.setText(str(val))
-                    
-                if col_name.lower() == 'symbol':
-                    font = item.font()
-                    font.setBold(True)
-                    item.setFont(font)
-                
-                self.table.setItem(row_idx, col_idx, item)
-                
-        self.table.resizeColumnsToContents()
-        
-        # Restore sorting if requested
-        if wl_state.sort_column and wl_state.sort_column in columns:
-            col_idx = columns.index(wl_state.sort_column)
-            order = Qt.SortOrder.AscendingOrder if wl_state.sort_ascending else Qt.SortOrder.DescendingOrder
-            self.table.sortItems(col_idx, order)
+            self.table.setColumnCount(len(columns))
+            self.table.setHorizontalHeaderLabels(columns)
             
-        self.table.setSortingEnabled(True)
+            self.table.setRowCount(len(wl_state.rows))
+            for row_idx, row_data in enumerate(wl_state.rows):
+                for col_idx, col_name in enumerate(columns):
+                    val = row_data.cells.get(col_name)
+                    if val is None and col_name.lower() == 'symbol':
+                        val = row_data.symbol
+                    if val is None:
+                        val = ""
+                        
+                    item = QTableWidgetItem()
+                    
+                    # To support proper sorting for numbers
+                    if isinstance(val, (int, float)):
+                        item.setData(Qt.ItemDataRole.EditRole, val)
+                    else:
+                        item.setText(str(val))
+                        
+                    if col_name.lower() == 'symbol':
+                        font = item.font()
+                        font.setBold(True)
+                        item.setFont(font)
+                    
+                    self.table.setItem(row_idx, col_idx, item)
+                    
+            self.table.resizeColumnsToContents()
+            
+            # Restore sorting if requested
+            if wl_state.sort_column and wl_state.sort_column in columns:
+                col_idx = columns.index(wl_state.sort_column)
+                order = Qt.SortOrder.AscendingOrder if wl_state.sort_ascending else Qt.SortOrder.DescendingOrder
+                self.table.sortItems(col_idx, order)
+                
+            self.table.setSortingEnabled(True)
+        finally:
+            self._is_populating = False
         
     def _on_flag_changed(self, new_flag: int):
         self.color_flag = new_flag
         self.flag_changed_signal.emit(self.window_id, new_flag)
-        
-    def _on_cell_clicked(self, row: int, col: int):
+
+    def _emit_selected_symbol_for_row(self, row: int) -> None:
+        if row < 0 or getattr(self, "_is_populating", False):
+            return
         headers = [self.table.horizontalHeaderItem(i).text().lower() for i in range(self.table.columnCount())]
         try:
             symbol_col = headers.index("symbol")
             symbol_item = self.table.item(row, symbol_col)
             if symbol_item:
-                symbol = symbol_item.text()
-                self.row_selected_signal.emit(self.window_id, symbol, self.color_flag)
-        except ValueError:
-            pass # No symbol column found
+                symbol = symbol_item.text().strip()
+                if symbol:
+                    self.row_selected_signal.emit(self.window_id, symbol, self.color_flag)
+        except (ValueError, AttributeError):
+            pass
+
+    def _on_cell_clicked(self, row: int, col: int):
+        self._emit_selected_symbol_for_row(row)
+
+    def _on_current_cell_changed(self, current_row: int, current_col: int, previous_row: int, previous_col: int):
+        if current_row >= 0 and current_row != previous_row:
+            self._emit_selected_symbol_for_row(current_row)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            curr_row = self.table.currentRow()
+            next_row = curr_row + 1 if curr_row + 1 < self.table.rowCount() else 0
+            self.table.setCurrentCell(next_row, 0)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.window_closed_signal.emit(self.window_id)

@@ -20,7 +20,7 @@ export function registerPresetTools(server: McpServer) {
                     z.object({
                         feature_id: z.string().describe("The canonical feature ID (e.g. 'sma_10', 'ema_20', 'bb_20', 'adr_1_pct', 'adr_20_sma')."),
                         sort_order: z.number().default(0).describe("Order in the overlay list."),
-                        style_override: z.record(z.any()).optional().describe("Style overrides (e.g. { color: '#FF00FF', width: 2 }).")
+                        style_override: z.record(z.string(), z.any()).optional().describe("Style overrides (e.g. { color: '#FF00FF', width: 2 }).")
                     })
                 ).optional().describe("List of indicators for this preset. Used in CREATE and UPDATE.")
             }

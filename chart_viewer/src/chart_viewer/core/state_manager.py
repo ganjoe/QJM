@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import msgspec
 from typing import Dict, List, Optional
 from chart_viewer.models.entities import (
     Bar,

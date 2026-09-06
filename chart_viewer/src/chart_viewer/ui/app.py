@@ -285,8 +285,33 @@ class ViewerApp(QObject):
             self.event_hub.register_for_flag(new_flag, win.request_symbol_change)
 
     def _on_watchlist_row_selected(self, window_id: str, symbol: str, color_flag: int) -> None:
-        """Watchlist routing symbol to ChartWindows with same flag."""
-        self.event_hub.broadcast_symbol_to_flag(symbol, color_flag)
+        """Watchlist routing symbol to ChartWindows with same flag.
+        If no ChartWindow with that flag exists, automatically create one."""
+        if self.event_hub.has_listeners_for_flag(color_flag):
+            # Existing behavior: route to already open ChartWindow(s) with this flag
+            self.event_hub.broadcast_symbol_to_flag(symbol, color_flag)
+        else:
+            # No ChartWindow with this flag → auto-create one
+            chart_win_id = f"win_{symbol.lower()}_1d"
+            # Only create if not already open
+            if chart_win_id not in self.windows:
+                self._handle_window_open({
+                    "window_id": chart_win_id,
+                    "symbol": symbol,
+                }, b"")
+                # Apply the watchlist's color_flag to the new window
+                if chart_win_id in self.windows:
+                    self.windows[chart_win_id].color_flag = color_flag
+                    self.windows[chart_win_id].flag_btn.set_flag(color_flag)
+                    # Re-register for EventHub symbol routing with the correct flag
+                    for flag in range(4):
+                        self.event_hub.unregister_for_flag(flag, self.windows[chart_win_id].request_symbol_change)
+                    self.event_hub.register_for_flag(color_flag, self.windows[chart_win_id].request_symbol_change)
+                    # Request symbol data from server for the new window
+                    self._on_symbol_change_requested(chart_win_id, symbol)
+            else:
+                # Window already exists → just change its symbol
+                self.windows[chart_win_id].request_symbol_change(symbol)
 
     def _on_symbol_change_requested(self, window_id: str, symbol: str) -> None:
         """ChartWindow asking Server for new symbol data."""

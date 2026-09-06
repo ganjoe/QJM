@@ -19,7 +19,7 @@ logger = logging.getLogger("chart_viewer.orchestrator")
 PCA_SERVICE_URL = os.environ.get("PCA_SERVICE_URL", "http://127.0.0.1:8794")
 
 # Default candle limit for chart display (configurable via CV_CHART_LIMIT)
-DEFAULT_CHART_LIMIT = int(os.environ.get("CV_CHART_LIMIT", "1500"))
+DEFAULT_CHART_LIMIT = int(os.environ.get("CV_CHART_LIMIT", "2000"))
 
 
 def _pca_get(path: str) -> Dict[str, Any]:
