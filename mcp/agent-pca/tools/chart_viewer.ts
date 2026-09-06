@@ -21,8 +21,13 @@ export function registerChartViewerTools(server: McpServer) {
         "- SET_TOPBAR: Display formatted status/metric blocks in the chart topbar (e.g. Minervini Stage 2 rating, ATR, Stop-loss level, Sentiment).\n" +
         "- CLOSE_WINDOW: Close an open chart window.\n" +
         "- STATUS: Get list of open windows and viewer connection state.\n" +
-        "- SCREENSHOT: Capture 640x480 screenshots of all open chart windows (or target window_id), save to /dsh_playground, and return capture ID and filepaths for reference or visual UI debugging.\n\n" +
-        "WHEN TO USE: Use whenever you want to display charts, show technical setups, mark price targets, draw support/resistance levels, capture UI screenshots for inspection, or show trade markers on the user's screen.",
+        "- SCREENSHOT: Capture 640x480 screenshots of all open chart windows (or target window_id), save to /dsh_playground, and return capture ID and filepaths for reference or visual UI debugging.\n" +
+        "- SAVE_SETUP: Save current window layout (positions, sizes, color flags) as a named setup. Requires `setup_name`. If no setup is loaded, 'default' is auto-saved on every geometry change.\n" +
+        "- LOAD_SETUP: Load a saved window layout. Reuses existing windows of matching type, closes excess windows, creates missing ones. Matches monitor count exactly or picks closest variant. Requires `setup_name`.\n" +
+        "- LIST_SETUPS: List all saved setups with their monitor-count variants.\n" +
+        "- DELETE_SETUP: Delete a setup or a specific monitor-count variant. Requires `setup_name`; optional `monitor_count`.\n" +
+        "- RENAME_SETUP: Rename all variants of a setup. Requires `setup_name` and `new_setup_name`.\n\n" +
+        "WHEN TO USE: Use whenever you want to display charts, show technical setups, mark price targets, draw support/resistance levels, capture UI screenshots for inspection, show trade markers, or manage window layouts (save/load/delete/rename setups).",
       inputSchema: {
         action: z.enum([
           "DISPLAY_STOCK",
@@ -34,6 +39,11 @@ export function registerChartViewerTools(server: McpServer) {
           "CLOSE_WINDOW",
           "STATUS",
           "SCREENSHOT",
+          "SAVE_SETUP",
+          "LOAD_SETUP",
+          "LIST_SETUPS",
+          "DELETE_SETUP",
+          "RENAME_SETUP",
         ]).describe("The action to perform"),
 
         ticker: z.string().optional().describe("Stock ticker symbol (or comma-separated symbols for DISPLAY_WATCHLIST)"),
@@ -67,9 +77,12 @@ export function registerChartViewerTools(server: McpServer) {
         limit: z.number().optional().default(2000).describe("Number of historical candles to load (Default 2000)"),
         resolution: z.enum(["standard", "hires", "640x480", "800x600"]).optional().default("standard").describe("Screenshot resolution: 'standard' (640x480) or 'hires' (800x600)"),
         hires: z.boolean().optional().describe("Shortcut to capture high-resolution 800x600 screenshots"),
+        setup_name: z.string().optional().describe("Setup name for SAVE_SETUP, LOAD_SETUP, DELETE_SETUP, RENAME_SETUP"),
+        new_setup_name: z.string().optional().describe("New setup name for RENAME_SETUP"),
+        monitor_count: z.number().optional().describe("Optional specific monitor count variant for DELETE_SETUP"),
       },
     },
-    async ({ action, ticker, list_name, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, resolution, hires }: any) => {
+    async ({ action, ticker, list_name, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, resolution, hires, setup_name, new_setup_name, monitor_count }: any) => {
 
       try {
         const tf = timeframe || "1D";
@@ -347,6 +360,128 @@ export function registerChartViewerTools(server: McpServer) {
                 status: "success",
                 message: `Watchlist '${actualListName}' sent to Chart Viewer with ${symbols.length} tickers.`,
                 result: resData,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 9. SAVE_SETUP — Save current window layout as a named setup
+        if (action === "SAVE_SETUP") {
+          if (!setup_name) throw new Error("Parameter 'setup_name' is required for SAVE_SETUP.");
+
+          log.info(`[chart_viewer] SAVE_SETUP: '${setup_name}'`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "SAVE_SETUP", setup_name }),
+          });
+
+          const data = await res.json();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Setup '${setup_name}' saved (${data.window_count || "?"} windows, ${data.monitor_count || "?"} monitors).`,
+                result: data,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 10. LOAD_SETUP — Load a saved window layout
+        if (action === "LOAD_SETUP") {
+          if (!setup_name) throw new Error("Parameter 'setup_name' is required for LOAD_SETUP.");
+
+          log.info(`[chart_viewer] LOAD_SETUP: '${setup_name}'`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "LOAD_SETUP", setup_name }),
+          });
+
+          const data = await res.json();
+          if (data.error) throw new Error(`LOAD_SETUP failed: ${data.error}`);
+
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Setup '${setup_name}' loaded: ${data.windows_opened || "?"} windows repositioned.`,
+                mapping: data.mapping,
+                result: data,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 11. LIST_SETUPS — List all saved setups
+        if (action === "LIST_SETUPS") {
+          log.info(`[chart_viewer] LIST_SETUPS`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "LIST_SETUPS" }),
+          });
+
+          const data = await res.json();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                count: data.count,
+                setups: data.setups,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 12. DELETE_SETUP — Delete a setup (or a specific monitor variant)
+        if (action === "DELETE_SETUP") {
+          if (!setup_name) throw new Error("Parameter 'setup_name' is required for DELETE_SETUP.");
+
+          log.info(`[chart_viewer] DELETE_SETUP: '${setup_name}' (monitor_count: ${monitor_count ?? "ALL"})`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "DELETE_SETUP", setup_name, monitor_count }),
+          });
+
+          const data = await res.json();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Setup '${setup_name}' deleted.`,
+                result: data,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 13. RENAME_SETUP — Rename all variants of a setup
+        if (action === "RENAME_SETUP") {
+          if (!setup_name) throw new Error("Parameter 'setup_name' is required for RENAME_SETUP.");
+          if (!new_setup_name) throw new Error("Parameter 'new_setup_name' is required for RENAME_SETUP.");
+
+          log.info(`[chart_viewer] RENAME_SETUP: '${setup_name}' → '${new_setup_name}'`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "RENAME_SETUP", setup_name, new_setup_name }),
+          });
+
+          const data = await res.json();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Setup renamed from '${setup_name}' to '${new_setup_name}'.`,
+                result: data,
               }, null, 2),
             }],
           };

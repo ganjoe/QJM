@@ -54,6 +54,10 @@ class ViewerApp(QObject):
         self.render_timer.setInterval(self.config.max_fps_interval_ms)  # ~16ms for 60Hz
         self.render_timer.timeout.connect(self.coalescer.flush)
 
+        # Monitor connect/disconnect detection (for multi-monitor setup management)
+        QGuiApplication.screenAdded.connect(self._on_screen_added)
+        QGuiApplication.screenRemoved.connect(self._on_screen_removed)
+
     def start(self) -> None:
         """Start application: connect transport and start 60Hz render timer.
 
@@ -499,3 +503,146 @@ class ViewerApp(QObject):
         from chart_viewer.screenshot import ScreenshotCapture
         capturer = ScreenshotCapture(self.config, self.transport, self.windows)
         capturer.handle_request(payload)
+
+    # ── Window Setup Management: Geometry & Monitor Helpers ──────────
+
+    def get_all_geometries(self) -> dict:
+        """Collect {window_id: {x, y, width, height}} from all open windows."""
+        result = {}
+        for win_id, win in self.windows.items():
+            result[win_id] = {
+                "x": win.x(),
+                "y": win.y(),
+                "width": win.width(),
+                "height": win.height(),
+            }
+        for wl_id, wl in self.watchlists.items():
+            result[wl_id] = {
+                "x": wl.x(),
+                "y": wl.y(),
+                "width": wl.width(),
+                "height": wl.height(),
+            }
+        return result
+
+    def get_monitor_info(self) -> list[dict]:
+        """Get information about all connected monitors."""
+        screens = QGuiApplication.screens()
+        result = []
+        primary = QGuiApplication.primaryScreen()
+        for i, screen in enumerate(screens):
+            geom = screen.geometry()
+            result.append({
+                "index": i,
+                "name": screen.name(),
+                "width": geom.width(),
+                "height": geom.height(),
+                "x": geom.x(),
+                "y": geom.y(),
+                "is_primary": screen == primary,
+                "dpi": int(screen.logicalDotsPerInch()),
+            })
+        return result
+
+    def reposition_window(self, window_id: str, x: int, y: int, width: int, height: int) -> bool:
+        """Move and resize an existing window by ID. Returns True if window found."""
+        win = self.windows.get(window_id) or self.watchlists.get(window_id)
+        if win:
+            win.move(x, y)
+            win.resize(width, height)
+            return True
+        return False
+
+    def close_windows_except(self, keep_ids: set) -> int:
+        """Close all windows not in keep_ids. Returns count of closed windows."""
+        closed = 0
+        for win_id in list(self.windows.keys()):
+            if win_id not in keep_ids:
+                self.windows[win_id].close()
+                closed += 1
+        for wl_id in list(self.watchlists.keys()):
+            if wl_id not in keep_ids:
+                self.watchlists[wl_id].close()
+                closed += 1
+        return closed
+
+    def _get_windows_on_screen(self, screen) -> list[str]:
+        """Return window_ids that are currently on the given QScreen."""
+        geom = screen.geometry()
+        affected = []
+        for win_id, win in self.windows.items():
+            cx = win.x() + win.width() // 2
+            cy = win.y() + win.height() // 2
+            if geom.x() <= cx < geom.x() + geom.width() and geom.y() <= cy < geom.y() + geom.height():
+                affected.append(win_id)
+        for wl_id, wl in self.watchlists.items():
+            cx = wl.x() + wl.width() // 2
+            cy = wl.y() + wl.height() // 2
+            if geom.x() <= cx < geom.x() + geom.width() and geom.y() <= cy < geom.y() + geom.height():
+                affected.append(wl_id)
+        return affected
+
+    def _redistribute_windows(self, window_ids: list[str], target_screens) -> None:
+        """Redistribute windows across remaining screens with cascade offset."""
+        if not target_screens:
+            return
+        for i, win_id in enumerate(window_ids):
+            target = target_screens[i % len(target_screens)]
+            geom = target.geometry()
+            cascade = (i // len(target_screens)) * 40
+            new_x = geom.x() + 50 + cascade
+            new_y = geom.y() + 50 + cascade
+
+            win = self.windows.get(win_id) or self.watchlists.get(win_id)
+            if win:
+                # Keep original size, just reposition
+                win.move(max(new_x, geom.x()), max(new_y, geom.y()))
+                # Ensure window fits on screen
+                if win.x() + win.width() > geom.x() + geom.width():
+                    win.resize(geom.width() - 100, win.height())
+                if win.y() + win.height() > geom.y() + geom.height():
+                    win.resize(win.width(), geom.height() - 100)
+                logger.info("Redistributed window '%s' → monitor %d", win_id, i % len(target_screens))
+
+    def _on_screen_added(self, screen) -> None:
+        """Monitor connected — log event, notify agent for potential autosave update."""
+        logger.info("Monitor connected: %s (%dx%d at %d,%d)",
+                     screen.name(), screen.geometry().width(), screen.geometry().height(),
+                     screen.geometry().x(), screen.geometry().y())
+        self._notify_agent_monitor_change("added", screen)
+
+    def _on_screen_removed(self, screen) -> None:
+        """Monitor disconnected (e.g. laptop lid closed) — redistribute windows."""
+        logger.warning("Monitor removed: %s", screen.name())
+
+        affected = self._get_windows_on_screen(screen)
+        remaining = [s for s in QGuiApplication.screens() if s != screen]
+
+        if affected and remaining:
+            logger.info("Redistributing %d windows from removed monitor across %d remaining screens",
+                         len(affected), len(remaining))
+            self._redistribute_windows(affected, remaining)
+
+        self._notify_agent_monitor_change("removed", screen)
+
+    def _notify_agent_monitor_change(self, change_type: str, screen) -> None:
+        """Send monitor change event to the agent so it can trigger autosave."""
+        env = make_envelope(
+            msg_type="monitor.change",
+            payload={
+                "change_type": change_type,
+                "screen": {
+                    "name": screen.name(),
+                    "width": screen.geometry().width(),
+                    "height": screen.geometry().height(),
+                    "x": screen.geometry().x(),
+                    "y": screen.geometry().y(),
+                },
+                "total_screens": len(QGuiApplication.screens()),
+            },
+            kind=MessageKind.EVENT,
+        )
+        try:
+            self.transport.send_command(env)
+        except Exception:
+            pass

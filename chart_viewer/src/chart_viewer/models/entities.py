@@ -134,3 +134,34 @@ class WatchlistState(msgspec.Struct):
     sort_column: str | None = None
     sort_ascending: bool = True
     color_flag: int = 0
+
+
+class MonitorInfo(msgspec.Struct):
+    """Information about a connected display monitor."""
+    index: int
+    name: str = ""
+    width: int = 0
+    height: int = 0
+    x: int = 0
+    y: int = 0
+    is_primary: bool = False
+
+
+class WindowGeometry(msgspec.Struct):
+    """Window position and size descriptor saved in setups."""
+    window_id: str
+    window_type: str  # "chart" or "watchlist"
+    position: dict   # {"x": int, "y": int}
+    size: dict       # {"width": int, "height": int}
+    color_flag: int = 0
+    monitor: MonitorInfo | None = None
+
+
+class WindowSetup(msgspec.Struct):
+    """A named window layout setup persisted to Supabase."""
+    id: str = ""
+    setup_name: str
+    monitor_count: int = 1
+    created_at: str = ""
+    updated_at: str = ""
+    windows: list[WindowGeometry] = []

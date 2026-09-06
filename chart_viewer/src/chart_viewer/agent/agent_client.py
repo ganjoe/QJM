@@ -1,11 +1,78 @@
 """Reference Python Agent implementation according to Section 1, 8, & 11."""
 
 from __future__ import annotations
+import json
 import logging
+import os
+import urllib.request
+import urllib.error
 from typing import Dict, List, Optional
 from chart_viewer.transport.base import AgentTransport
 from chart_viewer.models.envelope import Envelope, MessageKind, make_envelope, create_message_id
-from chart_viewer.models.entities import WindowState
+from chart_viewer.models.entities import WindowState, WindowGeometry, MonitorInfo
+
+logger = logging.getLogger(__name__)
+
+# Supabase configuration (same as agent-pca shared.ts)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://host.docker.internal:8001")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1"
+SUPABASE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+}
+
+
+def _supabase_get(path: str) -> dict | list:
+    """GET from Supabase REST API."""
+    url = f"{SUPABASE_REST_URL}{path}"
+    req = urllib.request.Request(url, headers=SUPABASE_HEADERS)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        logger.error("Supabase GET %s failed: %s", url, e)
+        raise RuntimeError(f"Supabase unreachable: {e}") from e
+
+
+def _supabase_post(path: str, payload: dict) -> dict | list:
+    """POST to Supabase REST API."""
+    url = f"{SUPABASE_REST_URL}{path}"
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        logger.error("Supabase POST %s failed: %s", url, e)
+        raise RuntimeError(f"Supabase unreachable: {e}") from e
+
+
+def _supabase_patch(path: str, payload: dict) -> dict | list:
+    """PATCH to Supabase REST API."""
+    url = f"{SUPABASE_REST_URL}{path}"
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="PATCH")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        logger.error("Supabase PATCH %s failed: %s", url, e)
+        raise RuntimeError(f"Supabase unreachable: {e}") from e
+
+
+def _supabase_delete(path: str) -> None:
+    """DELETE from Supabase REST API."""
+    url = f"{SUPABASE_REST_URL}{path}"
+    req = urllib.request.Request(url, headers=SUPABASE_HEADERS, method="DELETE")
+    try:
+        with urllib.request.urlopen(req):
+            pass
+    except urllib.error.URLError as e:
+        logger.error("Supabase DELETE %s failed: %s", url, e)
+        raise RuntimeError(f"Supabase unreachable: {e}") from e
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +91,10 @@ class ChartAgent:
         self._pending_screenshots: Dict[str, dict] = {}
         self._seq = 0
         self.on_viewer_ready_callback = None
+
+        # Window Setup Management
+        self.current_setup_name: str | None = None  # None → Autosave "default" active
+        self._last_autosave_hash: str = ""  # Dedup hash to avoid redundant saves
 
     def start(self) -> None:
         self.transport.connect()
@@ -80,6 +151,24 @@ class ChartAgent:
                 self.layout_ledger.pop(win_id, None)
                 self.series_data.pop(win_id, None)
 
+        elif envelope.type == "window.geometry_changed":
+            win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
+            geom = envelope.payload.get("geometry") if isinstance(envelope.payload, dict) else {}
+            if win_id and geom and win_id in self.layout_ledger:
+                self.layout_ledger[win_id]["position"] = {
+                    "x": geom.get("x", 0),
+                    "y": geom.get("y", 0),
+                }
+                self.layout_ledger[win_id]["size"] = {
+                    "width": geom.get("width", 0),
+                    "height": geom.get("height", 0),
+                }
+            # Trigger autosave on geometry changes
+            try:
+                self.autosave_default()
+            except Exception:
+                pass
+
         elif envelope.type == "window.change_symbol":
             win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
             symbol = envelope.payload.get("symbol") if isinstance(envelope.payload, dict) else None
@@ -100,6 +189,15 @@ class ChartAgent:
                 entry = self._pending_screenshots[req_id]
                 entry["result"] = payload
                 entry["event"].set()
+
+        elif envelope.type == "monitor.change":
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            logger.info("Monitor %s: %d total screens now", payload.get("change_type"), payload.get("total_screens", 0))
+            # Trigger autosave to update "default" setup with new monitor count
+            try:
+                self.autosave_default()
+            except Exception as e:
+                logger.debug("Autosave on monitor change skipped: %s", e)
 
 
     def _handle_viewer_ready(self, envelope: Envelope) -> None:
@@ -349,4 +447,288 @@ class ChartAgent:
             raise TimeoutError(f"Screenshot request timed out after {timeout_s}s")
 
         return entry["result"]
+
+    # ── Window Setup Management ────────────────────────────────────────
+
+    def _build_geometry_snapshot(
+        self,
+        geometries: dict | None = None,
+        monitor_infos: list[dict] | None = None,
+    ) -> dict:
+        """Build a hashable snapshot of current layout state for autosave dedup."""
+        import hashlib
+
+        parts = []
+        for win_id, win_info in sorted(self.layout_ledger.items()):
+            geom = (geometries or {}).get(win_id, win_info.get("position", {}))
+            parts.append(json.dumps({
+                "id": win_id,
+                "type": "watchlist" if "list_id" in win_info or win_id.startswith("wl_") else "chart",
+                "x": geom.get("x", 0),
+                "y": geom.get("y", 0),
+                "w": geom.get("width", win_info.get("size", {}).get("width", 0)),
+                "h": geom.get("height", win_info.get("size", {}).get("height", 0)),
+                "flag": win_info.get("color_flag", 0),
+            }, sort_keys=True))
+
+        if monitor_infos:
+            parts.append(json.dumps(sorted(monitor_infos, key=lambda m: m.get("index", 0)), sort_keys=True))
+
+        raw = "|".join(parts)
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def save_setup(
+        self,
+        setup_name: str,
+        geometries: dict | None = None,
+        monitor_infos: list[dict] | None = None,
+        force: bool = False,
+    ) -> dict:
+        """Save current window layout as a named setup to Supabase.
+
+        Args:
+            setup_name: Name of the setup to save.
+            geometries: Optional {window_id: {x, y, width, height}} from viewer.
+            monitor_infos: Optional list of monitor dicts.
+            force: If True, save even if unchanged.
+
+        Returns:
+            {"status": "ok", "setup_name": ..., "monitor_count": ..., "window_count": ...}
+        """
+        if not setup_name:
+            raise ValueError("setup_name is required")
+
+        # Stop autosave for non-default setups
+        if setup_name != "default":
+            self.current_setup_name = setup_name
+
+        # Build window descriptors from layout_ledger + live geometries
+        windows_list = []
+        for win_id, win_info in self.layout_ledger.items():
+            geom = (geometries or {}).get(win_id, {})
+            win_type = "watchlist" if ("list_id" in win_info or win_id.startswith("wl_")) else "chart"
+
+            monitor = None
+            if monitor_infos and geom:
+                cx = geom.get("x", 0) + geom.get("width", 0) // 2
+                cy = geom.get("y", 0) + geom.get("height", 0) // 2
+                for mi in monitor_infos:
+                    mx, my, mw, mh = mi.get("x", 0), mi.get("y", 0), mi.get("width", 0), mi.get("height", 0)
+                    if mx <= cx < mx + mw and my <= cy < my + mh:
+                        monitor = mi
+                        break
+
+            windows_list.append({
+                "window_id": win_id,
+                "window_type": win_type,
+                "position": {
+                    "x": geom.get("x", win_info.get("position", {}).get("x", 100)),
+                    "y": geom.get("y", win_info.get("position", {}).get("y", 100)),
+                },
+                "size": {
+                    "width": geom.get("width", win_info.get("size", {}).get("width", 900)),
+                    "height": geom.get("height", win_info.get("size", {}).get("height", 600)),
+                },
+                "color_flag": win_info.get("color_flag", 0),
+                "monitor": monitor,
+            })
+
+        monitor_count = len(monitor_infos) if monitor_infos else 1
+
+        if not force:
+            current_hash = self._build_geometry_snapshot(geometries, monitor_infos)
+            if current_hash == self._last_autosave_hash and setup_name == "default":
+                logger.debug("Autosave skipped (unchanged geometry)")
+                return {"status": "ok", "setup_name": setup_name, "monitor_count": monitor_count,
+                        "window_count": len(windows_list), "skipped": True}
+
+        # UPSERT via POST (Supabase REST: use on_conflict on unique columns)
+        url = f"{SUPABASE_REST_URL}/pca_window_setups?on_conflict=setup_name,monitor_count"
+        data = json.dumps({
+            "setup_name": setup_name,
+            "monitor_count": monitor_count,
+            "windows": windows_list,
+            "updated_at": "now()",
+        }).encode()
+        headers = {**SUPABASE_HEADERS}
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read().decode())
+            logger.info("Setup '%s' saved (%d windows, %d monitors)", setup_name, len(windows_list), monitor_count)
+
+            if setup_name == "default":
+                self._last_autosave_hash = current_hash if not force else ""
+
+            return {"status": "ok", "setup_name": setup_name, "monitor_count": monitor_count,
+                    "window_count": len(windows_list)}
+        except urllib.error.URLError as e:
+            logger.error("Failed to save setup '%s': %s", setup_name, e)
+            raise RuntimeError(f"Failed to save setup: {e}") from e
+
+    def autosave_default(self, geometries: dict | None = None, monitor_infos: list[dict] | None = None) -> None:
+        """Trigger autosave to 'default' setup — only when current_setup_name is None or 'default'."""
+        if self.current_setup_name is not None and self.current_setup_name != "default":
+            return  # Autosave disabled for loaded named setups
+        try:
+            self.save_setup("default", geometries=geometries, monitor_infos=monitor_infos)
+        except Exception as e:
+            logger.warning("Autosave failed: %s", e)
+
+    def load_setup(
+        self,
+        setup_name: str,
+        current_monitor_count: int = 1,
+    ) -> dict:
+        """Load a window setup from Supabase.
+
+        Matching strategy:
+        1. Exact monitor_count match
+        2. Closest monitor_count (if no exact match)
+
+        Returns a command dict with windows-to-open, reuse-mappings, and windows-to-close.
+        """
+        if not setup_name:
+            raise ValueError("setup_name is required")
+
+        # Query all variants for this setup_name
+        try:
+            encoded_name = urllib.parse.quote(setup_name)
+            rows = _supabase_get(
+                f"/pca_window_setups?setup_name=eq.{encoded_name}&order=monitor_count.asc"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to query setups: {e}") from e
+
+        if not rows:
+            raise RuntimeError(f"Setup '{setup_name}' not found")
+
+        # Find exact or closest match
+        if isinstance(rows, list):
+            best = None
+            best_diff = 999
+            for row in rows:
+                diff = abs(row.get("monitor_count", 1) - current_monitor_count)
+                if diff < best_diff:
+                    best_diff = diff
+                    best = row
+            row = best
+        else:
+            row = rows
+
+        if not row:
+            raise RuntimeError(f"Setup '{setup_name}' has no matching variant")
+
+        windows = row.get("windows", [])
+        src_monitor_count = row.get("monitor_count", 1)
+
+        # Build list of windows to open
+        windows_to_open = []
+        for i, w in enumerate(windows):
+            pos = w.get("position", {"x": 100, "y": 100})
+            size = w.get("size", {"width": 900, "height": 600})
+
+            # Remap position if monitor count differs
+            if src_monitor_count != current_monitor_count and current_monitor_count > 0:
+                # If more source monitors than current, redistribute
+                src_mon = w.get("monitor", {})
+                src_idx = src_mon.get("index", 0) if src_mon else (i % src_monitor_count)
+
+                if src_idx >= current_monitor_count:
+                    # Window was on a monitor that doesn't exist → distribute
+                    target_idx = i % current_monitor_count
+                    # Apply cascade offset for multiple windows on same monitor
+                    cascade_x = (i // current_monitor_count) * 40
+                    cascade_y = (i // current_monitor_count) * 40
+                    if isinstance(pos, dict):
+                        pos = {"x": pos.get("x", 100) + cascade_x,
+                               "y": pos.get("y", 100) + cascade_y}
+
+            windows_to_open.append({
+                "window_id": w.get("window_id", f"win_setup_{i}"),
+                "window_type": w.get("window_type", "chart"),
+                "position": pos,
+                "size": size,
+                "color_flag": w.get("color_flag", 0),
+            })
+
+        logger.info(
+            "Setup '%s' loaded: %d windows (source_monitors=%d, current=%d, diff=%d)",
+            setup_name, len(windows), src_monitor_count, current_monitor_count,
+            abs(src_monitor_count - current_monitor_count),
+        )
+
+        return {
+            "status": "ok",
+            "action": "LOAD_SETUP",
+            "setup_name": row.get("setup_name", setup_name),
+            "monitor_count": current_monitor_count,
+            "source_monitor_count": src_monitor_count,
+            "windows": windows_to_open,
+            "close_existing": True,  # Close windows not in setup
+        }
+
+    def list_setups(self) -> list[dict]:
+        """List all saved setups grouped by name with monitor variants."""
+        try:
+            rows = _supabase_get("/pca_window_setups?order=setup_name.asc,monitor_count.asc")
+        except Exception as e:
+            raise RuntimeError(f"Failed to list setups: {e}") from e
+
+        if not isinstance(rows, list):
+            rows = []
+
+        # Group by setup_name
+        groups: dict[str, list[dict]] = {}
+        for row in rows:
+            name = row.get("setup_name", "unknown")
+            groups.setdefault(name, []).append({
+                "id": row.get("id", ""),
+                "monitor_count": row.get("monitor_count", 1),
+                "window_count": len(row.get("windows", [])),
+                "updated_at": row.get("updated_at", ""),
+            })
+
+        return [{"setup_name": name, "variants": variants} for name, variants in sorted(groups.items())]
+
+    def delete_setup(self, setup_name: str, monitor_count: int | None = None) -> dict:
+        """Delete a setup variant or all variants of a setup.
+
+        Args:
+            setup_name: Name of the setup to delete.
+            monitor_count: Optional specific monitor count to delete. If None, deletes all variants.
+        """
+        try:
+            encoded_name = urllib.parse.quote(setup_name)
+            if monitor_count is not None:
+                path = f"/pca_window_setups?setup_name=eq.{encoded_name}&monitor_count=eq.{monitor_count}"
+            else:
+                path = f"/pca_window_setups?setup_name=eq.{encoded_name}"
+            _supabase_delete(path)
+            logger.info("Deleted setup '%s' (monitor_count=%s)", setup_name, monitor_count or "ALL")
+            return {"status": "ok", "setup_name": setup_name, "monitor_count": monitor_count}
+        except Exception as e:
+            raise RuntimeError(f"Failed to delete setup: {e}") from e
+
+    def rename_setup(self, setup_name: str, new_setup_name: str) -> dict:
+        """Rename all variants of a setup."""
+        if not new_setup_name:
+            raise ValueError("new_setup_name is required")
+
+        try:
+            encoded_name = urllib.parse.quote(setup_name)
+            _supabase_patch(
+                f"/pca_window_setups?setup_name=eq.{encoded_name}",
+                {"setup_name": new_setup_name, "updated_at": "now()"},
+            )
+            logger.info("Renamed setup '%s' → '%s'", setup_name, new_setup_name)
+
+            # If the renamed setup was current, update tracker
+            if self.current_setup_name == setup_name:
+                self.current_setup_name = new_setup_name
+
+            return {"status": "ok", "old_name": setup_name, "new_name": new_setup_name}
+        except Exception as e:
+            raise RuntimeError(f"Failed to rename setup: {e}") from e
 
