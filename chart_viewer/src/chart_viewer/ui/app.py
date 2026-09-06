@@ -55,8 +55,10 @@ class ViewerApp(QObject):
         self.render_timer.timeout.connect(self.coalescer.flush)
 
         # Monitor connect/disconnect detection (for multi-monitor setup management)
-        QGuiApplication.screenAdded.connect(self._on_screen_added)
-        QGuiApplication.screenRemoved.connect(self._on_screen_removed)
+        gui_app = QGuiApplication.instance()
+        if gui_app is not None:
+            gui_app.screenAdded.connect(self._on_screen_added)
+            gui_app.screenRemoved.connect(self._on_screen_removed)
 
     def start(self) -> None:
         """Start application: connect transport and start 60Hz render timer.
