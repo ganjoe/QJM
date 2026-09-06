@@ -157,10 +157,10 @@ class WindowGeometry(msgspec.Struct):
     monitor: MonitorInfo | None = None
 
 
-class WindowSetup(msgspec.Struct):
+class WindowSetup(msgspec.Struct, kw_only=True):
     """A named window layout setup persisted to Supabase."""
-    id: str = ""
     setup_name: str
+    id: str = ""
     monitor_count: int = 1
     created_at: str = ""
     updated_at: str = ""

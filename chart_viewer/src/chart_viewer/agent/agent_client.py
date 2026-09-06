@@ -4,14 +4,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import urllib.request
 import urllib.error
+import urllib.parse
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from chart_viewer.transport.base import AgentTransport
 from chart_viewer.models.envelope import Envelope, MessageKind, make_envelope, create_message_id
 from chart_viewer.models.entities import WindowState, WindowGeometry, MonitorInfo
 
 logger = logging.getLogger(__name__)
+
+# Configurable timeouts and debounce intervals (via environment variables)
+CV_SUPABASE_TIMEOUT_SEC = float(os.environ.get("CV_SUPABASE_TIMEOUT_SEC", "10.0"))
+CV_AUTOSAVE_DEBOUNCE_SEC = float(os.environ.get("CV_AUTOSAVE_DEBOUNCE_SEC", "1.5"))
 
 # Supabase configuration (same as agent-pca shared.ts)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://host.docker.internal:8001")
@@ -25,16 +32,28 @@ SUPABASE_HEADERS = {
 }
 
 
+def _extract_url_error_msg(e: urllib.error.URLError) -> str:
+    """Extract informative error text from URLError / HTTPError."""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode(errors="replace")
+            return f"HTTP {e.code}: {e.reason} - {body}"
+        except Exception:
+            return f"HTTP {e.code}: {e.reason}"
+    return str(e)
+
+
 def _supabase_get(path: str) -> dict | list:
     """GET from Supabase REST API."""
     url = f"{SUPABASE_REST_URL}{path}"
     req = urllib.request.Request(url, headers=SUPABASE_HEADERS)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as e:
-        logger.error("Supabase GET %s failed: %s", url, e)
-        raise RuntimeError(f"Supabase unreachable: {e}") from e
+        msg = _extract_url_error_msg(e)
+        logger.error("Supabase GET %s failed: %s", url, msg)
+        raise RuntimeError(f"Supabase unreachable: {msg}") from e
 
 
 def _supabase_post(path: str, payload: dict) -> dict | list:
@@ -43,11 +62,12 @@ def _supabase_post(path: str, payload: dict) -> dict | list:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="POST")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as e:
-        logger.error("Supabase POST %s failed: %s", url, e)
-        raise RuntimeError(f"Supabase unreachable: {e}") from e
+        msg = _extract_url_error_msg(e)
+        logger.error("Supabase POST %s failed: %s", url, msg)
+        raise RuntimeError(f"Supabase unreachable: {msg}") from e
 
 
 def _supabase_patch(path: str, payload: dict) -> dict | list:
@@ -56,11 +76,12 @@ def _supabase_patch(path: str, payload: dict) -> dict | list:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="PATCH")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as e:
-        logger.error("Supabase PATCH %s failed: %s", url, e)
-        raise RuntimeError(f"Supabase unreachable: {e}") from e
+        msg = _extract_url_error_msg(e)
+        logger.error("Supabase PATCH %s failed: %s", url, msg)
+        raise RuntimeError(f"Supabase unreachable: {msg}") from e
 
 
 def _supabase_delete(path: str) -> None:
@@ -68,13 +89,12 @@ def _supabase_delete(path: str) -> None:
     url = f"{SUPABASE_REST_URL}{path}"
     req = urllib.request.Request(url, headers=SUPABASE_HEADERS, method="DELETE")
     try:
-        with urllib.request.urlopen(req):
+        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC):
             pass
     except urllib.error.URLError as e:
-        logger.error("Supabase DELETE %s failed: %s", url, e)
-        raise RuntimeError(f"Supabase unreachable: {e}") from e
-
-logger = logging.getLogger(__name__)
+        msg = _extract_url_error_msg(e)
+        logger.error("Supabase DELETE %s failed: %s", url, msg)
+        raise RuntimeError(f"Supabase unreachable: {msg}") from e
 
 
 class ChartAgent:
@@ -95,6 +115,9 @@ class ChartAgent:
         # Window Setup Management
         self.current_setup_name: str | None = None  # None → Autosave "default" active
         self._last_autosave_hash: str = ""  # Dedup hash to avoid redundant saves
+        self.screens: list[dict] = []
+        self._autosave_timer: threading.Timer | None = None
+        self._autosave_lock = threading.Lock()
 
     def start(self) -> None:
         self.transport.connect()
@@ -102,6 +125,24 @@ class ChartAgent:
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    def schedule_autosave(self) -> None:
+        """Schedule an asynchronous debounced autosave (non-blocking)."""
+        if self.current_setup_name is not None and self.current_setup_name != "default":
+            return
+        with self._autosave_lock:
+            if self._autosave_timer is not None:
+                self._autosave_timer.cancel()
+            self._autosave_timer = threading.Timer(CV_AUTOSAVE_DEBOUNCE_SEC, self._debounced_autosave_worker)
+            self._autosave_timer.daemon = True
+            self._autosave_timer.start()
+
+    def _debounced_autosave_worker(self) -> None:
+        """Worker thread executing the debounced autosave."""
+        try:
+            self.autosave_default()
+        except Exception as e:
+            logger.debug("Debounced autosave execution skipped: %s", e)
 
     def send_command(self, env: Envelope) -> None:
         """Send command with backoff retry if transport is not connected.
@@ -143,6 +184,10 @@ class ChartAgent:
 
         if envelope.type == "viewer.ready":
             self._handle_viewer_ready(envelope)
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            if "screens" in payload and isinstance(payload["screens"], list):
+                self.screens = payload["screens"]
+                logger.info("Agent recorded %d connected screens from viewer.ready", len(self.screens))
 
         elif envelope.type == "window.closed":
             win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
@@ -163,11 +208,8 @@ class ChartAgent:
                     "width": geom.get("width", 0),
                     "height": geom.get("height", 0),
                 }
-            # Trigger autosave on geometry changes
-            try:
-                self.autosave_default()
-            except Exception:
-                pass
+            # Trigger debounced autosave on geometry changes
+            self.schedule_autosave()
 
         elif envelope.type == "window.change_symbol":
             win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
@@ -192,12 +234,11 @@ class ChartAgent:
 
         elif envelope.type == "monitor.change":
             payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-            logger.info("Monitor %s: %d total screens now", payload.get("change_type"), payload.get("total_screens", 0))
-            # Trigger autosave to update "default" setup with new monitor count
-            try:
-                self.autosave_default()
-            except Exception as e:
-                logger.debug("Autosave on monitor change skipped: %s", e)
+            if "screens" in payload and isinstance(payload["screens"], list):
+                self.screens = payload["screens"]
+            logger.info("Monitor %s: %d total screens now", payload.get("change_type"), len(self.screens) or payload.get("total_screens", 0))
+            # Trigger debounced autosave to update "default" setup with new monitor count
+            self.schedule_autosave()
 
 
     def _handle_viewer_ready(self, envelope: Envelope) -> None:
@@ -502,6 +543,9 @@ class ChartAgent:
         if setup_name != "default":
             self.current_setup_name = setup_name
 
+        effective_monitors = monitor_infos if monitor_infos is not None else self.screens
+        monitor_count = len(effective_monitors) if effective_monitors else 1
+
         # Build window descriptors from layout_ledger + live geometries
         windows_list = []
         for win_id, win_info in self.layout_ledger.items():
@@ -509,10 +553,10 @@ class ChartAgent:
             win_type = "watchlist" if ("list_id" in win_info or win_id.startswith("wl_")) else "chart"
 
             monitor = None
-            if monitor_infos and geom:
+            if effective_monitors and geom:
                 cx = geom.get("x", 0) + geom.get("width", 0) // 2
                 cy = geom.get("y", 0) + geom.get("height", 0) // 2
-                for mi in monitor_infos:
+                for mi in effective_monitors:
                     mx, my, mw, mh = mi.get("x", 0), mi.get("y", 0), mi.get("width", 0), mi.get("height", 0)
                     if mx <= cx < mx + mw and my <= cy < my + mh:
                         monitor = mi
@@ -533,28 +577,30 @@ class ChartAgent:
                 "monitor": monitor,
             })
 
-        monitor_count = len(monitor_infos) if monitor_infos else 1
+        current_hash = self._build_geometry_snapshot(geometries, effective_monitors)
 
         if not force:
-            current_hash = self._build_geometry_snapshot(geometries, monitor_infos)
             if current_hash == self._last_autosave_hash and setup_name == "default":
                 logger.debug("Autosave skipped (unchanged geometry)")
                 return {"status": "ok", "setup_name": setup_name, "monitor_count": monitor_count,
                         "window_count": len(windows_list), "skipped": True}
 
-        # UPSERT via POST (Supabase REST: use on_conflict on unique columns)
+        # UPSERT via POST (Supabase REST: use on_conflict on unique columns + resolution=merge-duplicates)
         url = f"{SUPABASE_REST_URL}/pca_window_setups?on_conflict=setup_name,monitor_count"
         data = json.dumps({
             "setup_name": setup_name,
             "monitor_count": monitor_count,
             "windows": windows_list,
-            "updated_at": "now()",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).encode()
-        headers = {**SUPABASE_HEADERS}
+        headers = {
+            **SUPABASE_HEADERS,
+            "Prefer": "resolution=merge-duplicates,return=representation",
+        }
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
                 result = json.loads(resp.read().decode())
             logger.info("Setup '%s' saved (%d windows, %d monitors)", setup_name, len(windows_list), monitor_count)
 
@@ -564,22 +610,24 @@ class ChartAgent:
             return {"status": "ok", "setup_name": setup_name, "monitor_count": monitor_count,
                     "window_count": len(windows_list)}
         except urllib.error.URLError as e:
-            logger.error("Failed to save setup '%s': %s", setup_name, e)
-            raise RuntimeError(f"Failed to save setup: {e}") from e
+            msg = _extract_url_error_msg(e)
+            logger.error("Failed to save setup '%s': %s", setup_name, msg)
+            raise RuntimeError(f"Failed to save setup: {msg}") from e
 
     def autosave_default(self, geometries: dict | None = None, monitor_infos: list[dict] | None = None) -> None:
         """Trigger autosave to 'default' setup — only when current_setup_name is None or 'default'."""
         if self.current_setup_name is not None and self.current_setup_name != "default":
             return  # Autosave disabled for loaded named setups
+        monitors = monitor_infos if monitor_infos is not None else self.screens
         try:
-            self.save_setup("default", geometries=geometries, monitor_infos=monitor_infos)
+            self.save_setup("default", geometries=geometries, monitor_infos=monitors)
         except Exception as e:
             logger.warning("Autosave failed: %s", e)
 
     def load_setup(
         self,
         setup_name: str,
-        current_monitor_count: int = 1,
+        current_monitor_count: int | None = None,
     ) -> dict:
         """Load a window setup from Supabase.
 
@@ -591,6 +639,8 @@ class ChartAgent:
         """
         if not setup_name:
             raise ValueError("setup_name is required")
+
+        target_monitors = current_monitor_count if current_monitor_count is not None else (len(self.screens) or 1)
 
         # Query all variants for this setup_name
         try:
@@ -609,7 +659,7 @@ class ChartAgent:
             best = None
             best_diff = 999
             for row in rows:
-                diff = abs(row.get("monitor_count", 1) - current_monitor_count)
+                diff = abs(row.get("monitor_count", 1) - target_monitors)
                 if diff < best_diff:
                     best_diff = diff
                     best = row
@@ -630,17 +680,17 @@ class ChartAgent:
             size = w.get("size", {"width": 900, "height": 600})
 
             # Remap position if monitor count differs
-            if src_monitor_count != current_monitor_count and current_monitor_count > 0:
+            if src_monitor_count != target_monitors and target_monitors > 0:
                 # If more source monitors than current, redistribute
                 src_mon = w.get("monitor", {})
                 src_idx = src_mon.get("index", 0) if src_mon else (i % src_monitor_count)
 
-                if src_idx >= current_monitor_count:
+                if src_idx >= target_monitors:
                     # Window was on a monitor that doesn't exist → distribute
-                    target_idx = i % current_monitor_count
+                    target_idx = i % target_monitors
                     # Apply cascade offset for multiple windows on same monitor
-                    cascade_x = (i // current_monitor_count) * 40
-                    cascade_y = (i // current_monitor_count) * 40
+                    cascade_x = (i // target_monitors) * 40
+                    cascade_y = (i // target_monitors) * 40
                     if isinstance(pos, dict):
                         pos = {"x": pos.get("x", 100) + cascade_x,
                                "y": pos.get("y", 100) + cascade_y}
@@ -655,15 +705,15 @@ class ChartAgent:
 
         logger.info(
             "Setup '%s' loaded: %d windows (source_monitors=%d, current=%d, diff=%d)",
-            setup_name, len(windows), src_monitor_count, current_monitor_count,
-            abs(src_monitor_count - current_monitor_count),
+            setup_name, len(windows), src_monitor_count, target_monitors,
+            abs(src_monitor_count - target_monitors),
         )
 
         return {
             "status": "ok",
             "action": "LOAD_SETUP",
             "setup_name": row.get("setup_name", setup_name),
-            "monitor_count": current_monitor_count,
+            "monitor_count": target_monitors,
             "source_monitor_count": src_monitor_count,
             "windows": windows_to_open,
             "close_existing": True,  # Close windows not in setup
@@ -720,7 +770,7 @@ class ChartAgent:
             encoded_name = urllib.parse.quote(setup_name)
             _supabase_patch(
                 f"/pca_window_setups?setup_name=eq.{encoded_name}",
-                {"setup_name": new_setup_name, "updated_at": "now()"},
+                {"setup_name": new_setup_name, "updated_at": datetime.now(timezone.utc).isoformat()},
             )
             logger.info("Renamed setup '%s' → '%s'", setup_name, new_setup_name)
 

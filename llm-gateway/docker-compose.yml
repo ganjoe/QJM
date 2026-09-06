@@ -197,6 +197,10 @@ services:
     environment:
       - PCA_SERVICE_URL=http://pca-service:8791
       - CV_CHART_LIMIT=2000
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - CV_AUTOSAVE_DEBOUNCE_SEC=${CV_AUTOSAVE_DEBOUNCE_SEC:-1.5}
+      - CV_SUPABASE_TIMEOUT_SEC=${CV_SUPABASE_TIMEOUT_SEC:-10.0}
     volumes:
       - ../chart_viewer/src:/app/src:ro
       - ../chart_viewer/run_server.py:/app/run_server.py:ro

@@ -324,8 +324,70 @@ def main():
                                 import time
                                 from chart_viewer.config import ViewerConfig
                                 server_config = ViewerConfig.from_env()
-                                # ... screenshot handling omitted for brevity, see original code
-                                result = {"error": "SCREENSHOT handler needs original code"}
+
+                                is_hires = bool(
+                                    cmd.get("hires")
+                                    or cmd.get("resolution") in ("hires", "800x600")
+                                    or cmd.get("mode") == "hires"
+                                )
+                                default_w = server_config.screenshot_hires_width if is_hires else server_config.screenshot_width
+                                default_h = server_config.screenshot_hires_height if is_hires else server_config.screenshot_height
+
+                                timeout = float(cmd.get("timeout_sec", server_config.screenshot_timeout_sec))
+                                width = int(cmd.get("width", default_w))
+                                height = int(cmd.get("height", default_h))
+                                mode = cmd.get("mode", server_config.screenshot_mode)
+                                sharpen_amount = float(cmd.get("sharpen_amount", server_config.screenshot_sharpen_amount))
+                                out_dir = cmd.get("output_dir", server_config.screenshot_output_dir)
+
+                                os.makedirs(out_dir, exist_ok=True)
+
+                                snap_res = agent.request_screenshots(
+                                    window_id=win_id,
+                                    width=width,
+                                    height=height,
+                                    mode=mode,
+                                    timeout_s=timeout,
+                                    sharpen_amount=sharpen_amount,
+                                    hires=is_hires,
+                                )
+
+
+                                capture_id = snap_res.get("request_id", f"snap_{int(time.time())}")
+                                saved_files = []
+
+                                for s in snap_res.get("screenshots", []):
+                                    w_id = s.get("window_id", "win")
+                                    b64_data = s.get("image_base64", "")
+                                    if not b64_data:
+                                        continue
+
+                                    clean_win_id = str(w_id).replace(":", "_").replace("/", "_").replace("\\", "_")
+                                    filename = f"screenshot_{capture_id}_{clean_win_id}.png"
+                                    filepath = os.path.join(out_dir, filename)
+
+                                    img_bytes = base64.b64decode(b64_data)
+                                    with open(filepath, "wb") as f:
+                                        f.write(img_bytes)
+
+                                    saved_files.append({
+                                        "window_id": w_id,
+                                        "symbol": s.get("symbol", ""),
+                                        "filename": filename,
+                                        "filepath": filepath,
+                                        "width": s.get("width", width),
+                                        "height": s.get("height", height),
+                                        "bytes": len(img_bytes),
+                                    })
+
+                                result = {
+                                    "status": "ok",
+                                    "action": action,
+                                    "capture_id": capture_id,
+                                    "count": len(saved_files),
+                                    "output_dir": out_dir,
+                                    "files": saved_files,
+                                }
                             except Exception as se:
                                 logger.error(f"Screenshot failed: {se}")
                                 result = {"error": f"Screenshot failed: {str(se)}"}
@@ -348,83 +410,99 @@ def main():
                         if not setup_name:
                             result = {"error": "Missing 'setup_name' parameter"}
                         else:
-                            try:
-                                from PySide6.QtGui import QGuiApplication
-                                current_monitors = len(QGuiApplication.screens())
-                            except Exception:
-                                current_monitors = 1
+                            current_monitors = len(agent.screens) if agent.screens else 1
 
                             try:
                                 load_result = agent.load_setup(setup_name, current_monitor_count=current_monitors)
                                 windows_to_open = load_result.get("windows", [])
-                                close_existing = load_result.get("close_existing", True)
+                                if not windows_to_open:
+                                    result = {"error": f"Setup '{setup_name}' contains no windows to load"}
+                                else:
+                                    close_existing = load_result.get("close_existing", True)
 
-                                existing_chart_ids = set(agent.layout_ledger.keys())
-                                keep_ids = set()
-                                mapping = {}
+                                    # Separate existing windows by type to prevent type confusion
+                                    existing_charts = [
+                                        wid for wid, win in agent.layout_ledger.items()
+                                        if "list_id" not in win and not wid.startswith("wl_")
+                                    ]
+                                    existing_watchlists = [
+                                        wid for wid, win in agent.layout_ledger.items()
+                                        if "list_id" in win or wid.startswith("wl_")
+                                    ]
+                                    all_existing_ids = set(agent.layout_ledger.keys())
+                                    keep_ids = set()
+                                    mapping = {}
 
-                                remaining_chart = list(existing_chart_ids)
+                                    for w in windows_to_open:
+                                        w_type = w.get("window_type", "chart")
+                                        logical_id = w.get("window_id", "")
+                                        pos = w.get("position", {})
+                                        size = w.get("size", {})
 
-                                for w in windows_to_open:
-                                    w_type = w.get("window_type", "chart")
-                                    logical_id = w.get("window_id", "")
+                                        if w_type == "chart":
+                                            if existing_charts:
+                                                reuse_id = existing_charts.pop(0)
+                                                mapping[logical_id] = reuse_id
+                                                keep_ids.add(reuse_id)
+                                            else:
+                                                import uuid
+                                                new_id = f"win_{uuid.uuid4().hex[:8]}"
+                                                mapping[logical_id] = new_id
+                                                keep_ids.add(new_id)
 
-                                    if remaining_chart:
-                                        reuse_id = remaining_chart.pop(0)
-                                        mapping[logical_id] = reuse_id
-                                        keep_ids.add(reuse_id)
-                                    else:
-                                        import uuid
-                                        new_id = f"win_{uuid.uuid4().hex[:8]}"
-                                        mapping[logical_id] = new_id
-                                        keep_ids.add(new_id)
-
-                                    actual_id = mapping[logical_id]
-                                    pos = w.get("position", {})
-                                    size = w.get("size", {})
-
-                                    if w_type == "chart":
-                                        agent.open_window(
-                                            window_id=actual_id,
-                                            symbol="CHART",
-                                            position=pos if pos else None,
-                                            size=size if size else None,
-                                        )
-                                        if actual_id in agent.layout_ledger:
-                                            agent.layout_ledger[actual_id]["color_flag"] = w.get("color_flag", 0)
-                                    else:
-                                        agent.open_watchlist(
-                                            list_id=actual_id,
-                                            display_name=actual_id,
-                                            columns=[],
-                                            rows=[],
-                                            color_flag=w.get("color_flag", 0),
-                                            position=pos if pos else None,
-                                            size=size if size else None,
-                                        )
-
-                                if close_existing:
-                                    for wid in list(existing_chart_ids):
-                                        if wid not in keep_ids:
-                                            agent.layout_ledger.pop(wid, None)
-                                            from chart_viewer.models.envelope import make_envelope, MessageKind
-                                            close_env = make_envelope(
-                                                msg_type="window.command",
-                                                payload={"command": "close"},
-                                                kind=MessageKind.COMMAND,
-                                                window_id=wid,
+                                            actual_id = mapping[logical_id]
+                                            agent.open_window(
+                                                window_id=actual_id,
+                                                symbol="CHART",
+                                                position=pos if pos else None,
+                                                size=size if size else None,
                                             )
-                                            server_transport.send_command(close_env)
+                                            if actual_id in agent.layout_ledger:
+                                                agent.layout_ledger[actual_id]["color_flag"] = w.get("color_flag", 0)
+                                        else:
+                                            if existing_watchlists:
+                                                reuse_id = existing_watchlists.pop(0)
+                                                mapping[logical_id] = reuse_id
+                                                keep_ids.add(reuse_id)
+                                            else:
+                                                import uuid
+                                                new_id = f"wl_{uuid.uuid4().hex[:8]}"
+                                                mapping[logical_id] = new_id
+                                                keep_ids.add(new_id)
 
-                                agent.current_setup_name = setup_name
+                                            actual_id = mapping[logical_id]
+                                            agent.open_watchlist(
+                                                list_id=actual_id,
+                                                display_name=actual_id,
+                                                columns=[],
+                                                rows=[],
+                                                color_flag=w.get("color_flag", 0),
+                                                position=pos if pos else None,
+                                                size=size if size else None,
+                                            )
 
-                                result = {
-                                    "status": "ok",
-                                    "action": "LOAD_SETUP",
-                                    "setup_name": setup_name,
-                                    "mapping": mapping,
-                                    "windows_opened": len(windows_to_open),
-                                }
+                                    if close_existing:
+                                        for wid in list(all_existing_ids):
+                                            if wid not in keep_ids:
+                                                agent.layout_ledger.pop(wid, None)
+                                                from chart_viewer.models.envelope import make_envelope, MessageKind
+                                                close_env = make_envelope(
+                                                    msg_type="window.command",
+                                                    payload={"command": "close"},
+                                                    kind=MessageKind.COMMAND,
+                                                    window_id=wid,
+                                                )
+                                                server_transport.send_command(close_env)
+
+                                    agent.current_setup_name = setup_name
+
+                                    result = {
+                                        "status": "ok",
+                                        "action": "LOAD_SETUP",
+                                        "setup_name": setup_name,
+                                        "mapping": mapping,
+                                        "windows_opened": len(windows_to_open),
+                                    }
                             except Exception as e:
                                 logger.error(f"LOAD_SETUP failed: {e}")
                                 result = {"error": str(e)}

@@ -83,6 +83,7 @@ class ViewerApp(QObject):
             payload={
                 "protocol_version": self.config.protocol_version,
                 "screen_info": screen_info,
+                "screens": self.get_monitor_info(),
             },
             kind=MessageKind.EVENT,
         )
@@ -251,6 +252,19 @@ class ViewerApp(QObject):
                 win.resize(size["width"], size["height"])
 
             win.show()
+        else:
+            # Reusing existing window: reposition and resize
+            win = self.windows[win_id]
+            pos = payload.get("position")
+            if pos and "x" in pos and "y" in pos:
+                win.move(pos["x"], pos["y"])
+            size = payload.get("size")
+            if size and "width" in size and "height" in size:
+                win.resize(size["width"], size["height"])
+            if symbol and symbol != "CHART":
+                win.symbol = symbol
+            win.show()
+            win.raise_()
 
         self._send_ack(message_id)
 
@@ -284,6 +298,17 @@ class ViewerApp(QObject):
                 win.resize(size["width"], size["height"])
 
             win.show()
+        else:
+            # Reusing existing watchlist: reposition and resize
+            win = self.watchlists[win_id]
+            pos = payload.get("position")
+            if pos and "x" in pos and "y" in pos:
+                win.move(pos["x"], pos["y"])
+            size = payload.get("size")
+            if size and "width" in size and "height" in size:
+                win.resize(size["width"], size["height"])
+            win.show()
+            win.raise_()
 
         self._send_ack(message_id)
 
@@ -639,6 +664,7 @@ class ViewerApp(QObject):
                     "y": screen.geometry().y(),
                 },
                 "total_screens": len(QGuiApplication.screens()),
+                "screens": self.get_monitor_info(),
             },
             kind=MessageKind.EVENT,
         )

@@ -27,3 +27,6 @@ CREATE POLICY "Service role full access"
     TO service_role
     USING (true)
     WITH CHECK (true);
+
+-- Explicitly grant permissions to API roles
+GRANT ALL ON TABLE pca_window_setups TO service_role, anon;
