@@ -10,7 +10,12 @@ Always select the most specific tool for the task. Follow these strict disambigu
 
 ### A. Technical Analysis & Chart Data (`openbrain-pca`)
 * **`get_timeseries`**: Use for **historical daily OHLCV candlestick data and precalculated features** (MAs, Bollinger, Minervini score, ADR20, RS rating). Reads directly from ultra-fast local Parquet storage.
+  * *Broad Market Breadth*: Query `ticker: "$STATS.MARKET_BREADTH"` to get the universe-wide percentage and count of stocks above their 50 SMA, along with signed `days_back` (+34 = 34-day High, -34 = 34-day Low).
+  * *Market Conditions Rule*: When assessing market conditions using `$STATS.MARKET_BREADTH`:
+    - A **Breadth Low** (e.g. `days_back` is negative like -30 or percentage < 25-30%) has **vastly greater predictive weight as a buying opportunity** (market breadth washout / oversold mean-reversion).
+    - A **Breadth High** (e.g. `days_back` is positive like +30 or percentage > 75%) indicates healthy bullish participation, but is **NOT a reliable top indicator** (bull markets can stay overbought for extended periods).
   * *Constraint*: Do NOT use for live real-time intraday quotes (use `get_quote` in PTA).
+
 * **`calculate_indicator`**: Use for **custom on-the-fly technical indicator calculations** (SMA, EMA, BOLLINGER, STOCHASTIC) with custom lookbacks (e.g. 21 EMA) or batch arrays (e.g. `periods: [10, 20, 50, 200]`).
   * *Constraint*: For standard daily 50/200 MAs or Minervini scores, prefer `get_timeseries`.
 * **`run_technical_scanner`**: Use to **scan or screen a list of tickers for technical patterns**.
@@ -91,8 +96,11 @@ Always select the most specific tool for the task. Follow these strict disambigu
    → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
 9. **"Close the NVDA chart window."**
    → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
+10. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
+   → Call `get_timeseries(ticker: "$STATS.MARKET_BREADTH", limit: 30)` to inspect percentage, count, and signed `days_back` (remember: breadth lows have high predictive weight for market rebounds, whereas highs confirm bull trends but are not reliable top indicators).
 
 ---
+
 
 ## 3. Communication & Output Guidelines
 
