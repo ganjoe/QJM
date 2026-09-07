@@ -1,7 +1,7 @@
 {
   "mode": "supabase_registered",
   "provider": "twitterapi",
-  "updatedAt": "2026-09-07T21:15:18.715Z",
+  "updatedAt": "2026-09-07T21:15:18.679Z",
   "totalApiCalls": 87,
   "totalProfilesFetched": 41222,
   "estimatedCostUsd": 0.4122200000000003,

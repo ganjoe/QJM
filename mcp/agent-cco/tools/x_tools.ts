@@ -6,12 +6,15 @@ import {
   getEmbedding,
   getEmbeddingsBatch,
   X_BEARER_TOKEN,
+  X_CLIENT_ID,
   AGENT_ID,
   GLOBAL_BRAIN_ACCESS,
   resolveAuthorHandles,
   getXOAuthTokens,
   getValidXUserAccessToken,
   throttledXFetch,
+  twitterApiIoFetch,
+  isTwitterApiIoAvailable,
 } from "./shared.ts";
 import {
   activeSyncControllers,
@@ -193,22 +196,24 @@ export function registerXTools(server: McpServer) {
           return { content: [{ type: "text", text: `${data.length} Posts gefunden:\n\n${formatted}` }] };
         } else if (action === "ONLINE") {
           if (!tweet_id) throw new Error("tweet_id ist für ONLINE erforderlich");
-          if (!X_BEARER_TOKEN) throw new Error("X_BEARER_TOKEN ist nicht konfiguriert");
+          if (!isTwitterApiIoAvailable()) throw new Error(
+            "❌ TwitterAPI.io ist nicht konfiguriert (TWITTER_API_IO_KEY fehlt). " +
+            "Einzel-Tweet-Lookup für fremde Profile ist nur mit TwitterAPI.io möglich. " +
+            "Prüfe den Status mit 'manage_sync_pipeline STATUS'."
+          );
 
           let id = tweet_id;
           const urlMatch = tweet_id.match(/status\/(\d+)/);
           if (urlMatch) id = urlMatch[1];
 
-          const res = await throttledXFetch(`https://api.twitter.com/2/tweets/${id}?tweet.fields=created_at,author_id,entities`, {
-            headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` }
-          });
-          if (!res.ok) throw new Error(`X API failed: ${res.status}`);
-          const data = await res.json();
-          if (!data.data) throw new Error("Tweet not found");
+          const json = await twitterApiIoFetch("tweets", { tweet_ids: id });
+          const tweets: any[] = json.tweets || [];
+          if (!tweets[0]) throw new Error("Tweet nicht gefunden");
 
-          const tweet = data.data;
-          const dateStr = tweet.created_at ? new Date(tweet.created_at).toLocaleString('de-DE') : 'Unbekanntes Datum';
-          return { content: [{ type: "text", text: `📅 ${dateStr} | Author ID: ${tweet.author_id}\n\n${tweet.text}` }] };
+          const tweet = tweets[0];
+          const author = tweet.author?.userName || tweet.author?.name || "Unbekannt";
+          const dateStr = tweet.createdAt ? new Date(tweet.createdAt).toLocaleString('de-DE') : 'Unbekanntes Datum';
+          return { content: [{ type: "text", text: `📅 ${dateStr} | 👤 @${author}\n\n${tweet.text}` }] };
         }
 
         throw new Error("Invalid action");
@@ -240,17 +245,18 @@ export function registerXTools(server: McpServer) {
           return { content: [{ type: "text", text: `Hier sind alle überwachten Influencer:\n\n${formatted}` }] };
         } else if (action === "ADD") {
           if (!username) throw new Error("username ist für ADD erforderlich");
+          if (!isTwitterApiIoAvailable()) throw new Error(
+            "❌ TwitterAPI.io ist nicht konfiguriert (TWITTER_API_IO_KEY fehlt). " +
+            "Influencer können nicht hinzugefügt werden. " +
+            "Prüfe den Status mit 'manage_sync_pipeline STATUS'."
+          );
           const cleanName = username.startsWith("@") ? username.substring(1).toLowerCase() : username.toLowerCase();
 
-          const res = await throttledXFetch(`https://api.twitter.com/2/users/by/username/${cleanName}`, {
-            headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` }
-          });
-          if (!res.ok) throw new Error(`X API failed to resolve user: ${res.status}`);
-          const data = await res.json();
-          if (!data.data?.id) throw new Error(`User @${username} nicht auf X gefunden.`);
+          const json = await twitterApiIoFetch("user/info", { userName: cleanName });
+          if (!json.id) throw new Error(`User @${username} nicht auf X gefunden (TwitterAPI.io).`);
 
-          const userId = data.data.id;
-          const screenName = data.data.name;
+          const userId = json.id;
+          const screenName = json.name;
           const embedText = `username: ${cleanName} screen_name: ${screenName} notes: ${notes || ''}`;
           const embedding = (await getEmbeddingsBatch([embedText]))[0];
 
@@ -434,28 +440,40 @@ export function registerXTools(server: McpServer) {
         }
 
         if (action === "STATUS") {
+          const twitterApiIoStatus = isTwitterApiIoAvailable() 
+            ? "🟢 aktiv (fremde Profile)" 
+            : "🔴 nicht konfiguriert (TWITTER_API_IO_KEY fehlt)";
+
+          const xApiStatus = X_CLIENT_ID
+            ? (isConnected && tokens
+                ? "🟢 aktiv (eigener Account: OAuth + Bookmarks)"
+                : "🟡 OAuth nicht autorisiert – Login nötig")
+            : "🔴 nicht konfiguriert (X_CLIENT_ID fehlt)";
+
+          const statusLines = [
+            `📊 **Provider-Status**`,
+            ``,
+            `| Provider | Status |`,
+            `|----------|--------|`,
+            `| TwitterAPI.io (fremde Profile: User-Resolution, Timeline, Tweets) | ${twitterApiIoStatus} |`,
+            `| Offizielle X API (eigener Account: Bookmarks, OAuth) | ${xApiStatus} |`,
+          ];
+
           if (!isConnected || !tokens) {
-            return {
-              content: [{
-                type: "text",
-                text: `🔴 X OAuth 2.0 ist noch NICHT autorisiert.\n\nÖffne folgenden Link im Browser:\n👉 http://127.0.0.1:8788/auth/x/login`
-              }]
-            };
+            statusLines.push(``);
+            statusLines.push(`🔴 X OAuth 2.0 ist noch NICHT autorisiert.`);
+            statusLines.push(`👉 Öffne: http://127.0.0.1:8788/auth/x/login`);
+            statusLines.push(``);
+            statusLines.push(`Hinweis: Nur Bookmarks & OAuth benötigen die offizielle X API.`);
+            statusLines.push(`Fremde Profile (Influencer-Timeline etc.) laufen über TwitterAPI.io.`);
+          } else {
+            const expiresInMinutes = Math.round((tokens.expires_at - Date.now()) / 60000);
+            const expiryText = expiresInMinutes > 0 ? `in ${expiresInMinutes} Minuten` : "Abgelaufen (Auto-Refresh aktiv)";
+            statusLines.push(``);
+            statusLines.push(`🟢 OAuth verbunden: @${tokens.username || '?'} (${tokens.name || 'N/A'}) | Token: ${expiryText}`);
           }
 
-          const expiresInMinutes = Math.round((tokens.expires_at - Date.now()) / 60000);
-          const expiryText = expiresInMinutes > 0 ? `in ${expiresInMinutes} Minuten (Auto-Refresh aktiv)` : "Abgelaufen (Auto-Refresh aktiv)";
-
-          return {
-            content: [{
-              type: "text",
-              text: `🟢 X OAuth 2.0 ist erfolgreich VERBUNDEN!\n\n` +
-                `👤 Account: @${tokens.username || 'Unbekannt'} (${tokens.name || 'N/A'})\n` +
-                `🆔 User ID: ${tokens.user_id || 'N/A'}\n` +
-                `🔑 Scopes: ${tokens.scope || 'Standard'}\n` +
-                `⏳ Token: ${expiryText}`
-            }]
-          };
+          return { content: [{ type: "text", text: statusLines.join("\n") }] };
         }
 
         throw new Error("Invalid action");
@@ -477,6 +495,22 @@ export function registerXTools(server: McpServer) {
     },
     async ({ limit }: any) => {
       try {
+        const tokens = await getXOAuthTokens();
+        if (!tokens || !tokens.access_token) {
+          throw new Error(
+            "❌ Bookmarks-Sync benötigt die offizielle X API für deinen eigenen Account. " +
+            "X OAuth ist nicht autorisiert – öffne http://127.0.0.1:8788/auth/x/login im Browser. " +
+            "Hinweis: Fremde Profile laufen über TwitterAPI.io (TWITTER_API_IO_KEY)."
+          );
+        }
+        if (!X_CLIENT_ID) {
+          throw new Error(
+            "❌ X_CLIENT_ID fehlt in der .env. " +
+            "Bookmarks & OAuth benötigen die offizielle X API (eigener Account). " +
+            "Fremde Profile laufen über TwitterAPI.io (TWITTER_API_IO_KEY)."
+          );
+        }
+
         const { access_token, user_id } = await getValidXUserAccessToken();
         if (!user_id) throw new Error("Keine User ID gefunden. Bitte neu autorisieren: http://127.0.0.1:8788/auth/x/login");
 

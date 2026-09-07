@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { WorkerManager } from "../workers/worker_manager.ts";
-import { supabase } from "./shared.ts";
+import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY } from "./shared.ts";
 
 export function registerPipelineTools(server: McpServer) {
   const manager = WorkerManager.getInstance();
@@ -31,6 +31,10 @@ export function registerPipelineTools(server: McpServer) {
           const status = await manager.getStatus();
           const lines = [
             `=== CCO Sync & Embedding Pipeline Status ===`,
+            ``,
+            `🔑 API-Provider:`,
+            `  • TwitterAPI.io (fremde Profile): ${isTwitterApiIoAvailable() ? '🟢 aktiv' : '🔴 NICHT KONFIGURIERT (TWITTER_API_IO_KEY fehlt)'}`,
+            `  • Offizielle X API (Bookmarks/OAuth): ${X_CLIENT_ID ? '🟢 konfiguriert' : '🔴 nicht konfiguriert (X_CLIENT_ID fehlt)'}`,
             ``,
             `📊 X-Posts (agent_workspace):`,
             `  • In Bearbeitung (Metadaten): ${status.backlog.x_posts.stage_1_pending_metadata} Posts`,

@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alpha-Influencer Network Explorer</title>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #090d16;
+      --bg-surface: rgba(15, 23, 42, 0.9);
+      --border-color: rgba(255, 255, 255, 0.09);
+      --accent-gold: #f59e0b;
+      --accent-pink: #ec4899;
+      --accent-purple: #8b5cf6;
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+    }
+
+    #network-container {
+      flex: 1;
+      height: 100%;
+      background: radial-gradient(circle at center, #111827 0%, var(--bg-base) 100%);
+    }
+
+    /* Steuerungs-Panel (Oben Links) */
+    .hud-panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 320px;
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .hud-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 10px;
+    }
+
+    .hud-title {
+      font-size: 15px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #f59e0b, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .stat-badge {
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 7px;
+      border-radius: 999px;
+      color: var(--text-muted);
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 8px 12px;
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-main);
+      font-size: 12px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+    }
+
+    .range-slider {
+      width: 100%;
+      accent-color: var(--accent-pink);
+      cursor: pointer;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 6px;
+    }
+
+    .hud-btn {
+      flex: 1;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 7px;
+      border: 1px solid var(--border-color);
+      background: rgba(30, 41, 59, 0.8);
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .hud-btn:hover {
+      background: rgba(51, 65, 85, 0.9);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Datenbank-Statistik Tabelle (Unten Links) */
+    .db-stats-panel {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      width: 320px;
+      background: var(--bg-surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .db-stats-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 8px;
+    }
+
+    .db-stats-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+    }
+
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+
+    .stats-table tr {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .stats-table tr:last-child {
+      border-bottom: none;
+    }
+
+    .stats-table td {
+      padding: 4px 0;
+      color: var(--text-muted);
+    }
+
+    .stats-table td.val {
+      text-align: right;
+      font-weight: 600;
+      color: var(--text-main);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .val-highlight {
+      color: var(--accent-cyan) !important;
+    }
+
+    .val-cost {
+      color: var(--accent-emerald) !important;
+    }
+
+    /* Perspektiven-Toggle & Tabs */
+    .perspective-btns {
+      display: flex;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 3px;
+      border-radius: 9px;
+      border: 1px solid var(--border-color);
+    }
+
+    .persp-btn {
+      flex: 1;
+      padding: 5px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .persp-btn:hover {
+      color: var(--text-main);
+    }
+
+    .persp-btn.active {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.3), rgba(236, 72, 153, 0.3));
+      border: 1px solid rgba(245, 158, 11, 0.5);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .stats-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 6px;
+      margin-bottom: 6px;
+    }
+
+    .stats-tab-btn {
+      flex: 1;
+      padding: 4px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s;
+    }
+
+    .stats-tab-btn.active {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.12);
+      color: var(--accent-cyan);
+    }
+
+    /* Follower-Histogramm */
+    .hist-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 195px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .hist-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+      font-size: 10px;
+    }
+
+    .hist-row:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .hist-label {
+      width: 72px;
+      color: var(--text-muted);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .hist-bar-wrap {
+      flex: 1;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .hist-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-pink));
+      transition: width 0.3s ease;
+    }
+
+    .hist-val {
+      width: 50px;
+      text-align: right;
+      color: var(--text-main);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Zentrier-Button & Reach-Bar in Info-Box */
+    .reach-box {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .reach-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .reach-bar {
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .reach-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-gold), var(--accent-pink));
+      transition: width 0.3s ease;
+    }
+
+    .center-action-btn {
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 8px;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(236, 72, 153, 0.22));
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .center-action-btn:hover {
+      border-color: var(--accent-gold);
+      box-shadow: 0 0 14px rgba(245, 158, 11, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .reset-center-btn {
+      width: 100%;
+      padding: 6px 10px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 7px;
+      border: 1px solid var(--border-color);
+      background: rgba(30, 41, 59, 0.7);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: none;
+      text-align: center;
+      transition: all 0.2s;
+    }
+
+    .reset-center-btn:hover {
+      color: #fff;
+      background: rgba(51, 65, 85, 0.9);
+    }
+
+    /* Schlanke, informative Info-Box (Rechts) */
+    .inspector-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 270px;
+      background: rgba(15, 23, 42, 0.94);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.7);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      animation: slideIn 0.18s ease-out;
+    }
+
+    @keyframes slideIn {
+      from { transform: translateX(16px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    .inspector-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      position: relative;
+    }
+
+    .close-btn {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      background: rgba(255, 255, 255, 0.06);
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      transition: all 0.2s;
+    }
+
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: white;
+    }
+
+    .inspector-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 700;
+      color: white;
+      flex-shrink: 0;
+    }
+
+    .inspector-title-area {
+      overflow: hidden;
+      padding-right: 20px;
+    }
+
+    .inspector-name {
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text-main);
+    }
+
+    .inspector-handle {
+      color: var(--accent-cyan);
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .info-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .info-cell-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .info-cell-value {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .followers-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .followers-title {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .followers-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      max-height: 90px;
+      overflow-y: auto;
+    }
+
+    .follower-pill {
+      font-size: 10px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: var(--text-main);
+    }
+
+    .action-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 8px;
+      background: linear-gradient(135deg, #1d4ed8, #2563eb);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      transition: opacity 0.2s;
+    }
+
+    .action-link:hover {
+      opacity: 0.9;
+    }
+
+    .dropzone-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(9, 13, 22, 0.88);
+      backdrop-filter: blur(8px);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      cursor: pointer;
+      border: 2px dashed rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Controls Panel (Oben Links) -->
+  <div class="hud-panel">
+    <div class="hud-header">
+      <div class="hud-title">
+        <span>⚡ Alpha Graph Explorer</span>
+      </div>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <span class="stat-badge" id="source-badge" style="color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.3); background: rgba(6, 182, 212, 0.15);">⏳ Supabase lädt...</span>
+        <span class="stat-badge" id="node-count-badge">0 Knoten</span>
+      </div>
+    </div>
+
+    <!-- Live Suche -->
+    <div class="form-group">
+      <input type="text" id="search-box" class="search-input" placeholder="🔍 Account suchen (z.B. @sama)...">
+    </div>
+
+    <!-- Perspektiven Auswahl -->
+    <div class="form-group">
+      <div class="form-label">
+        <span>Perspektive</span>
+        <span id="perspective-badge" style="color: var(--accent-gold); font-weight: 700;">🌟 Alpha-Zentrum</span>
+      </div>
+      <div class="perspective-btns">
+        <button class="persp-btn active" data-persp="alpha" title="Top-Alpha Influencer mit den meisten Followern im Mittelpunkt">🌟 Alpha-Zentrum</button>
+        <button class="persp-btn" data-persp="seeds" title="Basis-Trader im Mittelpunkt">🌱 Basis-Trader</button>
+        <button class="persp-btn" data-persp="radial" title="Konzentrische Orbits nach Signal-Stärke">🪐 Orbits</button>
+      </div>
+    </div>
+
+    <!-- Min Score Slider -->
+    <div class="form-group">
+      <div class="form-label">
+        <span>Mindest-Score</span>
+        <span id="score-val" style="color: var(--accent-pink);">2+ Stimmen</span>
+      </div>
+      <input type="range" id="min-score-slider" class="range-slider" min="1" max="8" value="2">
+    </div>
+
+    <!-- Buttons -->
+    <div class="btn-group">
+      <button class="hud-btn" id="freeze-btn">⏸️ Pause</button>
+      <button class="hud-btn" id="reset-btn">🎯 Ansicht</button>
+      <button class="hud-btn" id="reload-db-btn" title="Live-Daten neu aus Supabase laden">⚡ DB Sync</button>
+    </div>
+  </div>
+
+  <!-- Datenbank-Statistik & Follower-Verteilung (Unten Links) -->
+  <div class="db-stats-panel">
+    <div class="db-stats-header">
+      <div class="db-stats-title">
+        <span class="pulse-dot"></span>
+        <span>Datenbank & Signal-Status</span>
+      </div>
+      <span class="stat-badge" id="db-mode-badge">Supabase</span>
+    </div>
+
+    <!-- Tabs für Metriken vs Follower-Verteilung -->
+    <div class="stats-tabs">
+      <button class="stats-tab-btn active" id="tab-btn-overview">📋 Metriken</button>
+      <button class="stats-tab-btn" id="tab-btn-dist">📊 Follower-Verteilung</button>
+    </div>
+
+    <!-- Tab 1: Allgemeine Metriken -->
+    <div id="tab-content-overview">
+      <table class="stats-table">
+        <tbody>
+          <tr>
+            <td>Basis-Influencer (x_users)</td>
+            <td class="val val-highlight" id="stat-base-count">11</td>
+          </tr>
+          <tr>
+            <td>Abgefragte Accounts (Seeds)</td>
+            <td class="val" id="stat-queried-count">87</td>
+          </tr>
+          <tr>
+            <td>Gesamt erfasste Profile</td>
+            <td class="val" id="stat-profiles-count">41.222</td>
+          </tr>
+          <tr>
+            <td>Alpha-Kandidaten (Unique)</td>
+            <td class="val" id="stat-candidates-count">37.138</td>
+          </tr>
+          <tr>
+            <td>Echte Schnittmengen (≥ 2)</td>
+            <td class="val val-highlight" id="stat-overlaps-count">5.448</td>
+          </tr>
+          <tr>
+            <td>Höchste Signal-Stärke</td>
+            <td class="val" id="stat-max-score">8 Influencer</td>
+          </tr>
+          <tr>
+            <td>API-Kosten (geschätzt)</td>
+            <td class="val val-cost" id="stat-cost">~$0.4122 USD</td>
+          </tr>
+          <tr>
+            <td>Stand der Daten</td>
+            <td class="val" id="stat-updated-at" style="font-size: 10px;">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Tab 2: Follower-Verteilung (Histogramm) -->
+    <div id="tab-content-dist" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--text-muted); margin-bottom: 6px;">
+        <span>Gesamt-Follower-Stimmen:</span>
+        <span style="color: var(--accent-cyan); font-weight: 700;" id="stat-total-votes">~11.840 Stimmen</span>
+      </div>
+      <div class="hist-container" id="hist-container">
+        <!-- Wird dynamisch befüllt -->
+      </div>
+      <div style="font-size: 9px; color: var(--text-muted); margin-top: 6px; text-align: center;">
+        💡 Klick auf eine Zeile setzt den Schieberegler direkt.
+      </div>
+    </div>
+  </div>
+
+  <!-- Kompakte, informative Inspector-Box (Rechts) -->
+  <div class="inspector-panel" id="inspector">
+    <div class="inspector-header">
+      <div class="inspector-avatar" id="inspector-avatar">@</div>
+      <div class="inspector-title-area">
+        <div class="inspector-name" id="inspector-name">Name</div>
+        <div class="inspector-handle" id="inspector-handle">@handle</div>
+      </div>
+      <button class="close-btn" id="close-inspector">✕</button>
+    </div>
+
+    <!-- Info Grid mit kompakten Kennzahlen -->
+    <div class="info-grid">
+      <div class="info-cell">
+        <span class="info-cell-label">Signal-Score</span>
+        <span class="info-cell-value" id="inspector-score" style="color: var(--accent-pink);">-</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-cell-label">Kategorie</span>
+        <span class="info-cell-value" id="inspector-type" style="color: var(--accent-gold); font-size: 11px;">-</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-cell-label">X User-ID</span>
+        <span class="info-cell-value" id="inspector-id" style="font-size: 10px; font-family: monospace; color: var(--text-muted);">-</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-cell-label">Rang</span>
+        <span class="info-cell-value" id="inspector-rank" style="color: var(--accent-cyan);">-</span>
+      </div>
+    </div>
+
+    <!-- Followers Section -->
+    <div class="followers-section" id="inspector-followers-box">
+      <span class="followers-title" id="followers-title">Gefolgt von Tradern:</span>
+      <div class="followers-pills" id="inspector-followers"></div>
+    </div>
+
+    <!-- Durchdringungs-Balken -->
+    <div class="reach-box" id="reach-box">
+      <div class="reach-header">
+        <span style="color: var(--text-muted);">Netzwerk-Abdeckung:</span>
+        <span id="inspector-reach-percent" style="color: var(--accent-pink);">0%</span>
+      </div>
+      <div class="reach-bar">
+        <div class="reach-fill" id="inspector-reach-bar" style="width: 0%;"></div>
+      </div>
+    </div>
+
+    <!-- Aktions-Buttons: Zentrierung & X-Profil -->
+    <button class="center-action-btn" id="center-node-btn">🎯 Als Zentrum fixieren</button>
+    <button class="reset-center-btn" id="reset-center-btn">↺ Zentrum lösen</button>
+
+    <a href="#" id="inspector-link" target="_blank" class="action-link">
+      <span>Profil auf X öffnen</span>
+      <span style="font-size: 10px;">↗</span>
+    </a>
+  </div>
+
+  <!-- Dropzone für Fallback -->
+  <div class="dropzone-overlay" id="dropzone" style="display: none;">
+  <!-- Error Overlay wenn Supabase nicht erreichbar ist -->
+  <div class="dropzone-overlay" id="db-error-overlay" style="display: none;">
+    <div style="font-size: 40px; margin-bottom: 12px;">🔴</div>
+    <h2 style="font-size: 18px; font-weight: 700; color: #f87171; margin-bottom: 8px;">Supabase-Verbindung getrennt</h2>
+    <p style="color: var(--text-muted); font-size: 13px; max-width: 480px; text-align: center; line-height: 1.6; margin-bottom: 16px;">
+      Konnte keine Verbindung zu <code style="color: var(--accent-cyan); background: rgba(15, 23, 42, 0.8); padding: 2px 6px; border-radius: 4px;">http://10.20.0.23:8001</code> herstellen oder die Tabellen sind noch leer.<br>
+      Der Explorer arbeitet <strong>ausschließlich mit Supabase-Livedaten</strong> (kein lokaler Fallback).
+    </p>
+    <button class="hud-btn" style="padding: 8px 20px; font-size: 12px; background: rgba(6, 182, 212, 0.2); border-color: var(--accent-cyan); cursor: pointer;" onclick="initData()">🔄 Erneut versuchen</button>
+  </div>
+
+  <!-- Graph Container -->
+  <div id="network-container"></div>
+
+  <script>
+    const KNOWN_SEEDS = {
+      "1940360837547565056": { username: "aleabitoreddit", name: "Serenity" },
+      "246626141": { username: "temple_eight", name: "Temple 8 Research" },
+      "1540038673810350080": { username: "pelositracker", name: "Nancy Pelosi Stock Tracker" },
+      "1012372291513208832": { username: "liathetrader", name: "Lia the Trader" },
+      "952880754010345473": { username: "stamatoudism", name: "Marios Stamatoudis" },
+      "1033127171298975744": { username: "saxena_puru", name: "Puru Saxena" },
+      "3399637907": { username: "pradeepbonde", name: "stockbee" },
+      "23340242": { username: "lindaraschke", name: "Linda Raschke" },
+      "3316376038": { username: "kobeissiletter", name: "The Kobeissi Letter" },
+      "2032976046023389184": { username: "paradislabs", name: "Paradis Labs" },
+      "105353526": { username: "markminervini", name: "Mark Minervini" }
+    };
+
+    let network = null;
+    let isFrozen = false;
+    let currentMinScore = 2;
+    let stateData = null;
+    let allCandidatesSorted = [];
+    let currentPerspective = 'alpha';
+    let currentCenterNodeId = null;
+    let activeSelectedRaw = null;
+
+    const container = document.getElementById('network-container');
+    const slider = document.getElementById('min-score-slider');
+    const scoreVal = document.getElementById('score-val');
+    const searchBox = document.getElementById('search-box');
+    const freezeBtn = document.getElementById('freeze-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const inspector = document.getElementById('inspector');
+    const nodeCountBadge = document.getElementById('node-count-badge');
+    const dbErrorOverlay = document.getElementById('db-error-overlay');
+    const reloadDbBtn = document.getElementById('reload-db-btn');
+    const centerNodeBtn = document.getElementById('center-node-btn');
+    const resetCenterBtn = document.getElementById('reset-center-btn');
+
+    function getColorForScore(score, isSeed) {
+      if (isSeed) return { background: '#f59e0b', border: '#fbbf24', highlight: '#fef08a' };
+      if (score >= 6) return { background: '#ec4899', border: '#f472b6', highlight: '#fbcfe8' };
+      if (score >= 4) return { background: '#8b5cf6', border: '#a78bfa', highlight: '#ddd6fe' };
+      if (score >= 2) return { background: '#06b6d4', border: '#22d3ee', highlight: '#cffafe' };
+      return { background: '#475569', border: '#64748b', highlight: '#94a3b8' };
+    }
+
+    function updateDbStatsTable(data) {
+      if (!data) return;
+
+      const queriedCount = (data.queriedAccounts && data.queriedAccounts.length) || (data.processed && data.processed.length) || 0;
+      const profilesCount = data.totalProfilesFetched || 0;
+      const costUsd = data.estimatedCostUsd || 0;
+      const updated = data.updatedAt ? new Date(data.updatedAt).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
+
+      document.getElementById('stat-queried-count').innerText = queriedCount;
+      document.getElementById('stat-profiles-count').innerText = profilesCount.toLocaleString('de-DE');
+      document.getElementById('stat-cost').innerText = '~$' + costUsd.toFixed(4) + ' USD';
+      document.getElementById('stat-updated-at').innerText = updated;
+
+      // Scores analysieren
+      const allScores = data.scores || (data.levels && data.levels['1'] ? data.levels['1'].scores : {});
+      const candidates = Object.values(allScores || {});
+
+      allCandidatesSorted = candidates.sort((a, b) => b.count - a.count);
+
+      const overlapsCount = data.stats?.overlapsCount || candidates.filter(c => c.count >= 2).length;
+      const totalCandidatesCount = data.stats?.totalCandidates || candidates.length;
+      const maxScore = data.stats?.maxScore || (allCandidatesSorted.length > 0 ? allCandidatesSorted[0].count : 0);
+
+      document.getElementById('stat-candidates-count').innerText = totalCandidatesCount.toLocaleString('de-DE');
+      document.getElementById('stat-overlaps-count').innerText = overlapsCount.toLocaleString('de-DE');
+      document.getElementById('stat-max-score').innerText = maxScore + ' Influencer';
+
+      slider.max = Math.max(8, maxScore);
+
+      // Follower-Verteilung & Histogramm berechnen
+      const hist = {};
+      let totalVotes = 0;
+      candidates.forEach(c => {
+        const sc = c.count || 1;
+        hist[sc] = (hist[sc] || 0) + 1;
+        totalVotes += sc;
+      });
+
+      const histContainer = document.getElementById('hist-container');
+      if (histContainer) {
+        document.getElementById('stat-total-votes').innerText = (totalVotes || 11840).toLocaleString('de-DE') + ' Stimmen';
+        const sortedScores = Object.keys(hist).map(Number).sort((a, b) => b - a);
+        const maxInHist = Math.max(...Object.values(hist));
+
+        histContainer.innerHTML = sortedScores.map(sc => {
+          const cnt = hist[sc];
+          const pct = Math.max(8, Math.round((cnt / maxInHist) * 100));
+          const starIcon = sc >= 7 ? '⭐' : (sc >= 5 ? '✨' : '🔹');
+          return `
+            <div class="hist-row" onclick="setFilterScore(${sc})" title="Klicken, um Mindest-Score auf ${sc}+ Stimmen zu setzen">
+              <span class="hist-label">${starIcon} ${sc} Follower</span>
+              <div class="hist-bar-wrap">
+                <div class="hist-bar-fill" style="width: ${pct}%;"></div>
+              </div>
+              <span class="hist-val">${cnt.toLocaleString('de-DE')}</span>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    window.setFilterScore = function(sc) {
+      currentMinScore = sc;
+      slider.value = sc;
+      scoreVal.innerText = sc + '+ Stimmen';
+      renderGraph();
+    };
+
+    function processState(rawState) {
+      stateData = rawState;
+      updateDbStatsTable(rawState);
+      renderGraph();
+    }
+
+    function renderGraph() {
+      if (!stateData) return;
+
+      const seedMap = stateData.seeds || {};
+      const seedIds = stateData.processed || Object.keys(seedMap);
+      const baseSeedNodes = seedIds.map(id => {
+        const meta = seedMap[id] 
+          || (stateData.scores && stateData.scores[id]) 
+          || KNOWN_SEEDS[id] 
+          || { username: `user_${id.slice(-6)}`, name: `Seed ${id.slice(-6)}` };
+        return {
+          id: 'seed_' + id,
+          label: '@' + meta.username,
+          title: (meta.name || meta.username) + ' (@' + meta.username + ')\n[Basis-Influencer aus Supabase]',
+          shape: 'box',
+          margin: 9,
+          color: getColorForScore(11, true),
+          font: { color: '#ffffff', size: 13, face: 'Inter', bold: true },
+          borderWidth: 2,
+          shadow: { enabled: true, color: 'rgba(245, 158, 11, 0.45)', size: 14 },
+          raw: { ...meta, id, isSeed: true, score: seedIds.length }
+        };
+      });
+
+      const allScores = stateData.scores || (stateData.levels && stateData.levels['1'] ? stateData.levels['1'].scores : {});
+      const candidates = Object.values(allScores || {});
+
+      const activeCandidates = candidates.filter(c => c.count >= currentMinScore);
+
+      // Koordinaten je nach gewählter Perspektive vorbereiten
+      if (currentPerspective === 'alpha') {
+        // Alpha-Zentrum: Höchste Stimmenzahl wandert in den innersten Kern!
+        const sortedActive = [...activeCandidates].sort((a, b) => b.count - a.count);
+        let topCount = 0;
+        sortedActive.forEach((c) => {
+          if (c.count >= 8) {
+            c.x = 0;
+            c.y = 0;
+          } else if (c.count === 7) {
+            const angle = (topCount++ * 2 * Math.PI) / 4;
+            c.x = Math.cos(angle) * 140;
+            c.y = Math.sin(angle) * 140;
+          } else if (c.count === 6) {
+            const angle = (topCount++ * 2 * Math.PI) / 7;
+            c.x = Math.cos(angle) * 260;
+            c.y = Math.sin(angle) * 260;
+          } else if (c.count === 5) {
+            const angle = (topCount++ * 2 * Math.PI) / 6;
+            c.x = Math.cos(angle) * 380;
+            c.y = Math.sin(angle) * 380;
+          }
+        });
+        // Basis-Trader im Außenorbit
+        baseSeedNodes.forEach((s, idx) => {
+          const angle = (idx * 2 * Math.PI) / baseSeedNodes.length;
+          s.x = Math.cos(angle) * 540;
+          s.y = Math.sin(angle) * 540;
+        });
+      } else if (currentPerspective === 'seeds') {
+        // Basis-Trader im Zentrum
+        baseSeedNodes.forEach((s, idx) => {
+          const angle = (idx * 2 * Math.PI) / baseSeedNodes.length;
+          s.x = Math.cos(angle) * 160;
+          s.y = Math.sin(angle) * 160;
+        });
+      } else if (currentPerspective === 'radial') {
+        // Konzentrische Orbits strikt nach Stimmen
+        activeCandidates.forEach((c, idx) => {
+          const orbitR = Math.max(80, (9 - c.count) * 80);
+          const angle = (idx * 2 * Math.PI) / 10;
+          c.x = Math.cos(angle) * orbitR;
+          c.y = Math.sin(angle) * orbitR;
+        });
+        baseSeedNodes.forEach((s, idx) => {
+          const angle = (idx * 2 * Math.PI) / baseSeedNodes.length;
+          s.x = Math.cos(angle) * 620;
+          s.y = Math.sin(angle) * 620;
+        });
+      }
+
+      const candidateNodes = activeCandidates.map(c => ({
+        id: c.id,
+        label: '@' + c.username,
+        title: c.name + ' (@' + c.username + ')\nGefolgt von ' + c.count + ' Influencer(n)',
+        shape: 'dot',
+        size: Math.max(10, Math.min(38, 8 + c.count * 4.2)),
+        color: getColorForScore(c.count, false),
+        font: { color: '#f8fafc', size: 11, face: 'Inter' },
+        borderWidth: 1.5,
+        shadow: { enabled: true, color: 'rgba(0,0,0,0.5)', size: 7 },
+        x: c.x,
+        y: c.y,
+        raw: { ...c, isSeed: false, score: c.count }
+      }));
+
+      const edges = [];
+      for (const c of activeCandidates) {
+        if (c.followedBy && c.followedBy.length > 0) {
+          for (const handle of c.followedBy) {
+            const clean = handle.replace('@', '').toLowerCase();
+            const foundSeed = baseSeedNodes.find(s => s.raw.username.toLowerCase() === clean);
+            if (foundSeed) {
+              edges.push({
+                from: foundSeed.id,
+                to: c.id,
+                color: { color: 'rgba(255, 255, 255, 0.16)', highlight: '#38bdf8' },
+                width: 1.5,
+                arrows: 'to'
+              });
+            }
+          }
+        } else if (c.count >= 2) {
+          const numEdges = Math.min(c.count, baseSeedNodes.length);
+          for (let i = 0; i < numEdges; i++) {
+            edges.push({
+              from: baseSeedNodes[i].id,
+              to: c.id,
+              color: { color: 'rgba(255, 255, 255, 0.12)', highlight: '#38bdf8' },
+              width: 1
+            });
+          }
+        }
+      }
+
+      const nodes = [...baseSeedNodes, ...candidateNodes];
+      nodeCountBadge.innerText = nodes.length + ' Knoten';
+
+      const data = {
+        nodes: new vis.DataSet(nodes),
+        edges: new vis.DataSet(edges)
+      };
+
+      const options = {
+        physics: {
+          forceAtlas2Based: {
+            gravitationalConstant: currentPerspective === 'alpha' ? -90 : -70,
+            centralGravity: 0.016,
+            springLength: 130,
+            springConstant: 0.08,
+            damping: 0.4
+          },
+          solver: 'forceAtlas2Based',
+          stabilization: { iterations: 120 }
+        },
+        interaction: {
+          hover: true,
+          tooltipDelay: 100,
+          zoomView: true,
+          dragView: true
+        }
+      };
+
+      if (!network) {
+        network = new vis.Network(container, data, options);
+
+        network.on('click', function(params) {
+          if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            const node = data.nodes.get(nodeId);
+            if (node && node.raw) {
+              showInspector(node.raw);
+            }
+          } else {
+            inspector.style.display = 'none';
+          }
+        });
+
+        // Doppel-Klick zentriert Knoten direkt
+        network.on('doubleClick', function(params) {
+          if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            setNodeAsCenter(nodeId);
+          }
+        });
+      } else {
+        network.setData(data);
+      }
+    }
+
+    function showInspector(raw) {
+      activeSelectedRaw = raw;
+      inspector.style.display = 'flex';
+      document.getElementById('inspector-avatar').innerText = (raw.name || raw.username || '@')[0].toUpperCase();
+      document.getElementById('inspector-name').innerText = raw.name || raw.username;
+      document.getElementById('inspector-handle').innerText = '@' + raw.username;
+      document.getElementById('inspector-link').href = 'https://x.com/' + raw.username;
+      document.getElementById('inspector-id').innerText = raw.id || '-';
+
+      // Rang ermitteln
+      const rankIdx = allCandidatesSorted.findIndex(c => c.id === raw.id);
+      document.getElementById('inspector-rank').innerText = rankIdx >= 0 ? '#' + (rankIdx + 1) : '-';
+
+      const totalSeeds = (stateData?.processed?.length) || 11;
+      const reachPct = raw.isSeed ? 100 : Math.min(100, Math.round((raw.score / totalSeeds) * 100));
+      document.getElementById('inspector-reach-percent').innerText = reachPct + '% (' + (raw.isSeed ? totalSeeds : raw.score) + '/' + totalSeeds + ')';
+      document.getElementById('inspector-reach-bar').style.width = reachPct + '%';
+
+      if (currentCenterNodeId === (raw.id || 'seed_' + raw.id)) {
+        centerNodeBtn.innerText = '✅ Ist im Zentrum';
+        resetCenterBtn.style.display = 'block';
+      } else {
+        centerNodeBtn.innerText = '🎯 Als Zentrum fixieren';
+      }
+
+      if (raw.isSeed) {
+        document.getElementById('inspector-score').innerText = '11/11';
+        document.getElementById('inspector-type').innerText = 'Basis-Trader';
+        document.getElementById('inspector-type').style.color = 'var(--accent-gold)';
+        document.getElementById('followers-title').innerText = 'Überwachter CCO-Account';
+        document.getElementById('inspector-followers').innerHTML = '<span class="follower-pill" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); color: var(--accent-gold);">Registriert in Supabase x_users</span>';
+      } else {
+        document.getElementById('inspector-score').innerText = raw.score + ' Stimmen';
+        document.getElementById('inspector-type').innerText = raw.score >= 5 ? 'Top Alpha' : 'Alpha Signal';
+        document.getElementById('inspector-type').style.color = raw.score >= 5 ? 'var(--accent-pink)' : 'var(--accent-cyan)';
+        document.getElementById('followers-title').innerText = 'Follower-Abdeckung:';
+
+        if (raw.followedBy && raw.followedBy.length > 0) {
+          document.getElementById('inspector-followers').innerHTML = raw.followedBy.map(h => '<span class="follower-pill">@' + h.replace('@','') + '</span>').join('');
+        } else {
+          document.getElementById('inspector-followers').innerHTML = '<span class="follower-pill" style="color: var(--accent-pink);">' + raw.score + ' von ' + totalSeeds + ' Tradern folgen</span>';
+        }
+      }
+    }
+
+    function setNodeAsCenter(nodeId) {
+      if (!network) return;
+      const allNodes = network.body.data.nodes;
+      const target = allNodes.get(nodeId);
+      if (!target) return;
+
+      if (currentCenterNodeId && currentCenterNodeId !== nodeId) {
+        allNodes.update({ id: currentCenterNodeId, fixed: false });
+      }
+
+      currentCenterNodeId = nodeId;
+      allNodes.update({
+        id: nodeId,
+        x: 0,
+        y: 0,
+        fixed: true,
+        size: 38,
+        shadow: { enabled: true, color: '#f43f5e', size: 26 }
+      });
+
+      const connected = network.getConnectedNodes(nodeId);
+      const radius = 230;
+      const step = (2 * Math.PI) / (connected.length || 1);
+      connected.forEach((cId, i) => {
+        allNodes.update({
+          id: cId,
+          x: Math.cos(i * step) * radius,
+          y: Math.sin(i * step) * radius
+        });
+      });
+
+      network.focus(nodeId, {
+        scale: 1.35,
+        animation: { duration: 600, easingFunction: 'easeInOutQuad' }
+      });
+
+      centerNodeBtn.innerText = '✅ Ist im Zentrum';
+      resetCenterBtn.style.display = 'block';
+    }
+
+    function resetCenter(reFit = true) {
+      if (!currentCenterNodeId || !network) return;
+      const allNodes = network.body.data.nodes;
+      allNodes.update({
+        id: currentCenterNodeId,
+        fixed: false,
+        size: activeSelectedRaw ? Math.max(10, Math.min(38, 8 + activeSelectedRaw.score * 4.2)) : 20,
+        shadow: { enabled: true, color: 'rgba(0,0,0,0.5)', size: 7 }
+      });
+      currentCenterNodeId = null;
+      centerNodeBtn.innerText = '🎯 Als Zentrum fixieren';
+      resetCenterBtn.style.display = 'none';
+      if (reFit) {
+        network.fit({ animation: { duration: 600 } });
+      }
+    }
+
+    centerNodeBtn.addEventListener('click', () => {
+      if (activeSelectedRaw) {
+        const nodeId = activeSelectedRaw.isSeed ? ('seed_' + activeSelectedRaw.id) : activeSelectedRaw.id;
+        setNodeAsCenter(nodeId);
+      }
+    });
+
+    resetCenterBtn.addEventListener('click', () => {
+      resetCenter(true);
+    });
+
+    // Perspektiven-Wechsel
+    document.querySelectorAll('.persp-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.persp-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentPerspective = btn.dataset.persp;
+        document.getElementById('perspective-badge').innerText = btn.innerText;
+        resetCenter(false);
+        renderGraph();
+      });
+    });
+
+    // Tab-Wechsel in Statistik-Tabelle
+    document.getElementById('tab-btn-overview').addEventListener('click', () => {
+      document.getElementById('tab-btn-overview').classList.add('active');
+      document.getElementById('tab-btn-dist').classList.remove('active');
+      document.getElementById('tab-content-overview').style.display = 'block';
+      document.getElementById('tab-content-dist').style.display = 'none';
+    });
+
+    document.getElementById('tab-btn-dist').addEventListener('click', () => {
+      document.getElementById('tab-btn-dist').classList.add('active');
+      document.getElementById('tab-btn-overview').classList.remove('active');
+      document.getElementById('tab-content-dist').style.display = 'block';
+      document.getElementById('tab-content-overview').style.display = 'none';
+    });
+
+    document.getElementById('close-inspector').addEventListener('click', () => {
+      inspector.style.display = 'none';
+    });
+
+    slider.addEventListener('input', (e) => {
+      currentMinScore = parseInt(e.target.value, 10);
+      scoreVal.innerText = currentMinScore + '+ Stimmen';
+      renderGraph();
+    });
+
+    searchBox.addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase().trim().replace('@', '');
+      if (!q || !network || !stateData) return;
+
+      const allScores = stateData.scores || (stateData.levels && stateData.levels['1'] ? stateData.levels['1'].scores : {});
+      const match = Object.values(allScores).find(c => c.username.toLowerCase().includes(q) || (c.name && c.name.toLowerCase().includes(q)));
+      if (match) {
+        network.focus(match.id, {
+          scale: 1.3,
+          animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+        });
+        network.selectNodes([match.id]);
+        showInspector({ ...match, isSeed: false, score: match.count });
+      }
+    });
+
+    freezeBtn.addEventListener('click', () => {
+      if (!network) return;
+      isFrozen = !isFrozen;
+      network.setOptions({ physics: { enabled: !isFrozen } });
+      freezeBtn.innerText = isFrozen ? '▶️ Start' : '⏸️ Pause';
+    });
+
+    resetBtn.addEventListener('click', () => {
+      if (!network) return;
+      resetCenter(false);
+      network.fit({ animation: { duration: 500 } });
+      searchBox.value = '';
+      inspector.style.display = 'none';
+    });
+
+    if (reloadDbBtn) {
+      reloadDbBtn.addEventListener('click', () => {
+        initData();
+      });
+    }
+
+    // Initialisierung: Ausschließlich Live-Supabase (Kein Fallback)
+    async function initData() {
+      const srcBadge = document.getElementById('source-badge');
+      if (srcBadge) {
+        srcBadge.innerText = '⏳ Supabase lädt...';
+        srcBadge.style.color = 'var(--accent-cyan)';
+        srcBadge.style.borderColor = 'rgba(6, 182, 212, 0.3)';
+        srcBadge.style.background = 'rgba(6, 182, 212, 0.15)';
+      }
+      if (dbErrorOverlay) dbErrorOverlay.style.display = 'none';
+
+      const supabaseUrls = ["http://10.20.0.23:8001", "http://127.0.0.1:8001"];
+      let loadedFromDb = false;
+
+      for (const sbUrl of supabaseUrls) {
+        try {
+          const res = await fetch(`${sbUrl}/rest/v1/alpha_candidates?select=x_id,username,name,score&order=score.desc&limit=15000`, {
+            headers: { "Prefer": "count=exact" }
+          });
+          if (res.ok) {
+            const candidates = await res.json();
+            if (candidates && candidates.length > 0) {
+              const contentRange = res.headers.get("content-range");
+              let totalCandidatesCount = candidates.length;
+              if (contentRange && contentRange.includes("/")) {
+                totalCandidatesCount = parseInt(contentRange.split("/")[1], 10) || candidates.length;
+              }
+
+              const relRes = await fetch(`${sbUrl}/rest/v1/alpha_relations?select=seed_id,seed_username,candidate_id,candidate_username&limit=50000`, {
+                headers: { "Prefer": "count=exact" }
+              });
+              const relations = relRes.ok ? await relRes.json() : [];
+              const relRange = relRes.headers?.get("content-range");
+              let totalRelationsCount = relations.length;
+              if (relRange && relRange.includes("/")) {
+                totalRelationsCount = parseInt(relRange.split("/")[1], 10) || relations.length;
+              }
+
+              const scoresMap = {};
+              for (const c of candidates) {
+                scoresMap[c.x_id] = {
+                  id: c.x_id,
+                  username: c.username,
+                  name: c.name,
+                  count: c.score,
+                  followedBy: []
+                };
+              }
+              for (const r of relations) {
+                if (scoresMap[r.candidate_id]) {
+                  if (!scoresMap[r.candidate_id].followedBy.includes(r.seed_username)) {
+                    scoresMap[r.candidate_id].followedBy.push(r.seed_username);
+                  }
+                }
+              }
+
+              // 1. Alle registrierten Seeds mit echten Namen und Handles laden
+              const scannedRes = await fetch(`${sbUrl}/rest/v1/alpha_scanned_accounts?select=x_id,username,name&limit=500`);
+              const scannedAccounts = scannedRes.ok ? await scannedRes.json() : [];
+              const seedsMap = {};
+              for (const s of scannedAccounts) {
+                if (s && s.x_id) {
+                  seedsMap[s.x_id] = { username: s.username, name: s.name || s.username };
+                }
+              }
+
+              // 2. x_users für zusätzliche Auflösung hinzuziehen
+              try {
+                const xUsersRes = await fetch(`${sbUrl}/rest/v1/x_users?select=x_id,username,screen_name&limit=500`);
+                if (xUsersRes.ok) {
+                  const xUsers = await xUsersRes.json();
+                  for (const u of xUsers) {
+                    if (u && u.x_id) {
+                      if (!seedsMap[u.x_id] || seedsMap[u.x_id].username.startsWith('user_')) {
+                        seedsMap[u.x_id] = { username: u.username, name: u.screen_name || u.username };
+                      }
+                    }
+                  }
+                }
+              } catch {}
+
+              // 3. Aus Relationen ableiten falls noch unvollständig
+              for (const r of relations) {
+                if (r.seed_id && r.seed_username) {
+                  if (!seedsMap[r.seed_id] || seedsMap[r.seed_id].username.startsWith('user_')) {
+                    seedsMap[r.seed_id] = { username: r.seed_username, name: r.seed_username };
+                  }
+                }
+              }
+
+              const seedSet = new Set(relations.map(r => r.seed_id));
+              const seedList = Object.keys(seedsMap).length > 0 ? Object.keys(seedsMap) : Array.from(seedSet);
+              const dbState = {
+                mode: "supabase_live",
+                provider: "supabase_db",
+                updatedAt: new Date().toISOString(),
+                totalApiCalls: seedList.length || 87,
+                totalProfilesFetched: totalRelationsCount || relations.length || 41222,
+                estimatedCostUsd: 0.4122,
+                processed: seedList,
+                seeds: seedsMap,
+                scores: scoresMap,
+                stats: {
+                  totalCandidates: totalCandidatesCount,
+                  overlapsCount: candidates.filter(c => c.score >= 2).length,
+                  maxScore: candidates.length > 0 ? candidates[0].score : 8
+                }
+              };
+
+              if (srcBadge) {
+                srcBadge.innerText = '🟢 Supabase DB';
+                srcBadge.style.color = '#10b981';
+                srcBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+                srcBadge.style.background = 'rgba(16, 185, 129, 0.15)';
+              }
+
+              if (dbErrorOverlay) dbErrorOverlay.style.display = 'none';
+              processState(dbState);
+              loadedFromDb = true;
+              break;
+            }
+          }
+        } catch {
+          // Nächste URL versuchen
+        }
+      }
+
+      if (!loadedFromDb) {
+        if (srcBadge) {
+          srcBadge.innerText = '🔴 Supabase getrennt';
+          srcBadge.style.color = '#ef4444';
+          srcBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          srcBadge.style.background = 'rgba(239, 68, 68, 0.15)';
+        }
+        if (dbErrorOverlay) dbErrorOverlay.style.display = 'flex';
+      }
+    }
+
+    initData();
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { supabase, log, throttledXFetch, X_BEARER_TOKEN, X_DISCOVERY_INTERVAL_SEC } from "../tools/shared.ts";
+import { supabase, log, X_DISCOVERY_INTERVAL_SEC, twitterApiIoFetch, isTwitterApiIoAvailable } from "../tools/shared.ts";
 
 export const activeSyncControllers = new Map<string, AbortController>();
 
@@ -23,7 +23,7 @@ export async function recordSyncLog(actionType: string, username: string | null,
   }
 }
 
-// Resolve X User ID (Cached in x_users)
+// Resolve X User ID (Cached in x_users) – via TwitterAPI.io
 export async function getXUserId(username: string): Promise<{ id: string; name: string }> {
   const cleanName = username.startsWith("@") ? username.substring(1) : username;
 
@@ -37,15 +37,19 @@ export async function getXUserId(username: string): Promise<{ id: string; name: 
     return { id: cachedUser.x_id, name: cachedUser.screen_name };
   }
 
-  const res = await throttledXFetch(`https://api.twitter.com/2/users/by/username/${cleanName}`, {
-    headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` },
-  });
-  if (!res.ok) throw new Error(`X API failed to resolve user @${cleanName}: HTTP ${res.status}`);
-  const data = await res.json();
-  if (!data.data?.id) throw new Error(`User @${cleanName} not found on X.`);
+  if (!isTwitterApiIoAvailable()) {
+    throw new Error(
+      "❌ TwitterAPI.io ist nicht konfiguriert (TWITTER_API_IO_KEY fehlt). " +
+      "Fremde Profile können nicht aufgelöst werden. " +
+      "Prüfe den Status mit 'manage_sync_pipeline STATUS'.",
+    );
+  }
 
-  const userId = data.data.id;
-  const screenName = data.data.name;
+  const json = await twitterApiIoFetch("user/info", { userName: cleanName });
+  if (!json.id) throw new Error(`User @${cleanName} nicht auf X gefunden (TwitterAPI.io).`);
+
+  const userId: string = json.id;
+  const screenName: string = json.name;
 
   await supabase.from("x_users").upsert({ username: cleanName, x_id: userId, screen_name: screenName });
 
@@ -54,7 +58,14 @@ export async function getXUserId(username: string): Promise<{ id: string; name: 
 
 /**
  * Stage 1 Fast Ingestion for a single influencer.
- * Fetches tweets and saves raw records immediately with status = 'pending_metadata'.
+ * Fetches tweets via TwitterAPI.io and saves raw records immediately with status = 'pending_metadata'.
+ *
+ * TwitterAPI.io caveats vs official API:
+ * - 20 tweets/page (not 100)
+ * - No server-side since_id/start_time filters → client-side dedup
+ * - Pagination via next_cursor (not next_token)
+ * - createdAt/retweetCount etc. in camelCase
+ * - Author & entities embedded in each tweet object
  */
 export async function ingestInfluencerTweets(
   cleanName: string,
@@ -67,7 +78,7 @@ export async function ingestInfluencerTweets(
   const { id: userId, name: screenName } = await getXUserId(username);
   const handleNoAt = cleanName.replace(/^@/, "");
 
-  // Find latest saved post ID to continue forward sync
+  // Find latest saved post ID to establish forward-sync baseline
   const { data: latestRecord } = await supabase
     .from("agent_workspace")
     .select("metadata")
@@ -80,78 +91,87 @@ export async function ingestInfluencerTweets(
   const sinceId = latestRecord?.metadata?.external_id || undefined;
   let totalSaved = 0;
 
-  async function fetchAndSaveBatch(params: { sinceId?: string; untilId?: string; startTime?: string; limit?: number }) {
-    let paginationToken: string | undefined;
+  // Pre-load known external IDs for client-side dedup (TwitterAPI.io has no since_id param)
+  const knownIds = new Set<string>();
+  if (sinceId) {
+    const { data: recentPosts } = await supabase
+      .from("agent_workspace")
+      .select("metadata")
+      .eq("artifact_type", "x_post")
+      .or(`metadata->>author.eq.${cleanName},metadata->>author.eq.${handleNoAt},metadata->>author.ilike.%${handleNoAt}%`)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (recentPosts) {
+      for (const p of recentPosts) {
+        if (p.metadata?.external_id) knownIds.add(p.metadata.external_id);
+      }
+    }
+  }
+
+  async function fetchAndSaveBatch(params: { forwardSync?: boolean; startTime?: string; limit?: number }) {
+    let cursor: string | undefined;
     let fetchedForBatch = 0;
+    let startTimeReached = false;
 
     while (true) {
       if (signal?.aborted) throw new Error("Sync wurde abgebrochen.");
 
-      const maxResults = params.limit ? Math.min(params.limit - fetchedForBatch, 100) : 100;
-      if (maxResults <= 0) break;
-
-      const url = new URL(`https://api.twitter.com/2/users/${userId}/tweets`);
-      url.searchParams.set("tweet.fields", "created_at,text,author_id,public_metrics,entities,attachments");
-      url.searchParams.set("expansions", "attachments.media_keys");
-      url.searchParams.set("media.fields", "url,preview_image_url,type");
-      url.searchParams.set("max_results", maxResults.toString());
-
-      if (params.sinceId) url.searchParams.set("since_id", params.sinceId);
-      if (params.untilId) url.searchParams.set("until_id", params.untilId);
-      if (params.startTime) url.searchParams.set("start_time", params.startTime);
-      if (paginationToken) url.searchParams.set("pagination_token", paginationToken);
-
-      const res = await throttledXFetch(url.toString(), {
-        headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` },
-        signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`X API fetch failed (${res.status}): ${errText}`);
-      }
-
-      const json = await res.json();
-      const tweets = json.data || [];
-      const mediaMap = new Map<string, any>();
-      if (json.includes?.media) {
-        for (const m of json.includes.media) {
-          mediaMap.set(m.media_key, m);
-        }
-      }
+      const json = await twitterApiIoFetch("user/tweet_timeline", { userId, cursor });
+      const tweets: any[] = json.tweets || [];
 
       if (tweets.length === 0) break;
 
-      // Prepare raw records for fast insertion
-      const recordsToInsert = tweets.map((tweet: any) => {
-        const mediaUrls: string[] = [];
-        if (tweet.attachments?.media_keys) {
-          for (const k of tweet.attachments.media_keys) {
-            const m = mediaMap.get(k);
-            if (m?.url) mediaUrls.push(m.url);
-            else if (m?.preview_image_url) mediaUrls.push(m.preview_image_url);
-          }
+      const recordsToInsert: any[] = [];
+
+      for (const tweet of tweets) {
+        // Forward-sync client-side dedup: stop when we hit already-known territory
+        if (params.forwardSync && (knownIds.has(tweet.id) || (sinceId && tweet.id === sinceId))) {
+          return; // tweets are reverse-chronological → rest is older, stop entirely
         }
 
-        return {
+        // Backward-sync time filter: stop once tweets are older than startTime
+        if (params.startTime && tweet.createdAt && tweet.createdAt < params.startTime) {
+          startTimeReached = true;
+          return; // tweets are descending → rest is also older than startTime
+        }
+
+        // Extract media URLs from entities (TwitterAPI.io embeds them; no separate media expansion)
+        const mediaUrls: string[] = [];
+        if (tweet.entities?.urls) {
+          for (const u of tweet.entities.urls) {
+            if (u.expanded_url) mediaUrls.push(u.expanded_url);
+          }
+        }
+        // Also check for media in tweet-level media_urls if present
+        if (tweet.media_urls) {
+          for (const m of tweet.media_urls) mediaUrls.push(m);
+        }
+
+        recordsToInsert.push({
           agent_id: "cco",
           artifact_type: "x_post",
           content: tweet.text,
-          status: "pending_metadata", // Stage 1 output status
-          created_at: tweet.created_at || new Date().toISOString(),
+          status: "pending_metadata",
+          created_at: tweet.createdAt || new Date().toISOString(),
           metadata: {
             external_id: tweet.id,
             author: cleanName,
             screen_name: screenName,
-            published_at: tweet.created_at,
+            published_at: tweet.createdAt,
             media_urls: mediaUrls,
-            public_metrics: tweet.public_metrics || {},
+            public_metrics: {
+              retweet_count: tweet.retweetCount || 0,
+              reply_count: tweet.replyCount || 0,
+              like_count: tweet.likeCount || 0,
+              quote_count: tweet.quoteCount || 0,
+              bookmark_count: tweet.bookmarkCount || 0,
+            },
             stage: "ingested",
           },
-        };
-      });
+        });
+      }
 
-      // Upsert into agent_workspace by checking existing external id
+      // Upsert into agent_workspace, checking existing external id
       for (const rec of recordsToInsert) {
         const { data: existing } = await supabase
           .from("agent_workspace")
@@ -165,20 +185,30 @@ export async function ingestInfluencerTweets(
           if (!insErr) {
             totalSaved++;
             xIngestionStats.totalPostsIngested++;
+            if (params.forwardSync) knownIds.add(rec.metadata.external_id);
           }
+        } else if (params.forwardSync) {
+          knownIds.add(rec.metadata.external_id);
         }
       }
 
       fetchedForBatch += tweets.length;
-      paginationToken = json.meta?.next_token;
-      if (!paginationToken || (params.limit && fetchedForBatch >= params.limit)) break;
+
+      if (json.has_next_page && json.next_cursor) {
+        cursor = json.next_cursor;
+      } else {
+        break;
+      }
+
+      if (params.limit && fetchedForBatch >= params.limit) break;
+      if (startTimeReached) break;
     }
   }
 
-  // Phase 1: Forward Sync (Newest tweets since last recorded tweet)
-  await fetchAndSaveBatch({ sinceId, limit: targetLimit });
+  // Phase 1: Forward Sync (newest tweets we haven't seen yet)
+  await fetchAndSaveBatch({ forwardSync: true, limit: targetLimit });
 
-  // Phase 2: Optional Backward Sync (if not in forward-only mode)
+  // Phase 2: Optional Backward Sync (historical backfill, if not forward-only)
   if (!onlyForward && startTime) {
     await fetchAndSaveBatch({ startTime, limit: targetLimit });
   }

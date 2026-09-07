@@ -1,13 +1,16 @@
 /**
- * Standalone X Alpha-Influencer Finder
+ * Standalone X Multi-Level Alpha-Influencer Finder
  *
- * Findet Accounts ("Alpha-Influencer"), denen besonders viele der in Supabase registrierten
- * Influencer (Tabelle `x_users`) folgen, um hochqualitative Signal-Accounts zu entdecken.
+ * Findet hochqualitative Signal-Accounts ("Alpha-Influencer") über mehrere Ebenen
+ * ausgehend von deinen in Supabase registrierten Influencern.
  *
- * Unterstützt:
- * 1. TwitterAPI.io (Empfohlen: Ultra-Low-Cost, 0,01 $ pro 1.000 Followings via x-api-key)
- * 2. Offizielle X API v2 (Fallback via X_BEARER_TOKEN)
+ * Strikte Persistenz-Garantie:
+ * - Vor jedem Schreibvorgang wird ein automatisches .bak Backup erstellt.
+ * - Bereits abgefragte Accounts werden in 'queriedAccounts' geführt und NIEMALS doppelt abgefragt.
+ * - Bei geänderten Parametern (z.B. Erhöhung von --expand-top oder --depth) werden vorhandene
+ *   Daten stets inkrementell ergänzt und niemals überschrieben.
  */
+import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2.47.10";
 
 // --- Hilfsfunktionen für .env Auto-Discovery ---
 function loadEnvFile(path: string): Record<string, string> {
@@ -38,6 +41,7 @@ interface AppEnv {
   xBearerToken: string;
   supabaseUrl: string;
   supabaseKey: string;
+  supabase: SupabaseClient;
   source: string;
 }
 
@@ -69,63 +73,59 @@ function resolveAppEnv(): AppEnv {
     if (env.TWITTER_API_IO_KEY || env.X_BEARER_TOKEN || env.SUPABASE_SERVICE_ROLE_KEY) source = p;
   }
 
-  // Für Host-Ausführung: host.docker.internal -> 127.0.0.1 auflösen
-  if (supabaseUrl.includes("host.docker.internal")) {
-    supabaseUrl = supabaseUrl.replace("host.docker.internal", "127.0.0.1");
+  if (!supabaseUrl || supabaseUrl.includes("host.docker.internal")) {
+    supabaseUrl = "http://10.20.0.23:8001";
   }
-  if (!supabaseUrl) supabaseUrl = "http://127.0.0.1:8001";
 
-  return { twitterApiIoKey, xBearerToken, supabaseUrl, supabaseKey, source };
+  const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
+
+  return { twitterApiIoKey, xBearerToken, supabaseUrl, supabaseKey, supabase, source };
 }
 
-// --- Supabase REST Client ---
+// --- Supabase Client Helper ---
 interface RegisteredUser {
   username: string;
   screen_name: string;
   x_id: string;
 }
 
-async function fetchRegisteredInfluencers(supabaseUrl: string, supabaseKey: string): Promise<RegisteredUser[]> {
-  const url = `${supabaseUrl}/rest/v1/x_users?is_active=eq.true&select=username,screen_name,x_id`;
-  const res = await fetch(url, {
-    headers: {
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-    },
-  });
+async function fetchRegisteredInfluencers(supabase: SupabaseClient): Promise<RegisteredUser[]> {
+  const { data, error } = await supabase
+    .from("x_users")
+    .select("username, screen_name, x_id")
+    .eq("is_active", true);
 
-  if (!res.ok) {
-    throw new Error(`Fehler beim Abrufen der Influencer aus Supabase (${res.status}): ${await res.text()}`);
+  if (error) {
+    throw new Error(`Fehler beim Abrufen der Influencer aus Supabase: ${error.message}`);
   }
 
-  const list: RegisteredUser[] = await res.json();
+  const list: RegisteredUser[] = (data || []) as RegisteredUser[];
   return list.filter((u) => u.username && u.x_id);
 }
 
-// --- TwitterAPI.io Fetcher (Günstige Alternative: 0,01 $ pro 1.000 Followings) ---
+// --- TwitterAPI.io Fetcher ---
 async function fetchFollowingsViaTwitterApiIo(
   userId: string,
   username: string,
   apiKey: string,
   delayMs: number,
-  maxResults: number,
+  maxResults: number = 0, // 0 = VOLLSTÄNDIG / UNBEGRENZT
 ): Promise<{ followings: any[]; costUsd: number }> {
   const allFollowings: any[] = [];
   let cursor = "";
   let hasNext = true;
-  const pageSize = Math.min(200, maxResults);
+  const pageSize = 200; // Maximaler Batch-Wert von TwitterAPI.io
 
-  while (hasNext && allFollowings.length < maxResults) {
+  while (hasNext) {
     if (delayMs > 0 && allFollowings.length > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
 
-    // Übergabe der X User-ID wie vom Nutzer gewünscht (mit Fallback auf userName)
     let url = `https://api.twitterapi.io/twitter/user/followings?pageSize=${pageSize}`;
-    if (userId) {
+    if (username) {
+      url += `&userName=${username.replace("@", "").trim()}`;
+    } else if (userId) {
       url += `&userId=${userId}`;
-    } else {
-      url += `&userName=${username.replace("@", "")}`;
     }
     if (cursor) {
       url += `&cursor=${encodeURIComponent(cursor)}`;
@@ -158,11 +158,19 @@ async function fetchFollowingsViaTwitterApiIo(
       }
     }
 
-    hasNext = Boolean(data.has_next_page && data.next_cursor && allFollowings.length < maxResults);
+    const hasNextFlag = Boolean(data.has_next_page && data.next_cursor && data.next_cursor !== cursor);
+    if (maxResults > 0 && allFollowings.length >= maxResults) {
+      hasNext = false;
+    } else {
+      hasNext = hasNextFlag;
+    }
     cursor = data.next_cursor || "";
+
+    if (allFollowings.length > 0 && allFollowings.length % 600 === 0) {
+      console.log(`      ... ${allFollowings.length} Followings geladen`);
+    }
   }
 
-  // Kosten bei TwitterAPI.io: 0,01 $ pro 1.000 Followings (0,00001 $ pro Profil)
   const costUsd = (allFollowings.length / 1000) * 0.01;
   return { followings: allFollowings, costUsd };
 }
@@ -205,97 +213,112 @@ async function throttledXFetch(url: string, bearerToken: string, delayMs: number
   return res;
 }
 
-function getRateLimitStatusString(): string {
-  if (rateLimitRemaining === null) return "Status: unbekannt";
-  const resetSec = rateLimitResetEpoch ? Math.max(0, Math.round(rateLimitResetEpoch - Date.now() / 1000)) : 0;
-  return `${rateLimitRemaining}/${rateLimitLimit ?? "?"} übrig (Reset in ${resetSec}s)`;
-}
-
 async function fetchFollowingsViaOfficialX(
   userId: string,
   bearerToken: string,
   delayMs: number,
-  maxResults: number,
+  maxResults: number = 0,
 ): Promise<{ followings: any[]; costUsd: number }> {
-  const safeLimit = Math.min(1000, Math.max(1, maxResults));
-  const url = `https://api.twitter.com/2/users/${userId}/following?max_results=${safeLimit}`;
-  const res = await throttledXFetch(url, bearerToken, delayMs);
-  if (!res.ok) {
-    throw new Error(`X API Followings Fehler (${res.status}): ${await res.text()}`);
-  }
-  const data = await res.json();
-  const list = data.data || [];
-  // Kosten bei offizieller X API: 0,01 $ pro zurückgegebenes Profil!
-  const costUsd = list.length * 0.01;
-  return { followings: list, costUsd };
-}
+  const allFollowings: any[] = [];
+  let nextToken = "";
+  let hasNext = true;
 
-async function getUserIdByUsername(username: string, bearerToken: string, delayMs: number): Promise<{ id: string; name: string }> {
-  const clean = username.replace("@", "").trim();
-  const url = `https://api.twitter.com/2/users/by/username/${clean}`;
-  const res = await throttledXFetch(url, bearerToken, delayMs);
-  if (!res.ok) {
-    throw new Error(`X API User Lookup fehlgeschlagen (${res.status}): ${await res.text()}`);
+  while (hasNext) {
+    let url = `https://api.twitter.com/2/users/${userId}/following?max_results=1000`;
+    if (nextToken) {
+      url += `&pagination_token=${encodeURIComponent(nextToken)}`;
+    }
+    const res = await throttledXFetch(url, bearerToken, delayMs);
+    if (!res.ok) {
+      throw new Error(`X API Followings Fehler (${res.status}): ${await res.text()}`);
+    }
+    const data = await res.json();
+    const list = data.data || [];
+    for (const u of list) {
+      if (u.id && u.username) {
+        allFollowings.push({
+          id: String(u.id),
+          username: u.username,
+          name: u.name || u.username,
+        });
+      }
+    }
+    nextToken = data.meta?.next_token || "";
+    if (maxResults > 0 && allFollowings.length >= maxResults) {
+      hasNext = false;
+    } else {
+      hasNext = Boolean(nextToken);
+    }
   }
-  const data = await res.json();
-  if (!data.data?.id) {
-    throw new Error(`Account @${clean} wurde auf X nicht gefunden.`);
-  }
-  return { id: data.data.id, name: data.data.name };
+
+  const costUsd = allFollowings.length * 0.01;
+  return { followings: allFollowings, costUsd };
 }
 
 // --- CLI Hilfe & Argument-Parsing ---
 function printHelp() {
   console.log(`
 Verwendung:
-  ./run_alpha_finder.sh [Optionen]                  (analysiert alle in Supabase registrierten Influencer)
-  ./run_alpha_finder.sh <username> [Optionen]       (optional: analysiert einen spezifischen Account)
+  ./run_alpha_finder.sh [Optionen]
 
 Optionen:
-  --provider <twitterapi|x>  Wählt den API-Provider (Standard: twitterapi, falls Key vorhanden, sonst x)
-  --key <API_KEY>            TwitterAPI.io API-Key direkt übergeben
-  --batch-pause <N>          Pausiert nach jeweils N API-Abfragen für Bestätigung (Standard: 100)
-  --max-results <N>          Max. Followings pro Influencer abrufen (Standard: 200 bei TwitterAPI, 100 bei X)
-  --delay-ms <N>             Pause zwischen API-Aufrufen in ms (Standard: 1000 bei TwitterAPI, 2500 bei X)
-  --top <N>                  Anzahl der am Ende angezeigten Alpha-Accounts (Standard: 20)
+  --depth <N>                Analysetiefe / Level (Standard: 1 = nur Basis-Influencer; 2 = Top-Alpha Followings)
+  --expand-top <N>           Anzahl Top-Accounts aus vorheriger Ebene für die nächste Ebene (Standard: 20)
+  --expand-min-score <M>     Mindest-Score in vorheriger Ebene für Expansion (Standard: 2)
+  --batch-pause <N>          Pausiert nach jeweils N API-Abfragen für Bestätigung (Standard: 100, 0 = aus)
+  --max-results <N>          Max. Followings pro Influencer (Standard: 0 = VOLLSTÄNDIG / UNBEGRENZT)
+  --delay-ms <N>             Pause zwischen API-Aufrufen in ms (Standard: 500 bei TwitterAPI, 1500 bei X)
+  --top <N>                  Anzahl der am Ende angezeigten Accounts (Standard: 25)
+  --seed <handle/id>         Gezielt nur diesen einen Influencer untersuchen (z. B. --seed steipete)
+  --rescan, --force          Bereits abgefragte Seeds erneut vollständig abrufen
+  --no-prompt                Keine interaktiven Bestätigungen (für Skripte / Daemons)
   --help, -h                 Zeigt diese Hilfe an
 
 Beispiele:
-  ./run_alpha_finder.sh                             (Standard mit registrierten Influencern)
-  ./run_alpha_finder.sh --key deinkey12345           (TwitterAPI.io Key direkt übergeben)
-  ./run_alpha_finder.sh --provider twitterapi --top 30
+  ./run_alpha_finder.sh                                  (Ebene 1 vollständig ohne Followings-Limit abfragen)
+  ./run_alpha_finder.sh --rescan                         (Alle Seeds erneut ohne 500er-Kappung vollständig laden)
+  ./run_alpha_finder.sh --seed steipete --rescan         (Nur @steipete vollständig neu laden)
+  ./run_alpha_finder.sh --depth 2 --expand-top 50        (Ebene 2 mit den Top 50 Accounts analysieren)
+  ./run_alpha_finder.sh --batch-pause 0                  (Durchlaufen lassen ohne Pause-Bestätigung)
 `);
 }
 
 interface CliConfig {
-  customUsername?: string;
-  provider?: "twitterapi" | "x";
-  directApiKey?: string;
+  maxDepth: number;
+  expandTop: number;
+  expandMinScore: number;
   batchPause: number;
-  maxResults?: number;
+  maxResults: number; // 0 = unbegrenzt
   delayMs?: number;
   topN: number;
+  onlySeed?: string;
+  rescan: boolean;
+  noPrompt: boolean;
 }
 
 function parseCliArgs(args: string[]): CliConfig | null {
-  let customUsername: string | undefined = undefined;
-  let provider: "twitterapi" | "x" | undefined = undefined;
-  let directApiKey: string | undefined = undefined;
+  let maxDepth = parseInt(Deno.env.get("MAX_DEPTH") || "1", 10);
+  let expandTop = parseInt(Deno.env.get("EXPAND_TOP") || "20", 10);
+  let expandMinScore = parseInt(Deno.env.get("EXPAND_MIN_SCORE") || "2", 10);
   let batchPause = parseInt(Deno.env.get("BATCH_PAUSE_SIZE") || "100", 10);
-  let maxResults: number | undefined = Deno.env.get("X_MAX_RESULTS") ? parseInt(Deno.env.get("X_MAX_RESULTS")!, 10) : undefined;
+  let maxResults = Deno.env.get("X_MAX_RESULTS") ? parseInt(Deno.env.get("X_MAX_RESULTS")!, 10) : 0; // 0 = unbegrenzt
   let delayMs: number | undefined = Deno.env.get("X_REQUEST_DELAY_MS") ? parseInt(Deno.env.get("X_REQUEST_DELAY_MS")!, 10) : undefined;
-  let topN = parseInt(Deno.env.get("TOP_N") || "20", 10);
+  let topN = parseInt(Deno.env.get("TOP_N") || "25", 10);
+  let onlySeed: string | undefined = undefined;
+  let rescan = false;
+  let noPrompt = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       printHelp();
       return null;
-    } else if (arg === "--provider" && i + 1 < args.length) {
-      const p = args[++i].toLowerCase();
-      if (p === "twitterapi" || p === "x") provider = p;
-    } else if (arg === "--key" && i + 1 < args.length) {
-      directApiKey = args[++i];
+    } else if (arg === "--depth" && i + 1 < args.length) {
+      maxDepth = parseInt(args[++i], 10);
+    } else if (arg === "--expand-top" && i + 1 < args.length) {
+      expandTop = parseInt(args[++i], 10);
+    } else if (arg === "--expand-min-score" && i + 1 < args.length) {
+      expandMinScore = parseInt(args[++i], 10);
     } else if (arg === "--batch-pause" && i + 1 < args.length) {
       batchPause = parseInt(args[++i], 10);
     } else if (arg === "--max-results" && i + 1 < args.length) {
@@ -304,156 +327,214 @@ function parseCliArgs(args: string[]): CliConfig | null {
       delayMs = parseInt(args[++i], 10);
     } else if (arg === "--top" && i + 1 < args.length) {
       topN = parseInt(args[++i], 10);
-    } else if (!arg.startsWith("-") && !customUsername) {
-      customUsername = arg.replace("@", "").trim();
+    } else if (arg === "--seed" && i + 1 < args.length) {
+      onlySeed = args[++i].replace(/^@/, "").trim().toLowerCase();
+    } else if (arg === "--rescan" || arg === "--force") {
+      rescan = true;
+    } else if (arg === "--no-prompt") {
+      noPrompt = true;
     }
   }
 
-  return { customUsername, provider, directApiKey, batchPause, maxResults, delayMs, topN };
+  return { maxDepth, expandTop, expandMinScore, batchPause, maxResults, delayMs, topN, onlySeed, rescan, noPrompt };
+}
+
+// --- Multi-Level State Typen ---
+interface AccountScore {
+  id: string;
+  username: string;
+  name: string;
+  count: number;
+  followedBy?: string[];
+}
+
+interface LevelData {
+  level: number;
+  name: string;
+  seedCount: number;
+  seedIds: string[];
+  processedIds: string[];
+  scores: Record<string, AccountScore>;
+}
+
+interface StateFile {
+  mode: string;
+  provider: string;
+  updatedAt: string;
+  totalApiCalls: number;
+  totalProfilesFetched: number;
+  estimatedCostUsd: number;
+  queriedAccounts: string[];
+  levels: Record<string, LevelData>;
+  processed: string[];
+  scores: Record<string, AccountScore>;
 }
 
 // --- Hauptprogramm ---
 async function main() {
-  console.log("=========================================");
-  console.log("   🚀 X Alpha-Influencer Finder 🚀       ");
-  console.log("=========================================\n");
+  console.log("=========================================================================");
+  console.log("             🚀 X Multi-Level Alpha-Influencer Finder 🚀                 ");
+  console.log("=========================================================================\n");
 
   const config = parseCliArgs(Deno.args);
   if (!config) return;
 
   const env = resolveAppEnv();
-  const twitterApiKey = config.directApiKey || env.twitterApiIoKey;
+  const twitterApiKey = env.twitterApiIoKey;
 
-  // Provider-Auswahl: TwitterAPI.io bevorzugen wenn Key da ist, sonst offizielle X-API
-  let activeProvider: "twitterapi" | "x" = config.provider || (twitterApiKey ? "twitterapi" : "x");
-
-  if (activeProvider === "twitterapi" && !twitterApiKey) {
-    console.warn("⚠️  TwitterAPI.io gewählt, aber kein Key gefunden. Wechsle zur offiziellen X API v2.");
-    activeProvider = "x";
-  }
+  const activeProvider: "twitterapi" | "x" = twitterApiKey ? "twitterapi" : "x";
 
   if (activeProvider === "x" && !env.xBearerToken) {
     console.error("❌ Kritischer Fehler: Weder TWITTER_API_IO_KEY noch X_BEARER_TOKEN gefunden!");
-    console.error("   Trage TWITTER_API_IO_KEY (empfohlen) oder X_BEARER_TOKEN in llm-gateway/.env ein.");
     Deno.exit(1);
   }
 
-  // Provider-spezifische Defaults
-  const defaultMaxResults = activeProvider === "twitterapi" ? 500 : 100;
-  const defaultDelayMs = activeProvider === "twitterapi" ? 1000 : 2500;
-  const effectiveMaxResults = config.maxResults ?? defaultMaxResults;
+  const defaultDelayMs = activeProvider === "twitterapi" ? 500 : 1500;
+  const effectiveMaxResults = config.maxResults;
   const effectiveDelayMs = config.delayMs ?? defaultDelayMs;
 
-  console.log(`🔑 Konfiguration geladen aus: ${env.source}`);
+  console.log(`🔑 Konfiguration: ${env.source}`);
   if (activeProvider === "twitterapi") {
-    console.log(`✨ Provider: TwitterAPI.io (Ultra-Low-Cost: 0,01 $ pro 1.000 Followings)`);
+    console.log(`✨ Provider: TwitterAPI.io (0,01 $ pro 1.000 Followings)`);
   } else {
-    console.log(`⚠️  Provider: Offizielle X API v2 (Achtung: 0,01 $ pro Profil = 10 $ pro 1.000 Followings!)`);
+    console.log(`⚠️  Provider: Offizielle X API v2 (0,01 $ pro Profil)`);
   }
-  console.log(`⚙️  Einstellungen: Max ${effectiveMaxResults} Followings/Influencer | Delay: ${effectiveDelayMs}ms | Pause alle ${config.batchPause} Calls\n`);
+  const maxResultsStr = effectiveMaxResults > 0 ? `${effectiveMaxResults} Followings` : "Unbegrenzt (alle Followings)";
+  console.log(`🎯 Tiefe: ${config.maxDepth} Ebene(n) | Expand-Top: ${config.expandTop} (Min-Score: ${config.expandMinScore}) | Delay: ${effectiveDelayMs}ms | Max-Followings: ${maxResultsStr}`);
+  if (config.onlySeed) console.log(`🎯 Gezielter Filter auf Seed: @${config.onlySeed}`);
+  if (config.rescan) console.log(`🔄 Rescan-Modus aktiv: Bereits abgefragte Accounts werden erneut vollständig gecrawlt!`);
+  console.log("");
 
-  const scriptDir = new URL(".", import.meta.url).pathname;
-
-  interface InfluencerItem {
-    id: string;
-    username: string;
-    name?: string;
-  }
-
-  let baseInfluencers: InfluencerItem[] = [];
-  let stateKey = "supabase_registered";
-
-  if (config.customUsername) {
-    stateKey = config.customUsername.toLowerCase();
-    console.log(`🎯 Modus: Spezifischer Account @${config.customUsername}`);
-    try {
-      const user = await getUserIdByUsername(config.customUsername, env.xBearerToken, effectiveDelayMs);
-      console.log(`   ID: ${user.id} (${user.name})`);
-      console.log(`   Lade Followings...`);
-      const res = activeProvider === "twitterapi"
-        ? await fetchFollowingsViaTwitterApiIo(user.id, config.customUsername, twitterApiKey, effectiveDelayMs, effectiveMaxResults)
-        : await fetchFollowingsViaOfficialX(user.id, env.xBearerToken, effectiveDelayMs, effectiveMaxResults);
-      baseInfluencers = res.followings.map((f: any) => ({ id: f.id, username: f.username, name: f.name }));
-      console.log(`   ${baseInfluencers.length} Followings als Basis geladen.`);
-    } catch (e: any) {
-      console.error(`❌ Fehler: ${e.message}`);
-      return;
+  // 1. Basis-Influencer aus Supabase laden (Ebene 0 Seed)
+  let baseInfluencers: RegisteredUser[] = [];
+  try {
+    baseInfluencers = await fetchRegisteredInfluencers(env.supabase);
+    console.log(`📊 Basis: ${baseInfluencers.length} registrierte Influencer in Supabase:`);
+    for (const inf of baseInfluencers) {
+      console.log(`   - @${inf.username} (${inf.screen_name || "N/A"}) [ID: ${inf.x_id}]`);
     }
-  } else {
-    console.log("📊 Modus: Alle in Supabase (x_users) registrierten Influencer");
-    try {
-      const dbUsers = await fetchRegisteredInfluencers(env.supabaseUrl, env.supabaseKey);
-      baseInfluencers = dbUsers.map((u) => ({ id: u.x_id, username: u.username, name: u.screen_name }));
-      console.log(`   ✅ ${baseInfluencers.length} aktive Influencer aus Datenbank geladen:`);
-      for (const inf of baseInfluencers) {
-        console.log(`      - @${inf.username} (${inf.name || "N/A"}) [X User-ID: ${inf.id}]`);
-      }
-    } catch (e: any) {
-      console.error(`❌ Konnte Influencer nicht aus Supabase laden: ${e.message}`);
-      return;
-    }
-  }
-
-  if (baseInfluencers.length === 0) {
-    console.log("Keine Basis-Influencer zur Analyse gefunden.");
+  } catch (e: any) {
+    console.error(`❌ Konnte Basis-Influencer nicht aus Supabase laden: ${e.message}`);
     return;
   }
 
-  const baseIds = new Set(baseInfluencers.map((u) => u.id));
-  const stateFilePath = `${scriptDir}../alpha_state_${stateKey}.json`;
+  const allSeedIdsEver = new Set<string>(baseInfluencers.map((b) => b.x_id));
 
-  interface StateFile {
-    mode: string;
-    provider: string;
-    updatedAt: string;
-    totalApiCalls: number;
-    totalProfilesFetched: number;
-    estimatedCostUsd: number;
-    processed: string[];
-    scores: Record<string, { id: string; username: string; name: string; count: number }>;
-  }
+  // 2. State laden und abwärtskompatibel migrieren
+  const scriptDir = new URL(".", import.meta.url).pathname;
+  const stateFilePath = `${scriptDir}../alpha_state_supabase_registered.json`;
+  const backupFilePath = `${stateFilePath}.bak`;
 
   let state: StateFile = {
-    mode: stateKey,
+    mode: "supabase_registered",
     provider: activeProvider,
     updatedAt: new Date().toISOString(),
     totalApiCalls: 0,
     totalProfilesFetched: 0,
     estimatedCostUsd: 0,
+    queriedAccounts: [],
+    levels: {},
     processed: [],
     scores: {},
   };
 
   try {
-    const existingRaw = await Deno.readTextFile(stateFilePath);
-    const parsed = JSON.parse(existingRaw);
-    if (parsed.processed && parsed.scores) {
-      state = parsed;
-      console.log(`\n📂 Vorherigen Zustand geladen: ${state.processed.length} Influencer bereits ausgewertet.`);
-      console.log(`   Aktuell gespeicherte Alpha-Kandidaten: ${Object.keys(state.scores).length}`);
-      if (state.estimatedCostUsd) {
-        console.log(`   Bisherige geschätzte Kosten: ~$${state.estimatedCostUsd.toFixed(4)} USD`);
+    const raw = await Deno.readTextFile(stateFilePath);
+    const parsed = JSON.parse(raw);
+    state = { ...state, ...parsed };
+
+    // Migration von alter flacher Struktur zur Multi-Level Struktur falls nötig
+    if (!state.levels || Object.keys(state.levels).length === 0) {
+      state.levels = {
+        "1": {
+          level: 1,
+          name: "Basis-Influencer (Ebene 1)",
+          seedCount: baseInfluencers.length,
+          seedIds: baseInfluencers.map((b) => b.x_id),
+          processedIds: Array.from(parsed.processed || []),
+          scores: parsed.scores || {},
+        },
+      };
+    }
+
+    // Globales queriedAccounts-Register füllen (lokale JSON + Supabase)
+    const allQueried = new Set<string>(state.queriedAccounts || []);
+    if (parsed.processed) {
+      for (const p of parsed.processed) allQueried.add(p);
+    }
+    for (const lvl of Object.values(state.levels)) {
+      for (const p of lvl.processedIds || []) allQueried.add(p);
+    }
+
+    // Zusätzlicher DB-Abgleich: Alle bereits in Supabase erfassten Seeds laden
+    try {
+      const { data: dbScanned, error: dbErr } = await env.supabase.from("alpha_scanned_accounts").select("x_id");
+      if (!dbErr && dbScanned) {
+        for (const row of dbScanned) {
+          allQueried.add(row.x_id);
+        }
       }
+    } catch {
+      // Offline fallback
+    }
+
+    state.queriedAccounts = Array.from(allQueried);
+
+    console.log(`\n📂 Gespeicherten Zustand geladen:`);
+    console.log(`   - Bereits global abgefragte Accounts: ${state.queriedAccounts.length}`);
+    for (const [lvlNum, lvlData] of Object.entries(state.levels)) {
+      console.log(`   - Ebene ${lvlNum}: ${lvlData.processedIds.length}/${lvlData.seedCount || lvlData.seedIds?.length || "?"} verarbeitet | ${Object.keys(lvlData.scores).length} Kandidaten`);
     }
   } catch {
-    console.log(`\n🆕 Neuer Analyse-Lauf. State wird in ${stateFilePath} gespeichert.`);
+    console.log(`\n🆕 Neuer Analyse-Lauf.`);
+    const allQueried = new Set<string>();
+    try {
+      const { data: dbScanned } = await env.supabase.from("alpha_scanned_accounts").select("x_id");
+      if (dbScanned) {
+        for (const row of dbScanned) allQueried.add(row.x_id);
+      }
+    } catch {
+      // Offline fallback
+    }
+    state.queriedAccounts = Array.from(allQueried);
+    state.levels["1"] = {
+      level: 1,
+      name: "Basis-Influencer (Ebene 1)",
+      seedCount: baseInfluencers.length,
+      seedIds: baseInfluencers.map((b) => b.x_id),
+      processedIds: [],
+      scores: {},
+    };
   }
 
-  const processedIds = new Set<string>(state.processed);
-  const alphaScores = new Map<string, { id: string; username: string; name: string; count: number }>();
-  for (const [id, entry] of Object.entries(state.scores)) {
-    alphaScores.set(id, entry);
-  }
-
+  // Automatisches Backup & Speichern
   const saveState = async () => {
     state.updatedAt = new Date().toISOString();
     state.provider = activeProvider;
-    state.processed = Array.from(processedIds);
-    state.scores = Object.fromEntries(alphaScores.entries());
+    // Abwärtskompatibilität für bestehende Tools: Level 1 immer auf oberster Ebene spiegeln
+    if (state.levels["1"]) {
+      state.processed = state.levels["1"].processedIds;
+      state.scores = state.levels["1"].scores;
+    }
     try {
+      // Sicherheits-Backup der Vorgänger-Version
+      try {
+        await Deno.copyFile(stateFilePath, backupFilePath);
+      } catch {
+        // Erste Datei
+      }
       await Deno.writeTextFile(stateFilePath, JSON.stringify(state, null, 2));
+
+      // Browser JS-Export für CORS-freies direktes Öffnen der Datenbank:
+      try {
+        const jsData = `window.ALPHA_STATE = ${JSON.stringify(state)};\n`;
+        await Deno.writeTextFile(stateFilePath.replace(/\.json$/, "_data.js"), jsData);
+        await Deno.writeTextFile(`${scriptDir}../../alpha_state_data.js`, jsData);
+      } catch {
+        // Ignorieren falls Pfad abweicht
+      }
     } catch (err: any) {
-      console.error(`⚠️  Konnte Zustand nicht speichern: ${err.message}`);
+      console.error(`⚠️  Fehler beim Speichern: ${err.message}`);
     }
   };
 
@@ -461,160 +542,320 @@ async function main() {
   try {
     Deno.addSignalListener("SIGINT", async () => {
       console.log("\n\n🛑 [Abbruch durch Benutzer via Strg+C]");
-      console.log("💾 Speichere aktuellen Stand...");
+      console.log("💾 Sichere Zwischenergebnisse...");
       await saveState();
-      console.log(`✅ Stand erfolgreich in ${stateFilePath} gesichert!`);
-      printResults(alphaScores, config.topN, state.estimatedCostUsd);
+      console.log(`✅ Stand gesichert in: ${stateFilePath}`);
+      printSummary(state, config.topN);
       Deno.exit(0);
     });
   } catch {
-    // Plattform unterstützt Signal-Listener ggf. nicht
+    // ignore
   }
 
-  console.log(`\n🔍 Starte Analyse für ${baseInfluencers.length} Influencer...`);
-  console.log(`   (Pausiert alle ${config.batchPause} Abfragen für Bestätigung)\n`);
-
+  const queriedGlobalSet = new Set<string>(state.queriedAccounts);
   let batchCallCounter = 0;
 
-  for (let i = 0; i < baseInfluencers.length; i++) {
-    const influencer = baseInfluencers[i];
-    const indexStr = `[${i + 1}/${baseInfluencers.length}]`;
+  // --- Multi-Level Traversierung ---
+  for (let currentLevel = 1; currentLevel <= config.maxDepth; currentLevel++) {
+    const levelKey = String(currentLevel);
+    console.log(`\n=========================================================================`);
+    console.log(`                    🔍 ANALYSE EBENE ${currentLevel} von ${config.maxDepth}                      `);
+    console.log(`=========================================================================`);
 
-    if (processedIds.has(influencer.id)) {
-      console.log(`${indexStr} ⏩ Überspringe @${influencer.username} (bereits im State analysiert).`);
+    if (!state.levels[levelKey]) {
+      state.levels[levelKey] = {
+        level: currentLevel,
+        name: currentLevel === 1 ? "Basis-Influencer (Ebene 1)" : `Top-Alpha Followings (Ebene ${currentLevel})`,
+        seedCount: 0,
+        seedIds: [],
+        processedIds: [],
+        scores: {},
+      };
+    }
+
+    const lvl = state.levels[levelKey];
+    const lvlProcessedSet = new Set<string>(lvl.processedIds);
+
+    // Seeds für diese Ebene bestimmen
+    interface TargetSeed {
+      id: string;
+      username: string;
+      name?: string;
+    }
+    let currentSeeds: TargetSeed[] = [];
+
+    if (currentLevel === 1) {
+      currentSeeds = baseInfluencers.map((b) => ({ id: b.x_id, username: b.username, name: b.screen_name }));
+      lvl.seedCount = currentSeeds.length;
+      lvl.seedIds = currentSeeds.map((s) => s.id);
+    } else {
+      // Ebene 2+: Seeds kommen aus den stärksten Alpha-Kandidaten der VORHERIGEN Ebene
+      const prevLevelKey = String(currentLevel - 1);
+      const prevLevel = state.levels[prevLevelKey];
+      if (!prevLevel || Object.keys(prevLevel.scores).length === 0) {
+        console.log(`⚠️  Ebene ${currentLevel - 1} hat noch keine Ergebnisse. Überspringe Ebene ${currentLevel}.`);
+        break;
+      }
+
+      // Filter: Mindest-Score & Sortierung
+      const candidates = Object.values(prevLevel.scores)
+        .filter((c) => c.count >= config.expandMinScore)
+        .sort((a, b) => b.count - a.count);
+
+      // Top N auswählen
+      const topSelected = candidates.slice(0, config.expandTop);
+
+      currentSeeds = topSelected
+        .filter((c) => !allSeedIdsEver.has(c.id)) // Keine bereits in Ebene 0 vorhandenen Influencer
+        .map((c) => ({ id: c.id, username: c.username, name: c.name }));
+
+      lvl.seedCount = currentSeeds.length;
+      lvl.seedIds = currentSeeds.map((s) => s.id);
+
+      // Seeds zu allSeedIdsEver hinzufügen, damit Rückbezüge gefiltert werden
+      for (const s of currentSeeds) allSeedIdsEver.add(s.id);
+
+      console.log(`🌱 Aus Ebene ${currentLevel - 1} wurden die Top ${currentSeeds.length} Alpha-Accounts (Score >= ${config.expandMinScore}) als Basis gewählt:`);
+      const preview = currentSeeds.slice(0, 10).map((s) => `@${s.username}`).join(", ");
+      console.log(`   ${preview}${currentSeeds.length > 10 ? ", ..." : ""}`);
+    }
+
+    if (config.onlySeed) {
+      const filtered = currentSeeds.filter(
+        (s) => s.username.toLowerCase() === config.onlySeed || s.id === config.onlySeed
+      );
+      if (filtered.length > 0) {
+        currentSeeds = filtered;
+      } else {
+        console.log(`⏩ Seed '@${config.onlySeed}' ist in Ebene ${currentLevel} nicht enthalten.`);
+        continue;
+      }
+    }
+
+    const lvlScoresMap = new Map<string, AccountScore>(Object.entries(lvl.scores));
+
+    // Seeds abarbeiten
+    let levelRemainingCount = 0;
+    for (const seed of currentSeeds) {
+      const isAlreadyDone = !config.rescan && (lvlProcessedSet.has(seed.id) || queriedGlobalSet.has(seed.id));
+      if (!isAlreadyDone) {
+        levelRemainingCount++;
+      }
+    }
+
+    if (levelRemainingCount === 0) {
+      console.log(`✅ Ebene ${currentLevel} ist bereits vollständig ausgewertet (${lvl.processedIds.length}/${currentSeeds.length} Seeds fertig).`);
       continue;
     }
 
-    // Interaktive Bestätigung alle N API-Calls
-    if (batchCallCounter >= config.batchPause) {
-      console.log(`\n-------------------------------------------------------------`);
-      console.log(`⏸️  PAUSE: ${config.batchPause} Abfragen in diesem Block erreicht!`);
-      console.log(`   Bisher verarbeitet: ${processedIds.size}/${baseInfluencers.length} Influencer.`);
-      console.log(`   Gefundene Alpha-Kandidaten: ${alphaScores.size}`);
-      console.log(`   Bisherige Kosten: ~$${(state.estimatedCostUsd || 0).toFixed(4)} USD`);
-      console.log(`-------------------------------------------------------------`);
+    console.log(`🚀 ${levelRemainingCount} von ${currentSeeds.length} Seeds auf Ebene ${currentLevel} noch ausstehend.\n`);
 
-      let shouldContinue = true;
-      if (Deno.stdin.isTerminal()) {
-        const answer = prompt(`👉 Möchtest du fortfahren? (j/n) [j]: `);
-        if (answer && answer.trim().toLowerCase() === "n") {
-          shouldContinue = false;
+    for (let i = 0; i < currentSeeds.length; i++) {
+      const seed = currentSeeds[i];
+      const indexStr = `[L${currentLevel}: ${i + 1}/${currentSeeds.length}]`;
+
+      // STRIKTE PERSISTENZ-PRÜFUNG: Niemals doppelt abfragen (außer bei explizitem --rescan)
+      if (!config.rescan && (lvlProcessedSet.has(seed.id) || queriedGlobalSet.has(seed.id))) {
+        console.log(`${indexStr} ⏩ Überspringe @${seed.username} (bereits im State abgefragt).`);
+        if (!lvlProcessedSet.has(seed.id)) {
+          lvlProcessedSet.add(seed.id);
+          lvl.processedIds.push(seed.id);
         }
+        continue;
       }
 
-      if (!shouldContinue) {
-        console.log("\nAbbruch durch Benutzer. Sichere Zustand...");
-        await saveState();
-        console.log(`💾 Fortschritt gesichert in: ${stateFilePath}`);
-        printResults(alphaScores, config.topN, state.estimatedCostUsd);
-        return;
+      // Interaktive Pause alle N Abfragen (nur wenn batchPause > 0)
+      if (config.batchPause > 0 && batchCallCounter >= config.batchPause) {
+        console.log(`\n-------------------------------------------------------------`);
+        console.log(`⏸️  PAUSE: ${config.batchPause} Abfragen in diesem Block erreicht!`);
+        console.log(`   Fortschritt Ebene ${currentLevel}: ${lvlProcessedSet.size}/${currentSeeds.length} Seeds.`);
+        console.log(`   Gesamt-Alpha-Pool Ebene ${currentLevel}: ${lvlScoresMap.size} Accounts.`);
+        console.log(`   Bisherige Kosten: ~$${(state.estimatedCostUsd || 0).toFixed(4)} USD`);
+        console.log(`-------------------------------------------------------------`);
+
+        let shouldContinue = true;
+        if (!config.noPrompt && Deno.stdin.isTerminal()) {
+          const answer = prompt(`👉 Möchtest du fortfahren? (j/n) [j]: `);
+          if (answer && answer.trim().toLowerCase() === "n") {
+            shouldContinue = false;
+          }
+        }
+
+        if (!shouldContinue) {
+          console.log("\nAbbruch durch Benutzer. Sichere Zustand...");
+          lvl.scores = Object.fromEntries(lvlScoresMap.entries());
+          lvl.processedIds = Array.from(lvlProcessedSet);
+          state.queriedAccounts = Array.from(queriedGlobalSet);
+          await saveState();
+          console.log(`💾 Gesichert in: ${stateFilePath}`);
+          printSummary(state, config.topN);
+          return;
+        }
+
+        batchCallCounter = 0;
+        console.log("\nFortsetzung der Analyse...\n");
       }
 
-      batchCallCounter = 0;
-      console.log("\nFortsetzung der Analyse...\n");
-    }
+      console.log(`${indexStr} 🔎 Lade Followings von @${seed.username} [ID: ${seed.id}]...`);
 
-    console.log(`${indexStr} 🔎 Lade Followings von @${influencer.username} (User-ID: ${influencer.id})...`);
+      try {
+        let theirFollowings: any[] = [];
+        let callCostUsd = 0;
 
-    try {
-      let theirFollowings: any[] = [];
-      let callCostUsd = 0;
+        if (activeProvider === "twitterapi") {
+          const result = await fetchFollowingsViaTwitterApiIo(
+            seed.id,
+            seed.username,
+            twitterApiKey,
+            effectiveDelayMs,
+            effectiveMaxResults,
+          );
+          theirFollowings = result.followings;
+          callCostUsd = result.costUsd;
+        } else {
+          const result = await fetchFollowingsViaOfficialX(
+            seed.id,
+            env.xBearerToken,
+            effectiveDelayMs,
+            effectiveMaxResults,
+          );
+          theirFollowings = result.followings;
+          callCostUsd = result.costUsd;
+        }
 
-      if (activeProvider === "twitterapi") {
-        // TwitterAPI.io mit User-ID aufrufen
-        const result = await fetchFollowingsViaTwitterApiIo(
-          influencer.id,
-          influencer.username,
-          twitterApiKey,
-          effectiveDelayMs,
-          effectiveMaxResults,
-        );
-        theirFollowings = result.followings;
-        callCostUsd = result.costUsd;
-      } else {
-        // Offizielle X API
-        const result = await fetchFollowingsViaOfficialX(
-          influencer.id,
-          env.xBearerToken,
-          effectiveDelayMs,
-          effectiveMaxResults,
-        );
-        theirFollowings = result.followings;
-        callCostUsd = result.costUsd;
-      }
+        batchCallCounter++;
+        state.totalApiCalls = (state.totalApiCalls || 0) + 1;
+        state.totalProfilesFetched = (state.totalProfilesFetched || 0) + theirFollowings.length;
+        state.estimatedCostUsd = (state.estimatedCostUsd || 0) + callCostUsd;
 
-      batchCallCounter++;
-      state.totalApiCalls = (state.totalApiCalls || 0) + 1;
-      state.totalProfilesFetched = (state.totalProfilesFetched || 0) + theirFollowings.length;
-      state.estimatedCostUsd = (state.estimatedCostUsd || 0) + callCostUsd;
+        for (const target of theirFollowings) {
+          if (allSeedIdsEver.has(target.id)) continue;
 
-      for (const target of theirFollowings) {
-        // Nicht werten, wenn der Account bereits selbst ein registrierter Basis-Influencer ist
-        if (baseIds.has(target.id)) continue;
+          if (!lvlScoresMap.has(target.id)) {
+            lvlScoresMap.set(target.id, {
+              id: target.id,
+              username: target.username,
+              name: target.name,
+              count: 0,
+              followedBy: [],
+            });
+          }
+          const item = lvlScoresMap.get(target.id)!;
+          item.count += 1;
+          if (!item.followedBy) item.followedBy = [];
+          if (!item.followedBy.includes(seed.username)) {
+            item.followedBy.push(seed.username);
+          }
+        }
 
-        if (!alphaScores.has(target.id)) {
-          alphaScores.set(target.id, {
-            id: target.id,
-            username: target.username,
-            name: target.name,
-            count: 0,
+        lvlProcessedSet.add(seed.id);
+        queriedGlobalSet.add(seed.id);
+        lvl.processedIds = Array.from(lvlProcessedSet);
+        lvl.scores = Object.fromEntries(lvlScoresMap.entries());
+        state.queriedAccounts = Array.from(queriedGlobalSet);
+
+        // 1. Inkrementelle Speicherung in Supabase
+        try {
+          const chunkSize = 500;
+          const relRows = theirFollowings.map((t: any) => ({
+            seed_id: seed.id,
+            seed_username: seed.username.toLowerCase(),
+            candidate_id: t.id,
+            candidate_username: t.username,
+            created_at: new Date().toISOString(),
+          }));
+          for (let rIdx = 0; rIdx < relRows.length; rIdx += chunkSize) {
+            await env.supabase.from("alpha_relations").upsert(relRows.slice(rIdx, rIdx + chunkSize), { onConflict: "seed_id,candidate_id" });
+          }
+
+          const candRows = theirFollowings.map((t: any) => {
+            const item = lvlScoresMap.get(t.id);
+            return {
+              x_id: t.id,
+              username: t.username,
+              name: t.name || t.username,
+              score: item ? item.count : 1,
+              first_level: currentLevel,
+              updated_at: new Date().toISOString(),
+            };
           });
+          for (let cIdx = 0; cIdx < candRows.length; cIdx += chunkSize) {
+            await env.supabase.from("alpha_candidates").upsert(candRows.slice(cIdx, cIdx + chunkSize), { onConflict: "x_id" });
+          }
+
+          await env.supabase.from("alpha_scanned_accounts").upsert({
+            x_id: seed.id,
+            username: seed.username,
+            name: seed.name,
+            level: currentLevel,
+            scanned_at: new Date().toISOString(),
+            followings_fetched: theirFollowings.length,
+            api_provider: activeProvider,
+            cost_usd: callCostUsd,
+          }, { onConflict: "x_id" });
+        } catch (dbErr: any) {
+          console.warn(`   ⚠️ Supabase-Sync Hinweis: ${dbErr.message}`);
         }
-        alphaScores.get(target.id)!.count += 1;
+
+        // 2. Inkrementelles Backup in lokale JSON (Dual-Write)
+        await saveState();
+
+        const costStr = activeProvider === "twitterapi"
+          ? `~$${callCostUsd.toFixed(5)} (${(callCostUsd * 100).toFixed(3)}¢)`
+          : `~$${callCostUsd.toFixed(2)}`;
+
+        console.log(`   ✅ @${seed.username} (${theirFollowings.length} Followings) -> Pool L${currentLevel}: ${lvlScoresMap.size} | Kosten: ${costStr}`);
+      } catch (e: any) {
+        if (e.message.includes("402") || e.message.includes("429")) {
+          console.error(`\n🚨 Limit erreicht (${e.message})! Sichere Zwischenstand...`);
+          lvl.scores = Object.fromEntries(lvlScoresMap.entries());
+          lvl.processedIds = Array.from(lvlProcessedSet);
+          state.queriedAccounts = Array.from(queriedGlobalSet);
+          await saveState();
+          printSummary(state, config.topN);
+          return;
+        }
+        console.warn(`   ⚠️ Übersprungen wegen Fehler: ${e.message}`);
       }
-
-      processedIds.add(influencer.id);
-      await saveState();
-
-      const costStr = activeProvider === "twitterapi"
-        ? `~$${callCostUsd.toFixed(5)} (${(callCostUsd * 100).toFixed(3)}¢)`
-        : `~$${callCostUsd.toFixed(2)}`;
-
-      console.log(`   ✅ @${influencer.username} (${theirFollowings.length} Followings) -> Pool: ${alphaScores.size} | Kosten: ${costStr} (Gesamt: ~$${state.estimatedCostUsd.toFixed(4)})`);
-    } catch (e: any) {
-      if (e.message.includes("402") || e.message.includes("429")) {
-        console.error(`\n🚨 Limit erreicht (${e.message})!`);
-        console.error("   Beende die Schleife sauber und speichere alle bisherigen Ergebnisse.");
-        break;
-      }
-      console.warn(`   ⚠️ Übersprungen wegen Fehler: ${e.message}`);
     }
+
+    lvl.scores = Object.fromEntries(lvlScoresMap.entries());
+    lvl.processedIds = Array.from(lvlProcessedSet);
+    state.queriedAccounts = Array.from(queriedGlobalSet);
+    await saveState();
   }
 
-  await saveState();
-  console.log(`\n🎉 Analyse abgeschlossen! Ergebnisse gespeichert in ${stateFilePath}`);
-  printResults(alphaScores, config.topN, state.estimatedCostUsd);
+  console.log(`\n🎉 Alle gewünschten Ebenen abgeschlossen!`);
+  printSummary(state, config.topN);
 }
 
-function printResults(
-  alphaScores: Map<string, { id: string; username: string; name: string; count: number }>,
-  topN: number,
-  costUsd?: number,
-) {
-  const sorted = Array.from(alphaScores.values()).sort((a, b) => b.count - a.count);
-
-  if (sorted.length === 0) {
-    console.log("\nKeine neuen Alpha-Influencer entdeckt.");
-    return;
-  }
-
+function printSummary(state: StateFile, topN: number) {
   console.log(`\n========================================================================================`);
-  console.log(`       🏆 TOP ${Math.min(topN, sorted.length)} ALPHA-INFLUENCER AUS DEN REGISTRIERTEN ACCOUNTS 🏆        `);
+  console.log(`                           🏆 MULTI-LEVEL ERGEBNIS-ÜBERSICHT 🏆                         `);
   console.log(`========================================================================================`);
-  if (costUsd !== undefined) {
-    console.log(`💰 Geschätzte Gesamtkosten dieses Datenbestands: ~$${costUsd.toFixed(4)} USD\n`);
-  }
+  console.log(`🕒 Stand: ${new Date(state.updatedAt).toLocaleString("de-DE")}`);
+  console.log(`💰 Geschätzte Gesamtkosten: ~$${(state.estimatedCostUsd || 0).toFixed(4)} USD (${state.totalApiCalls || 0} API-Aufrufe, ${state.totalProfilesFetched || 0} Profile)\n`);
 
-  const topList = sorted.slice(0, topN);
-  console.table(
-    topList.map((a, index) => ({
-      Rang: index + 1,
-      Handle: `@${a.username}`,
-      Name: a.name,
-      "Gefolgt von": `${a.count} Influencer(n)`,
-      Profil: `https://x.com/${a.username}`,
-    })),
-  );
+  for (const [lvlKey, lvlData] of Object.entries(state.levels)) {
+    const sorted = Object.values(lvlData.scores).sort((a, b) => b.count - a.count);
+    const overlaps = sorted.filter((s) => s.count > 1).length;
+    console.log(`📊 --- EBENE ${lvlKey}: ${lvlData.name} ---`);
+    console.log(`   Seeds: ${lvlData.processedIds.length}/${lvlData.seedCount || lvlData.seedIds?.length} verarbeitet | ${sorted.length} Kandidaten (${overlaps} mit >= 2 Stimmen)`);
+
+    const topList = sorted.slice(0, Math.min(topN, 10));
+    if (topList.length > 0) {
+      console.table(
+        topList.map((a, idx) => ({
+          Rang: idx + 1,
+          Handle: `@${a.username}`,
+          Name: a.name,
+          Stimmen: `${a.count} Influencer`,
+          Profil: `https://x.com/${a.username}`,
+        })),
+      );
+    }
+    console.log("");
+  }
 }
 
 if (import.meta.main) {

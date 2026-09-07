@@ -19,6 +19,7 @@ export const GLOBAL_BRAIN_ACCESS = Deno.env.get("GLOBAL_BRAIN_ACCESS") === "true
 export const X_BEARER_TOKEN = Deno.env.get("X_BEARER_TOKEN") || "";
 export const X_CLIENT_ID = Deno.env.get("X_CLIENT_ID") || "";
 export const X_CLIENT_SECRET = Deno.env.get("X_CLIENT_SECRET") || "";
+export const TWITTER_API_IO_KEY = Deno.env.get("TWITTER_API_IO_KEY") || Deno.env.get("TWITTERAPI_IO_KEY") || "";
 
 export const SWITCHYARD_URL = Deno.env.get("SWITCHYARD_URL") || "http://switchyard:4000/v1";
 export const EMBED_MODEL = Deno.env.get("EMBED_MODEL") || "embeddings";
@@ -166,6 +167,14 @@ export const xRateLimitStats = {
   totalNewPosts: 0,
 };
 
+// --- TwitterAPI.io Stats ---
+export const twitterApiIoStats = {
+  requestsInWindow: 0,
+  windowStart: Date.now(),
+  totalRequests: 0,
+  lastRequestTime: 0,
+};
+
 export async function throttledXFetch(url: string, init?: RequestInit): Promise<Response> {
   if (Date.now() < globalXApiBlockedUntil) {
     throw new Error(`X API fetch skipped: Blocked until ${new Date(globalXApiBlockedUntil).toISOString()} due to previous 402 Payment Required error.`);
@@ -206,6 +215,85 @@ export async function throttledXFetch(url: string, init?: RequestInit): Promise<
   }
 
   return res;
+}
+
+// --- TwitterAPI.io Fetcher (fremde Profile – kein Fallback zur offiziellen API) ---
+export function isTwitterApiIoAvailable(): boolean {
+  return Boolean(TWITTER_API_IO_KEY);
+}
+
+export async function twitterApiIoFetch(
+  endpoint: string,
+  params: Record<string, string | undefined>,
+): Promise<any> {
+  if (!TWITTER_API_IO_KEY) {
+    throw new Error(
+      "❌ TwitterAPI.io ist nicht konfiguriert. Setze TWITTER_API_IO_KEY in der .env. " +
+      "Prüfe den Provider-Status mit 'manage_sync_pipeline STATUS'.",
+    );
+  }
+
+  // Rate-Limiting: TwitterAPI.io supports 200 QPS, wir limitieren konservativ auf 25 req/15s
+  const now = Date.now();
+  if (now - twitterApiIoStats.windowStart > 15_000) {
+    twitterApiIoStats.requestsInWindow = 0;
+    twitterApiIoStats.windowStart = now;
+  }
+  if (twitterApiIoStats.requestsInWindow >= 25) {
+    const sleepMs = 15_000 - (now - twitterApiIoStats.windowStart) + 500;
+    log.warn(`[TwitterAPI.io] Rate-Limit (25/15s) erreicht, warte ${Math.round(sleepMs / 1000)}s...`);
+    await new Promise((r) => setTimeout(r, sleepMs));
+    twitterApiIoStats.requestsInWindow = 0;
+    twitterApiIoStats.windowStart = Date.now();
+  }
+
+  // Minimaler Delay zwischen Requests (200ms)
+  const elapsed = Date.now() - twitterApiIoStats.lastRequestTime;
+  if (elapsed < 200) {
+    await new Promise((r) => setTimeout(r, 200 - elapsed));
+  }
+
+  const url = new URL(`https://api.twitterapi.io/twitter/${endpoint}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== "") {
+      url.searchParams.set(k, v);
+    }
+  }
+
+  twitterApiIoStats.lastRequestTime = Date.now();
+  twitterApiIoStats.totalRequests++;
+  twitterApiIoStats.requestsInWindow++;
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      "X-API-Key": TWITTER_API_IO_KEY,
+      "User-Agent": "OpenBrain-CCO/2.0",
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "unreadable body");
+    if (res.status === 429) {
+      throw new Error(`TwitterAPI.io Rate Limit überschritten: ${errText}`);
+    }
+    if (res.status === 402) {
+      throw new Error(`TwitterAPI.io Payment Required (402): Guthaben aufgebraucht? ${errText}`);
+    }
+    if (res.status === 403) {
+      throw new Error(`TwitterAPI.io Forbidden (403): API-Key ungültig oder Endpunkt nicht verfügbar. ${errText}`);
+    }
+    throw new Error(`TwitterAPI.io HTTP ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json();
+
+  // Auto-unwrap: manche Endpoints wrappen in "data" (user/info, tweet_timeline),
+  // andere nicht (tweets, followings). Einheitlich auflösen.
+  if (json.data && typeof json.data === "object" && !Array.isArray(json.data)) {
+    return json.data;
+  }
+
+  return json;
 }
 
 // --- Ticker Validator & First Mentions ---
