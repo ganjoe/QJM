@@ -1,0 +1,1 @@
+/home/daniel/QJM/mcp/agent-cco/run_alpha_finder.sh

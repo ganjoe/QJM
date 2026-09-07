@@ -301,4 +301,64 @@ export function registerAnalysisTools(server: McpServer) {
     }
   );
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 5. get_market_breadth — On-the-fly market breadth calculation
+  // ─────────────────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "get_market_breadth",
+    {
+      title: "Get Market Breadth On-The-Fly",
+      description:
+        "Calculates universe or watchlist market breadth on-the-fly (% of stocks with close > MA).\n\n" +
+        "WHEN TO USE: Use when querying market participation/breadth over recent days (e.g. % stocks > 200 SMA, 100 SMA, 50 SMA, 20 EMA).\n" +
+        "WHEN NOT TO USE: For single-stock technical indicators, use `calculate_indicator` or `get_timeseries`.",
+      inputSchema: {
+        period: z.number().optional().default(200).describe("Moving average lookback period (e.g. 200, 100, 50, 20). Default: 200"),
+        ma_type: z.enum(["SMA", "EMA"]).optional().default("SMA").describe("Moving average type: 'SMA' or 'EMA'. Default: 'SMA'"),
+        lookback_days: z.number().optional().default(5).describe("Number of recent trading days to return (e.g. 5, 30). Default: 5"),
+        tickers: z.array(z.string()).optional().describe("Optional list of tickers. If omitted, scans entire universe."),
+        timeframe: z.string().optional().default("1D").describe("Candle timeframe (Default: '1D')"),
+      },
+    },
+    async ({ period, ma_type, lookback_days, tickers, timeframe }: any) => {
+      try {
+        const payload: Record<string, any> = {
+          period: period ?? 200,
+          ma_type: ma_type || "SMA",
+          lookback_days: lookback_days ?? 5,
+          timeframe: timeframe || "1D",
+        };
+        if (tickers && Array.isArray(tickers) && tickers.length > 0) {
+          payload.tickers = tickers.map((t: string) => t.toUpperCase());
+        }
+
+        const res = await fetch(`${PCA_SERVICE_URL}/api/indicators/breadth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const errText = (await res.text()).slice(0, 300);
+          throw new Error(`HTTP ${res.status}: ${errText}`);
+        }
+
+        const data = await res.json();
+        const rows = data.series || [];
+
+        const tableHeader = "| Datum | Marktbreite (%) | Aktien > MA | Universum |\n| :--- | :---: | :---: | :---: |";
+        const tableRows = rows.map((r: any) => `| ${r.date} | **${r.percentage.toFixed(2)}%** | ${r.count} | ${r.total} |`).join("\n");
+        const summaryText = `📊 **Marktbreite (${data.ma_type} ${data.period})**\nScanned ${data.total_universe} Tickers in ${data.elapsed_seconds}s\n\n${tableHeader}\n${tableRows}\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+
+        return {
+          content: [{ type: "text", text: summaryText }],
+        };
+      } catch (err: any) {
+        log.error(`get_market_breadth error: ${err.message}`);
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
 }
+
