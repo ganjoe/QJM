@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Reales Skriptverzeichnis ermitteln (auch wenn über Symlink aufgerufen)
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
 if ! command -v deno &> /dev/null; then
@@ -9,4 +8,4 @@ if ! command -v deno &> /dev/null; then
     exit 1
 fi
 
-deno run -A "$SCRIPT_DIR/scripts/find_alpha_influencer.ts" "$@"
+deno run -A "$SCRIPT_DIR/scripts/summarize_alpha.ts" "$@"

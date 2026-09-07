@@ -1,0 +1,5075 @@
+{
+  "mode": "supabase_registered",
+  "updatedAt": "2026-09-07T19:50:35.930Z",
+  "totalApiCalls": 2,
+  "processed": [
+    "1940360837547565056",
+    "246626141"
+  ],
+  "scores": {
+    "1605": {
+      "id": "1605",
+      "username": "sama",
+      "name": "Sam Altman",
+      "count": 1
+    },
+    "2435": {
+      "id": "2435",
+      "username": "bscholl",
+      "name": "Blake Scholl 🛫",
+      "count": 1
+    },
+    "1296521": {
+      "id": "1296521",
+      "username": "Camp4",
+      "name": "Kevin Dahlstrom",
+      "count": 1
+    },
+    "1386531": {
+      "id": "1386531",
+      "username": "DaveFloydTrader",
+      "name": "Dave Floyd",
+      "count": 1
+    },
+    "1473431": {
+      "id": "1473431",
+      "username": "jessefelder",
+      "name": "Jesse Felder",
+      "count": 1
+    },
+    "3291691": {
+      "id": "3291691",
+      "username": "chamath",
+      "name": "Chamath Palihapitiya",
+      "count": 1
+    },
+    "5889072": {
+      "id": "5889072",
+      "username": "wccftech",
+      "name": "Wccftech",
+      "count": 1
+    },
+    "5988062": {
+      "id": "5988062",
+      "username": "TheEconomist",
+      "name": "The Economist",
+      "count": 1
+    },
+    "9860682": {
+      "id": "9860682",
+      "username": "alexwg",
+      "name": "Dr. Alex Wissner-Gross",
+      "count": 1
+    },
+    "10154362": {
+      "id": "10154362",
+      "username": "JasonZX",
+      "name": "Jason Z",
+      "count": 1
+    },
+    "10667972": {
+      "id": "10667972",
+      "username": "RhysSullivan",
+      "name": "Rhys",
+      "count": 1
+    },
+    "14379660": {
+      "id": "14379660",
+      "username": "brian_armstrong",
+      "name": "Brian Armstrong",
+      "count": 1
+    },
+    "14546264": {
+      "id": "14546264",
+      "username": "BenBajarin",
+      "name": "Ben Bajarin",
+      "count": 1
+    },
+    "14579415": {
+      "id": "14579415",
+      "username": "JonahLupton",
+      "name": "Jonah Lupton",
+      "count": 1
+    },
+    "14776186": {
+      "id": "14776186",
+      "username": "jietang",
+      "name": "jietang",
+      "count": 1
+    },
+    "14861876": {
+      "id": "14861876",
+      "username": "AMD",
+      "name": "AMD",
+      "count": 1
+    },
+    "14983508": {
+      "id": "14983508",
+      "username": "ChrisCamillo",
+      "name": "Chris Camillo",
+      "count": 1
+    },
+    "15033574": {
+      "id": "15033574",
+      "username": "adamtaggart",
+      "name": "Adam Taggart",
+      "count": 1
+    },
+    "15079601": {
+      "id": "15079601",
+      "username": "The_Real_Fly",
+      "name": "The_Real_Fly",
+      "count": 1
+    },
+    "15110357": {
+      "id": "15110357",
+      "username": "ReutersBiz",
+      "name": "Reuters Business",
+      "count": 1
+    },
+    "15813140": {
+      "id": "15813140",
+      "username": "GoogleCloudTech",
+      "name": "Google Cloud Tech",
+      "count": 1
+    },
+    "16003691": {
+      "id": "16003691",
+      "username": "kevinxu",
+      "name": "Kevin Xu",
+      "count": 1
+    },
+    "16598957": {
+      "id": "16598957",
+      "username": "firstadopter",
+      "name": "tae kim",
+      "count": 2
+    },
+    "16803117": {
+      "id": "16803117",
+      "username": "iBankCoin4tw",
+      "name": "iBankCoin, A Reliable Source",
+      "count": 1
+    },
+    "16936686": {
+      "id": "16936686",
+      "username": "21WIRE",
+      "name": "Patrick Henningsen",
+      "count": 1
+    },
+    "17064514": {
+      "id": "17064514",
+      "username": "tomshardware",
+      "name": "Tom's Hardware",
+      "count": 1
+    },
+    "17198839": {
+      "id": "17198839",
+      "username": "FairmontWhistlr",
+      "name": "FairmontWhistlr",
+      "count": 1
+    },
+    "17437374": {
+      "id": "17437374",
+      "username": "lexvandam",
+      "name": "Lex van Dam",
+      "count": 1
+    },
+    "17693297": {
+      "id": "17693297",
+      "username": "AndrewDudum",
+      "name": "andrewdudum",
+      "count": 1
+    },
+    "17802669": {
+      "id": "17802669",
+      "username": "JG_Nuke",
+      "name": "Nobody Special",
+      "count": 1
+    },
+    "17825986": {
+      "id": "17825986",
+      "username": "rubicon59",
+      "name": "rubicon59",
+      "count": 1
+    },
+    "18359716": {
+      "id": "18359716",
+      "username": "edzitron",
+      "name": "Ed Zitron",
+      "count": 1
+    },
+    "18433952": {
+      "id": "18433952",
+      "username": "Gaurab",
+      "name": "Gaurab Chakrabarti",
+      "count": 1
+    },
+    "18557769": {
+      "id": "18557769",
+      "username": "danushman",
+      "name": "dan ushman",
+      "count": 1
+    },
+    "18571616": {
+      "id": "18571616",
+      "username": "alaidi",
+      "name": "Ashraf Laidi",
+      "count": 1
+    },
+    "19079480": {
+      "id": "19079480",
+      "username": "LDrogen",
+      "name": "Leigh Drogen",
+      "count": 1
+    },
+    "19331948": {
+      "id": "19331948",
+      "username": "Preda2005",
+      "name": "Marcio Lima 利真 マルシオ 💎",
+      "count": 1
+    },
+    "19472876": {
+      "id": "19472876",
+      "username": "AndrewLawton",
+      "name": "Andrew Lawton",
+      "count": 1
+    },
+    "19510090": {
+      "id": "19510090",
+      "username": "togelius",
+      "name": "Julian Togelius",
+      "count": 1
+    },
+    "19847181": {
+      "id": "19847181",
+      "username": "novogratz",
+      "name": "Mike Novogratz",
+      "count": 1
+    },
+    "19951102": {
+      "id": "19951102",
+      "username": "kofinas",
+      "name": "Demetri Kofinas",
+      "count": 1
+    },
+    "19997064": {
+      "id": "19997064",
+      "username": "MebFaber",
+      "name": "Meb Faber",
+      "count": 1
+    },
+    "20209445": {
+      "id": "20209445",
+      "username": "Fullcarry",
+      "name": "Ed Bradford",
+      "count": 1
+    },
+    "20253024": {
+      "id": "20253024",
+      "username": "chigrl",
+      "name": "Tracy Shuchart (𝒞𝒽𝒾 )",
+      "count": 1
+    },
+    "20825522": {
+      "id": "20825522",
+      "username": "InEgoVeritas",
+      "name": "Christian G",
+      "count": 1
+    },
+    "21342612": {
+      "id": "21342612",
+      "username": "David_Stendahl",
+      "name": "David Stendahl",
+      "count": 1
+    },
+    "21652157": {
+      "id": "21652157",
+      "username": "judyshel",
+      "name": "Judy Shelton",
+      "count": 1
+    },
+    "22149757": {
+      "id": "22149757",
+      "username": "ces921",
+      "name": "Craig Shapiro",
+      "count": 1
+    },
+    "22464898": {
+      "id": "22464898",
+      "username": "HermsTheWord",
+      "name": "Herman Wang",
+      "count": 1
+    },
+    "22867489": {
+      "id": "22867489",
+      "username": "TommyThornton",
+      "name": "Thomas Thornton",
+      "count": 1
+    },
+    "23865085": {
+      "id": "23865085",
+      "username": "brianlilley",
+      "name": "Brian Lilley",
+      "count": 1
+    },
+    "24127811": {
+      "id": "24127811",
+      "username": "mtracey",
+      "name": "Michael Tracey",
+      "count": 1
+    },
+    "24197908": {
+      "id": "24197908",
+      "username": "aphysicist",
+      "name": "Aaron Slodov",
+      "count": 1
+    },
+    "24767619": {
+      "id": "24767619",
+      "username": "JonesDanny",
+      "name": "Danny Jones",
+      "count": 1
+    },
+    "25029495": {
+      "id": "25029495",
+      "username": "pulte",
+      "name": "Pulte",
+      "count": 1
+    },
+    "25073877": {
+      "id": "25073877",
+      "username": "realDonaldTrump",
+      "name": "Donald J. Trump",
+      "count": 1
+    },
+    "25159325": {
+      "id": "25159325",
+      "username": "IanRountree",
+      "name": "ian",
+      "count": 1
+    },
+    "25163231": {
+      "id": "25163231",
+      "username": "Convertbond",
+      "name": "Lawrence McDonald",
+      "count": 1
+    },
+    "25187182": {
+      "id": "25187182",
+      "username": "nomiprins",
+      "name": "Nomi Prins",
+      "count": 1
+    },
+    "25488729": {
+      "id": "25488729",
+      "username": "Francesc_Forex",
+      "name": "Francesc Riverola - FXS, FMM & The ITI",
+      "count": 1
+    },
+    "25501714": {
+      "id": "25501714",
+      "username": "jameshenryand",
+      "name": "James Henry Anderson",
+      "count": 1
+    },
+    "26266863": {
+      "id": "26266863",
+      "username": "UrbanKaoboy",
+      "name": "Michael Kao",
+      "count": 1
+    },
+    "27185960": {
+      "id": "27185960",
+      "username": "MishGEA",
+      "name": "Mike \"Mish\" Shedlock",
+      "count": 1
+    },
+    "27434900": {
+      "id": "27434900",
+      "username": "JohnLeFevre",
+      "name": "John LeFevre",
+      "count": 1
+    },
+    "27652717": {
+      "id": "27652717",
+      "username": "FXStreetNews",
+      "name": "FXStreet News",
+      "count": 1
+    },
+    "28212513": {
+      "id": "28212513",
+      "username": "Barchart",
+      "name": "Barchart",
+      "count": 1
+    },
+    "28582680": {
+      "id": "28582680",
+      "username": "bgarlinghouse",
+      "name": "Brad Garlinghouse",
+      "count": 1
+    },
+    "28626088": {
+      "id": "28626088",
+      "username": "JoshYoung",
+      "name": "Josh Young",
+      "count": 1
+    },
+    "29771332": {
+      "id": "29771332",
+      "username": "Hutchyman",
+      "name": "Hutchyman",
+      "count": 1
+    },
+    "30399584": {
+      "id": "30399584",
+      "username": "benitoz",
+      "name": "Ben Pouladian",
+      "count": 1
+    },
+    "30766919": {
+      "id": "30766919",
+      "username": "FreightAlley",
+      "name": "Craig Fuller 🛩🚛🚂⚓️",
+      "count": 1
+    },
+    "31064165": {
+      "id": "31064165",
+      "username": "Fxhedgers",
+      "name": "FXHedge",
+      "count": 1
+    },
+    "32002507": {
+      "id": "32002507",
+      "username": "kevinolearytv",
+      "name": "Kevin O'Leary aka Mr. Wonderful",
+      "count": 1
+    },
+    "33662065": {
+      "id": "33662065",
+      "username": "Fxflow",
+      "name": "Boris Schlossberg",
+      "count": 1
+    },
+    "33836629": {
+      "id": "33836629",
+      "username": "karpathy",
+      "name": "Andrej Karpathy",
+      "count": 1
+    },
+    "33973843": {
+      "id": "33973843",
+      "username": "PipCzar",
+      "name": "Blake Morrow",
+      "count": 1
+    },
+    "34671618": {
+      "id": "34671618",
+      "username": "AndrewThrasher",
+      "name": "Andrew Thrasher, CMT",
+      "count": 1
+    },
+    "34939208": {
+      "id": "34939208",
+      "username": "BarbarianCap",
+      "name": "Barbarian Capital",
+      "count": 1
+    },
+    "35286493": {
+      "id": "35286493",
+      "username": "themarketsniper",
+      "name": "Francis Hunt - The Market Sniper, CMT (MBA)",
+      "count": 1
+    },
+    "36232059": {
+      "id": "36232059",
+      "username": "EricNewcomer",
+      "name": "Eric Newcomer",
+      "count": 1
+    },
+    "36442519": {
+      "id": "36442519",
+      "username": "chrismartenson",
+      "name": "Chris Martenson",
+      "count": 1
+    },
+    "36499730": {
+      "id": "36499730",
+      "username": "kathylienfx",
+      "name": "Kathy Lien",
+      "count": 1
+    },
+    "36526960": {
+      "id": "36526960",
+      "username": "drcateshanahan",
+      "name": "Cate Shanahan, MD",
+      "count": 1
+    },
+    "37011010": {
+      "id": "37011010",
+      "username": "KevinBCook",
+      "name": "Kevin Brent Cook",
+      "count": 1
+    },
+    "37465555": {
+      "id": "37465555",
+      "username": "ElaineAryn",
+      "name": "Aryn Elaine➕",
+      "count": 1
+    },
+    "37878230": {
+      "id": "37878230",
+      "username": "iamfabian",
+      "name": "Fabian فابيان",
+      "count": 1
+    },
+    "38107864": {
+      "id": "38107864",
+      "username": "aubreystrobel",
+      "name": "Aubrey Strobel",
+      "count": 1
+    },
+    "39089840": {
+      "id": "39089840",
+      "username": "David_Tracey",
+      "name": "Godzilla Trader 🦖",
+      "count": 1
+    },
+    "39108691": {
+      "id": "39108691",
+      "username": "MarketMike",
+      "name": "Mike",
+      "count": 1
+    },
+    "39344374": {
+      "id": "39344374",
+      "username": "DonaldJTrumpJr",
+      "name": "Donald Trump Jr.",
+      "count": 1
+    },
+    "40129171": {
+      "id": "40129171",
+      "username": "Schuldensuehner",
+      "name": "Holger Zschaepitz",
+      "count": 1
+    },
+    "40161470": {
+      "id": "40161470",
+      "username": "drarce",
+      "name": "Dr. Mari",
+      "count": 1
+    },
+    "40316065": {
+      "id": "40316065",
+      "username": "WBrettWilson",
+      "name": "** W. Brett Wilson **",
+      "count": 1
+    },
+    "40586273": {
+      "id": "40586273",
+      "username": "mike_maloney",
+      "name": "Michael Maloney",
+      "count": 1
+    },
+    "40742821": {
+      "id": "40742821",
+      "username": "TuurDemeester",
+      "name": "Tuur Demeester",
+      "count": 1
+    },
+    "42170658": {
+      "id": "42170658",
+      "username": "xWILLRODGERSx",
+      "name": "Will Rodgers",
+      "count": 1
+    },
+    "42632530": {
+      "id": "42632530",
+      "username": "marcmakingsense",
+      "name": "Marc Chandler",
+      "count": 1
+    },
+    "44196397": {
+      "id": "44196397",
+      "username": "elonmusk",
+      "name": "Elon Musk",
+      "count": 2
+    },
+    "44385628": {
+      "id": "44385628",
+      "username": "gregkellyusa",
+      "name": "Greg Kelly",
+      "count": 1
+    },
+    "45483286": {
+      "id": "45483286",
+      "username": "dnystedt",
+      "name": "Dan Nystedt",
+      "count": 2
+    },
+    "45671113": {
+      "id": "45671113",
+      "username": "RadicalAdem",
+      "name": "Adem Tumerkan",
+      "count": 1
+    },
+    "46745297": {
+      "id": "46745297",
+      "username": "crossbordercap",
+      "name": "CrossBorder Capital/ GLIndexes",
+      "count": 1
+    },
+    "47745141": {
+      "id": "47745141",
+      "username": "Rich_Cooper",
+      "name": "Richard Cooper",
+      "count": 1
+    },
+    "49939647": {
+      "id": "49939647",
+      "username": "ericnuttall",
+      "name": "Eric Nuttall",
+      "count": 1
+    },
+    "50480074": {
+      "id": "50480074",
+      "username": "alexdg",
+      "name": "Alex Goncalves",
+      "count": 1
+    },
+    "51980468": {
+      "id": "51980468",
+      "username": "BeardedxScholar",
+      "name": "수문다람쥐썬더",
+      "count": 1
+    },
+    "54345566": {
+      "id": "54345566",
+      "username": "crudegusher",
+      "name": "Sankey Research",
+      "count": 1
+    },
+    "54386237": {
+      "id": "54386237",
+      "username": "Andresevd",
+      "name": "AV",
+      "count": 1
+    },
+    "54811865": {
+      "id": "54811865",
+      "username": "labubu_trader",
+      "name": "3X Long Labubu",
+      "count": 1
+    },
+    "56562803": {
+      "id": "56562803",
+      "username": "PeterSchiff",
+      "name": "Peter Schiff",
+      "count": 1
+    },
+    "57288354": {
+      "id": "57288354",
+      "username": "IISS_org",
+      "name": "IISS News",
+      "count": 1
+    },
+    "57333256": {
+      "id": "57333256",
+      "username": "inflation_guy",
+      "name": "Michael Ashton",
+      "count": 1
+    },
+    "57549703": {
+      "id": "57549703",
+      "username": "blazingbees",
+      "name": "Katoo",
+      "count": 1
+    },
+    "58560480": {
+      "id": "58560480",
+      "username": "MichaelDell",
+      "name": "Michael Dell 🇺🇸",
+      "count": 1
+    },
+    "59393368": {
+      "id": "59393368",
+      "username": "LiveSquawk",
+      "name": "LiveSquawk",
+      "count": 1
+    },
+    "59603406": {
+      "id": "59603406",
+      "username": "NickTimiraos",
+      "name": "Nick Timiraos",
+      "count": 1
+    },
+    "60783724": {
+      "id": "60783724",
+      "username": "ianbremmer",
+      "name": "ian bremmer",
+      "count": 1
+    },
+    "62199877": {
+      "id": "62199877",
+      "username": "ichiro1992",
+      "name": "Ghost Whisperer",
+      "count": 1
+    },
+    "62562916": {
+      "id": "62562916",
+      "username": "markflowchatter",
+      "name": "Marc Lehman",
+      "count": 1
+    },
+    "62696611": {
+      "id": "62696611",
+      "username": "sniffshiba",
+      "name": "무기견",
+      "count": 1
+    },
+    "65681636": {
+      "id": "65681636",
+      "username": "chessNwine",
+      "name": "Chess",
+      "count": 1
+    },
+    "66369181": {
+      "id": "66369181",
+      "username": "DeptofWar",
+      "name": "Department of War 🇺🇸",
+      "count": 1
+    },
+    "67776207": {
+      "id": "67776207",
+      "username": "optionflys",
+      "name": "Mo",
+      "count": 1
+    },
+    "68525640": {
+      "id": "68525640",
+      "username": "highyield6",
+      "name": "HY6",
+      "count": 1
+    },
+    "73465112": {
+      "id": "73465112",
+      "username": "agtrader",
+      "name": "AGTrader",
+      "count": 1
+    },
+    "73617075": {
+      "id": "73617075",
+      "username": "SingularityRes",
+      "name": "Singularity Research",
+      "count": 2
+    },
+    "78523300": {
+      "id": "78523300",
+      "username": "RealJamesWoods",
+      "name": "James Woods",
+      "count": 1
+    },
+    "78966655": {
+      "id": "78966655",
+      "username": "GlobalMacroZen",
+      "name": "GlobalMacroZen",
+      "count": 1
+    },
+    "82172203": {
+      "id": "82172203",
+      "username": "BobLoukas",
+      "name": "Bob Loukas 🗽",
+      "count": 1
+    },
+    "85389537": {
+      "id": "85389537",
+      "username": "GregaHorvatFX",
+      "name": "Grega Horvat",
+      "count": 1
+    },
+    "86468990": {
+      "id": "86468990",
+      "username": "yasutaketin",
+      "name": "シバイヌおやびん（投資系VTuber）",
+      "count": 1
+    },
+    "92680363": {
+      "id": "92680363",
+      "username": "StephanieHazen",
+      "name": "Stephanie Hazen",
+      "count": 1
+    },
+    "95134466": {
+      "id": "95134466",
+      "username": "SVTrivo",
+      "name": "Papa Johns",
+      "count": 2
+    },
+    "95257097": {
+      "id": "95257097",
+      "username": "mikealfred",
+      "name": "Mike Alfred",
+      "count": 1
+    },
+    "97905772": {
+      "id": "97905772",
+      "username": "juniorminingpro",
+      "name": "Junior Mining Pro",
+      "count": 1
+    },
+    "102869127": {
+      "id": "102869127",
+      "username": "Mayhem4Markets",
+      "name": "Markets & Mayhem",
+      "count": 1
+    },
+    "104237736": {
+      "id": "104237736",
+      "username": "Bloomberg",
+      "name": "Bloomberg",
+      "count": 1
+    },
+    "105852422": {
+      "id": "105852422",
+      "username": "alifarhat79",
+      "name": "Not Jerome Powell",
+      "count": 1
+    },
+    "107506412": {
+      "id": "107506412",
+      "username": "NicoleBehnam",
+      "name": "Nicole Behnam",
+      "count": 1
+    },
+    "107611396": {
+      "id": "107611396",
+      "username": "wealth_effect",
+      "name": "Wealth Effect",
+      "count": 1
+    },
+    "108274765": {
+      "id": "108274765",
+      "username": "DrNHJ",
+      "name": "루팡",
+      "count": 1
+    },
+    "109350515": {
+      "id": "109350515",
+      "username": "BNNBloomberg",
+      "name": "BNN Bloomberg",
+      "count": 1
+    },
+    "111988112": {
+      "id": "111988112",
+      "username": "McClellanOsc",
+      "name": "Tom McClellan",
+      "count": 1
+    },
+    "115754870": {
+      "id": "115754870",
+      "username": "RT_America",
+      "name": "",
+      "count": 1
+    },
+    "116363549": {
+      "id": "116363549",
+      "username": "SameeraKhan",
+      "name": "samirah",
+      "count": 1
+    },
+    "123730261": {
+      "id": "123730261",
+      "username": "SteveSaretsky",
+      "name": "Steve Saretsky",
+      "count": 1
+    },
+    "123975474": {
+      "id": "123975474",
+      "username": "jonrappoport",
+      "name": "Jon Rappoport Archive",
+      "count": 1
+    },
+    "126717954": {
+      "id": "126717954",
+      "username": "NicTrades",
+      "name": "Nicola Duke",
+      "count": 1
+    },
+    "134114926": {
+      "id": "134114926",
+      "username": "jimmyhuli",
+      "name": "Jimmy狐狸",
+      "count": 1
+    },
+    "146095589": {
+      "id": "146095589",
+      "username": "geraldcelente",
+      "name": "Gerald Celente",
+      "count": 1
+    },
+    "147017457": {
+      "id": "147017457",
+      "username": "nknewsorg",
+      "name": "NK NEWS",
+      "count": 1
+    },
+    "151126436": {
+      "id": "151126436",
+      "username": "Dorian_Yates",
+      "name": "Dorian Yates",
+      "count": 1
+    },
+    "151650299": {
+      "id": "151650299",
+      "username": "ponyoonthebeach",
+      "name": "ぷにょ",
+      "count": 1
+    },
+    "156002449": {
+      "id": "156002449",
+      "username": "LoveDemHotties",
+      "name": "",
+      "count": 1
+    },
+    "166364712": {
+      "id": "166364712",
+      "username": "StephenPunwasi",
+      "name": "Stephen Punwasi 🏚️📉🐈☃️",
+      "count": 1
+    },
+    "168679374": {
+      "id": "168679374",
+      "username": "muddywatersre",
+      "name": "MuddyWatersResearch",
+      "count": 1
+    },
+    "173768804": {
+      "id": "173768804",
+      "username": "pronounced_kyle",
+      "name": "Christian Keil",
+      "count": 1
+    },
+    "174544188": {
+      "id": "174544188",
+      "username": "OddDiligence",
+      "name": "Odd Diligence",
+      "count": 1
+    },
+    "175624200": {
+      "id": "175624200",
+      "username": "ID_AA_Carmack",
+      "name": "John Carmack",
+      "count": 1
+    },
+    "182910373": {
+      "id": "182910373",
+      "username": "ronmortgageguy",
+      "name": "Ron Butler",
+      "count": 1
+    },
+    "188369814": {
+      "id": "188369814",
+      "username": "biancoresearch",
+      "name": "Jim Bianco",
+      "count": 1
+    },
+    "193678026": {
+      "id": "193678026",
+      "username": "Plaskpojken",
+      "name": "Mikael Wåhlin",
+      "count": 1
+    },
+    "194658182": {
+      "id": "194658182",
+      "username": "JohnReedStark",
+      "name": "John Reed Stark",
+      "count": 1
+    },
+    "195447057": {
+      "id": "195447057",
+      "username": "dinkin_flickaa",
+      "name": "Jonah Katz",
+      "count": 1
+    },
+    "195900371": {
+      "id": "195900371",
+      "username": "paulbarrontv",
+      "name": "Paul Barron Network",
+      "count": 1
+    },
+    "198179597": {
+      "id": "198179597",
+      "username": "adamscrabble",
+      "name": "Adam Townsend",
+      "count": 1
+    },
+    "199152706": {
+      "id": "199152706",
+      "username": "DollarVigilante",
+      "name": "The Dollar Vigilante",
+      "count": 1
+    },
+    "199170156": {
+      "id": "199170156",
+      "username": "jam_croissant",
+      "name": "Cem Karsan 🥐",
+      "count": 1
+    },
+    "199640036": {
+      "id": "199640036",
+      "username": "GCGodfrey",
+      "name": "Gemma Godfrey",
+      "count": 1
+    },
+    "201153042": {
+      "id": "201153042",
+      "username": "trendforce",
+      "name": "TrendForce",
+      "count": 2
+    },
+    "208500614": {
+      "id": "208500614",
+      "username": "StormDirac",
+      "name": "Anders Storm",
+      "count": 1
+    },
+    "218718269": {
+      "id": "218718269",
+      "username": "TonyNashNerd",
+      "name": "Tony Nash",
+      "count": 1
+    },
+    "219434223": {
+      "id": "219434223",
+      "username": "AnthonyCrudele",
+      "name": "Anthony Crudele",
+      "count": 1
+    },
+    "220203225": {
+      "id": "220203225",
+      "username": "MPelletierCIO",
+      "name": "Martin Pelletier",
+      "count": 1
+    },
+    "224107242": {
+      "id": "224107242",
+      "username": "BenBankas",
+      "name": "Ben Bankas",
+      "count": 1
+    },
+    "227518030": {
+      "id": "227518030",
+      "username": "ScottLucian",
+      "name": "Lucian Scott 🇨🇦",
+      "count": 1
+    },
+    "228426881": {
+      "id": "228426881",
+      "username": "GreenMonsterah",
+      "name": "Art Vandelay",
+      "count": 1
+    },
+    "228918333": {
+      "id": "228918333",
+      "username": "danielnewmanUV",
+      "name": "Daniel Newman",
+      "count": 1
+    },
+    "229143589": {
+      "id": "229143589",
+      "username": "forexstophunter",
+      "name": "Dale Pinkert",
+      "count": 1
+    },
+    "230548922": {
+      "id": "230548922",
+      "username": "BasedBlondex",
+      "name": "BasedBlondexx",
+      "count": 1
+    },
+    "230912559": {
+      "id": "230912559",
+      "username": "DratchCap",
+      "name": "Matt Dratch",
+      "count": 1
+    },
+    "234638601": {
+      "id": "234638601",
+      "username": "JacobKinge",
+      "name": "Jacob King",
+      "count": 1
+    },
+    "236953420": {
+      "id": "236953420",
+      "username": "CitronResearch",
+      "name": "Citron Research",
+      "count": 1
+    },
+    "239026022": {
+      "id": "239026022",
+      "username": "SamRo",
+      "name": "Sam Ro 📈",
+      "count": 1
+    },
+    "242827267": {
+      "id": "242827267",
+      "username": "PierrePoilievre",
+      "name": "Pierre Poilievre",
+      "count": 1
+    },
+    "243318995": {
+      "id": "243318995",
+      "username": "runews",
+      "name": "Russian Market",
+      "count": 1
+    },
+    "246621297": {
+      "id": "246621297",
+      "username": "GeorgeGammon",
+      "name": "George Gammon",
+      "count": 1
+    },
+    "247857712": {
+      "id": "247857712",
+      "username": "PeterLBrandt",
+      "name": "The Factor Report",
+      "count": 1
+    },
+    "250259063": {
+      "id": "250259063",
+      "username": "dieworkwear",
+      "name": "derek guy",
+      "count": 1
+    },
+    "251175635": {
+      "id": "251175635",
+      "username": "dtarian04",
+      "name": "Deepak K Tiwari",
+      "count": 1
+    },
+    "253168011": {
+      "id": "253168011",
+      "username": "MarkNewtonCMT",
+      "name": "Mark Newton CMT",
+      "count": 1
+    },
+    "254280603": {
+      "id": "254280603",
+      "username": "MarkYusko",
+      "name": "Mark W. Yusko - Two Point One Quadrillion",
+      "count": 1
+    },
+    "258612274": {
+      "id": "258612274",
+      "username": "markbspiegel",
+      "name": "Mark B. Spiegel",
+      "count": 1
+    },
+    "258826361": {
+      "id": "258826361",
+      "username": "hotchipsorg",
+      "name": "Hot Chips",
+      "count": 1
+    },
+    "260377391": {
+      "id": "260377391",
+      "username": "gilliantett",
+      "name": "Gillian Tett",
+      "count": 1
+    },
+    "264370502": {
+      "id": "264370502",
+      "username": "CiovaccoCapital",
+      "name": "Chris Ciovacco",
+      "count": 1
+    },
+    "264692322": {
+      "id": "264692322",
+      "username": "elvermo",
+      "name": "Ellen Vermorgen",
+      "count": 1
+    },
+    "267509471": {
+      "id": "267509471",
+      "username": "mingchikuo",
+      "name": "郭明錤｜Ming-Chi Kuo",
+      "count": 2
+    },
+    "268482852": {
+      "id": "268482852",
+      "username": "mnicoletos",
+      "name": "Michael Nicoletos",
+      "count": 1
+    },
+    "272696832": {
+      "id": "272696832",
+      "username": "bennpeifert",
+      "name": "Benn Eifert 🥷🏴‍☠️",
+      "count": 1
+    },
+    "275276082": {
+      "id": "275276082",
+      "username": "Thomas1774Paine",
+      "name": "Thomas Paine",
+      "count": 1
+    },
+    "284333988": {
+      "id": "284333988",
+      "username": "OfficialLoganK",
+      "name": "Logan Kilpatrick",
+      "count": 1
+    },
+    "292226717": {
+      "id": "292226717",
+      "username": "JessicaDAmir",
+      "name": "Jessica Amir",
+      "count": 1
+    },
+    "294293982": {
+      "id": "294293982",
+      "username": "Rothmus",
+      "name": "Rothmus 🏴",
+      "count": 1
+    },
+    "294306372": {
+      "id": "294306372",
+      "username": "PalmerLuckey",
+      "name": "Palmer Luckey",
+      "count": 1
+    },
+    "298953617": {
+      "id": "298953617",
+      "username": "TechCharts",
+      "name": "Aksel Kibar, CMT",
+      "count": 1
+    },
+    "301638595": {
+      "id": "301638595",
+      "username": "AntonKreil",
+      "name": "AntonKreil",
+      "count": 1
+    },
+    "302545862": {
+      "id": "302545862",
+      "username": "andrewnyquist",
+      "name": "Andy Nyquist",
+      "count": 1
+    },
+    "303862998": {
+      "id": "303862998",
+      "username": "PDChina",
+      "name": "People's Daily, China",
+      "count": 1
+    },
+    "305856022": {
+      "id": "305856022",
+      "username": "Alec_Zeck",
+      "name": "D. Alec Zeck",
+      "count": 1
+    },
+    "310881672": {
+      "id": "310881672",
+      "username": "james_riney",
+      "name": "James Riney🐠Coral Capital",
+      "count": 1
+    },
+    "312653402": {
+      "id": "312653402",
+      "username": "MartinShkreli",
+      "name": "Martin Shkreli",
+      "count": 2
+    },
+    "313038011": {
+      "id": "313038011",
+      "username": "StefanMolyneux",
+      "name": "Freedomain - with Stefan Molyneux, MA",
+      "count": 1
+    },
+    "314864509": {
+      "id": "314864509",
+      "username": "ben_mckenzie",
+      "name": "Ben McKenzie",
+      "count": 1
+    },
+    "316747927": {
+      "id": "316747927",
+      "username": "AaronGunn",
+      "name": "Aaron Gunn",
+      "count": 1
+    },
+    "317041794": {
+      "id": "317041794",
+      "username": "jedimarkus77",
+      "name": "jedimarkus77",
+      "count": 1
+    },
+    "318596061": {
+      "id": "318596061",
+      "username": "EsotericPixie",
+      "name": "Pixie Trader 🤍",
+      "count": 1
+    },
+    "319495411": {
+      "id": "319495411",
+      "username": "profstonge",
+      "name": "Peter St Onge, Ph.D.",
+      "count": 1
+    },
+    "320524842": {
+      "id": "320524842",
+      "username": "TheBubbleBubble",
+      "name": "Jesse Colombo",
+      "count": 1
+    },
+    "322602539": {
+      "id": "322602539",
+      "username": "DanielAlpert",
+      "name": "Dan Alpert",
+      "count": 1
+    },
+    "332617373": {
+      "id": "332617373",
+      "username": "elerianm",
+      "name": "Mohamed A. El-Erian",
+      "count": 1
+    },
+    "337853346": {
+      "id": "337853346",
+      "username": "flecksthoughts",
+      "name": "Bill Fleckenstein",
+      "count": 1
+    },
+    "340387261": {
+      "id": "340387261",
+      "username": "GavinSBaker",
+      "name": "Gavin Baker",
+      "count": 2
+    },
+    "345897081": {
+      "id": "345897081",
+      "username": "Laurawolff",
+      "name": "Laura",
+      "count": 1
+    },
+    "347666403": {
+      "id": "347666403",
+      "username": "enterprisetimee",
+      "name": "Washington",
+      "count": 1
+    },
+    "348197129": {
+      "id": "348197129",
+      "username": "jenzhuscott",
+      "name": "Jen Zhu",
+      "count": 1
+    },
+    "349249475": {
+      "id": "349249475",
+      "username": "GerberKawasaki",
+      "name": "Ross Gerber",
+      "count": 1
+    },
+    "350958562": {
+      "id": "350958562",
+      "username": "lindayueh",
+      "name": "Linda Yueh",
+      "count": 1
+    },
+    "351065125": {
+      "id": "351065125",
+      "username": "HenrikZeberg",
+      "name": "Henrik Zeberg",
+      "count": 1
+    },
+    "357947799": {
+      "id": "357947799",
+      "username": "idalistrades",
+      "name": "idalis",
+      "count": 1
+    },
+    "361044311": {
+      "id": "361044311",
+      "username": "deedydas",
+      "name": "Deedy",
+      "count": 1
+    },
+    "362893876": {
+      "id": "362893876",
+      "username": "abcampbell",
+      "name": "Campbell",
+      "count": 1
+    },
+    "368059065": {
+      "id": "368059065",
+      "username": "DonDurrett",
+      "name": "Don Durrett - goldstockdata.com",
+      "count": 1
+    },
+    "368656788": {
+      "id": "368656788",
+      "username": "fxevolution",
+      "name": "fxevolution",
+      "count": 1
+    },
+    "374594501": {
+      "id": "374594501",
+      "username": "KILLTOPARTY",
+      "name": "“Bad” Billy Pratt",
+      "count": 1
+    },
+    "380185975": {
+      "id": "380185975",
+      "username": "MrMBrown",
+      "name": "Michael Brown",
+      "count": 1
+    },
+    "381696140": {
+      "id": "381696140",
+      "username": "financialjuice",
+      "name": "FinancialJuice",
+      "count": 1
+    },
+    "386246965": {
+      "id": "386246965",
+      "username": "Vulgi",
+      "name": "Steve Voulgaridis",
+      "count": 1
+    },
+    "389474167": {
+      "id": "389474167",
+      "username": "anyatrades",
+      "name": "Anya",
+      "count": 1
+    },
+    "393469195": {
+      "id": "393469195",
+      "username": "redsteeze",
+      "name": "Stephen L. Miller",
+      "count": 1
+    },
+    "400066174": {
+      "id": "400066174",
+      "username": "TFMkts",
+      "name": "Peter Tchir",
+      "count": 1
+    },
+    "400525494": {
+      "id": "400525494",
+      "username": "YeonmiParkNK",
+      "name": "Yeonmi Park",
+      "count": 1
+    },
+    "412833880": {
+      "id": "412833880",
+      "username": "michaeljburry",
+      "name": "Cassandra Unchained",
+      "count": 1
+    },
+    "419084104": {
+      "id": "419084104",
+      "username": "DavidBCollum",
+      "name": "Dave Collum",
+      "count": 1
+    },
+    "423274783": {
+      "id": "423274783",
+      "username": "SteliosConto",
+      "name": "Stelios 🇬🇷",
+      "count": 1
+    },
+    "433843706": {
+      "id": "433843706",
+      "username": "ginaheeb",
+      "name": "Gina Heeb",
+      "count": 1
+    },
+    "435704007": {
+      "id": "435704007",
+      "username": "Tony__Heller",
+      "name": "Tony Heller",
+      "count": 1
+    },
+    "436429668": {
+      "id": "436429668",
+      "username": "NikkeiAsia",
+      "name": "Nikkei Asia",
+      "count": 1
+    },
+    "437179266": {
+      "id": "437179266",
+      "username": "Geiger_Capital",
+      "name": "Geiger Capital",
+      "count": 1
+    },
+    "438507258": {
+      "id": "438507258",
+      "username": "GoldTrendsNet",
+      "name": "Gold Trends",
+      "count": 1
+    },
+    "449974837": {
+      "id": "449974837",
+      "username": "JohnMappin",
+      "name": "John Mappin",
+      "count": 1
+    },
+    "459044096": {
+      "id": "459044096",
+      "username": "7777chu",
+      "name": "初七",
+      "count": 1
+    },
+    "466565914": {
+      "id": "466565914",
+      "username": "DavidCheetham3",
+      "name": "David Cheetham, CFA",
+      "count": 1
+    },
+    "466823184": {
+      "id": "466823184",
+      "username": "benwehrman",
+      "name": "Ben Wehrman",
+      "count": 1
+    },
+    "485550903": {
+      "id": "485550903",
+      "username": "TradexWhisperer",
+      "name": "Trade Whisperer",
+      "count": 1
+    },
+    "499479056": {
+      "id": "499479056",
+      "username": "TexasLindsay",
+      "name": "TexasLindsay™",
+      "count": 1
+    },
+    "534058408": {
+      "id": "534058408",
+      "username": "ecommerceshares",
+      "name": "Wasteland Capital",
+      "count": 1
+    },
+    "534493783": {
+      "id": "534493783",
+      "username": "krugermacro",
+      "name": "Alex Krüger",
+      "count": 1
+    },
+    "537175623": {
+      "id": "537175623",
+      "username": "C_Barraud",
+      "name": "Christophe Barraud 🇫🇷 🇲🇨",
+      "count": 1
+    },
+    "549662274": {
+      "id": "549662274",
+      "username": "botticellibimbo",
+      "name": "reversecowgirl69",
+      "count": 1
+    },
+    "556265068": {
+      "id": "556265068",
+      "username": "cesarsroy",
+      "name": "Cesar Sroy",
+      "count": 1
+    },
+    "558291075": {
+      "id": "558291075",
+      "username": "StocktonKatie",
+      "name": "Katie Stockton, CMT",
+      "count": 1
+    },
+    "568403097": {
+      "id": "568403097",
+      "username": "SethCL",
+      "name": "Seth Golden",
+      "count": 1
+    },
+    "573359118": {
+      "id": "573359118",
+      "username": "MarinKatusa",
+      "name": "Marin Katusa",
+      "count": 1
+    },
+    "582390700": {
+      "id": "582390700",
+      "username": "AsennaWealth",
+      "name": "Assad Tannous",
+      "count": 1
+    },
+    "583517629": {
+      "id": "583517629",
+      "username": "SantiagoAuFund",
+      "name": "Santiago Capital",
+      "count": 1
+    },
+    "586716332": {
+      "id": "586716332",
+      "username": "crescatkevin",
+      "name": "Kevin C. Smith, CFA",
+      "count": 1
+    },
+    "588265724": {
+      "id": "588265724",
+      "username": "contrarian8888",
+      "name": "contrarian 8888",
+      "count": 1
+    },
+    "588332355": {
+      "id": "588332355",
+      "username": "ChrisFxTrader77",
+      "name": "Chris #FX",
+      "count": 1
+    },
+    "597517815": {
+      "id": "597517815",
+      "username": "staunovo",
+      "name": "Giovanni Staunovo🛢",
+      "count": 1
+    },
+    "602938455": {
+      "id": "602938455",
+      "username": "AxelMerk",
+      "name": "Axel Merk",
+      "count": 1
+    },
+    "605700792": {
+      "id": "605700792",
+      "username": "vladtenev",
+      "name": "Vlad Tenev",
+      "count": 2
+    },
+    "633420470": {
+      "id": "633420470",
+      "username": "XRoboHub",
+      "name": "RoboHub🤖",
+      "count": 1
+    },
+    "634470885": {
+      "id": "634470885",
+      "username": "MacleodFinance",
+      "name": "Alasdair Macleod",
+      "count": 1
+    },
+    "705540042": {
+      "id": "705540042",
+      "username": "SamanthaLaDuc",
+      "name": "Samantha LaDuc",
+      "count": 1
+    },
+    "707649972": {
+      "id": "707649972",
+      "username": "hiteshkar",
+      "name": "HK",
+      "count": 1
+    },
+    "718182886": {
+      "id": "718182886",
+      "username": "Ksidiii",
+      "name": "Kris Sidial🇺🇸",
+      "count": 1
+    },
+    "718702333": {
+      "id": "718702333",
+      "username": "josephwang",
+      "name": "Joseph Wang",
+      "count": 1
+    },
+    "756546612": {
+      "id": "756546612",
+      "username": "MrQin_BTC",
+      "name": "秦先生",
+      "count": 1
+    },
+    "757611408": {
+      "id": "757611408",
+      "username": "MylesMcNulty",
+      "name": "Myles McNulty",
+      "count": 1
+    },
+    "768160820": {
+      "id": "768160820",
+      "username": "buperac",
+      "name": "bu/ac",
+      "count": 1
+    },
+    "769564230": {
+      "id": "769564230",
+      "username": "pumpkinpuripuri",
+      "name": "うみ＠Future Stock",
+      "count": 1
+    },
+    "860332728": {
+      "id": "860332728",
+      "username": "Jimmyjude13",
+      "name": "James Jude",
+      "count": 1
+    },
+    "869669670": {
+      "id": "869669670",
+      "username": "tropicalvalue",
+      "name": "Igor Chalhub",
+      "count": 1
+    },
+    "955733059": {
+      "id": "955733059",
+      "username": "GothamResearch",
+      "name": "Gotham City Research",
+      "count": 1
+    },
+    "961134787": {
+      "id": "961134787",
+      "username": "TheRealKeean",
+      "name": "Keean Bexte",
+      "count": 1
+    },
+    "973371776": {
+      "id": "973371776",
+      "username": "Frank_Giustra",
+      "name": "Frank Giustra",
+      "count": 1
+    },
+    "978741625": {
+      "id": "978741625",
+      "username": "FundaAI",
+      "name": "FUNDA",
+      "count": 2
+    },
+    "995543502": {
+      "id": "995543502",
+      "username": "profplum99",
+      "name": "Michael Green",
+      "count": 1
+    },
+    "1008162403": {
+      "id": "1008162403",
+      "username": "IamRamenPanda",
+      "name": "RamenPanda",
+      "count": 1
+    },
+    "1017360962": {
+      "id": "1017360962",
+      "username": "latent_value7",
+      "name": "LatentValue",
+      "count": 2
+    },
+    "1020394087": {
+      "id": "1020394087",
+      "username": "realKunalAShah",
+      "name": "Kunal Shah 🗽",
+      "count": 1
+    },
+    "1056952266": {
+      "id": "1056952266",
+      "username": "jaysyoon",
+      "name": "Jay Yoon",
+      "count": 1
+    },
+    "1065869268": {
+      "id": "1065869268",
+      "username": "JohnFromCranber",
+      "name": "John Betts",
+      "count": 1
+    },
+    "1087194962": {
+      "id": "1087194962",
+      "username": "JaguarAnalytics",
+      "name": "JaguarAnalytics",
+      "count": 1
+    },
+    "1087816752": {
+      "id": "1087816752",
+      "username": "yofishman88",
+      "name": "Adam Fisher",
+      "count": 1
+    },
+    "1116997146": {
+      "id": "1116997146",
+      "username": "Palsvig",
+      "name": "Mads Palsvig",
+      "count": 1
+    },
+    "1122679579": {
+      "id": "1122679579",
+      "username": "yuriymatso",
+      "name": "Yuriy Matso",
+      "count": 1
+    },
+    "1177549584": {
+      "id": "1177549584",
+      "username": "canada7hansen",
+      "name": "John Hansen",
+      "count": 1
+    },
+    "1195946358": {
+      "id": "1195946358",
+      "username": "AdamLaneSmith",
+      "name": "Adam Lane Smith | The Attachment Specialist",
+      "count": 1
+    },
+    "1263205698": {
+      "id": "1263205698",
+      "username": "GreekTrader777",
+      "name": "THE GREEK TRADER 🇬🇷",
+      "count": 1
+    },
+    "1285248175": {
+      "id": "1285248175",
+      "username": "Trinhnomics",
+      "name": "Trinh",
+      "count": 1
+    },
+    "1315322118": {
+      "id": "1315322118",
+      "username": "daniel_koss",
+      "name": "Daniel Koss",
+      "count": 1
+    },
+    "1323090848": {
+      "id": "1323090848",
+      "username": "GeorgeStrongIII",
+      "name": "G. Strong",
+      "count": 1
+    },
+    "1327359720": {
+      "id": "1327359720",
+      "username": "lisaabramowicz1",
+      "name": "Lisa Abramowicz",
+      "count": 1
+    },
+    "1334926014": {
+      "id": "1334926014",
+      "username": "StockShaman",
+      "name": "StockShaman ⚒ #PeakCopper AKA Greg Shafransky 🍌",
+      "count": 1
+    },
+    "1358146357": {
+      "id": "1358146357",
+      "username": "RudyHavenstein",
+      "name": "Rudy Havenstein, Senior Markets Commentator.",
+      "count": 1
+    },
+    "1396429753": {
+      "id": "1396429753",
+      "username": "RobbiJadeLew",
+      "name": "Robbi Jade Lew",
+      "count": 1
+    },
+    "1398479138": {
+      "id": "1398479138",
+      "username": "clairlemon",
+      "name": "Claire Lehmann",
+      "count": 1
+    },
+    "1413027896": {
+      "id": "1413027896",
+      "username": "charliebilello",
+      "name": "Charlie Bilello",
+      "count": 1
+    },
+    "1469603575": {
+      "id": "1469603575",
+      "username": "QTRResearch",
+      "name": "Quoth the Raven",
+      "count": 1
+    },
+    "1480535438": {
+      "id": "1480535438",
+      "username": "DeepSailCapital",
+      "name": "Deep Sail Capital",
+      "count": 1
+    },
+    "1524168474": {
+      "id": "1524168474",
+      "username": "WinterOakPress",
+      "name": "Winter Oak",
+      "count": 1
+    },
+    "1528558014": {
+      "id": "1528558014",
+      "username": "patrick_oshag",
+      "name": "Patrick OShaughnessy",
+      "count": 1
+    },
+    "1531882200": {
+      "id": "1531882200",
+      "username": "hkuppy",
+      "name": "Kuppy",
+      "count": 1
+    },
+    "1534167900": {
+      "id": "1534167900",
+      "username": "Carl_C_Icahn",
+      "name": "Carl Icahn",
+      "count": 1
+    },
+    "1542228578": {
+      "id": "1542228578",
+      "username": "JDVance",
+      "name": "JD Vance",
+      "count": 1
+    },
+    "1546222940": {
+      "id": "1546222940",
+      "username": "dampedspring",
+      "name": "Andy Constan",
+      "count": 1
+    },
+    "1570180292": {
+      "id": "1570180292",
+      "username": "DowdEdward",
+      "name": "Edward Dowd",
+      "count": 1
+    },
+    "1576052886": {
+      "id": "1576052886",
+      "username": "agurevich23",
+      "name": "Alex Gurevich",
+      "count": 1
+    },
+    "1623424387": {
+      "id": "1623424387",
+      "username": "Halsrethink",
+      "name": "Harald Malmgren",
+      "count": 1
+    },
+    "1647573157": {
+      "id": "1647573157",
+      "username": "JavierBlas",
+      "name": "Javier Blas",
+      "count": 1
+    },
+    "1649128015": {
+      "id": "1649128015",
+      "username": "DylanLeClair",
+      "name": "Dylan LeClair",
+      "count": 1
+    },
+    "1678379366": {
+      "id": "1678379366",
+      "username": "Oakum_Bay_Cap",
+      "name": "Data_is_King",
+      "count": 1
+    },
+    "1704052634": {
+      "id": "1704052634",
+      "username": "CounterPointTR",
+      "name": "Counterpoint Research",
+      "count": 1
+    },
+    "1710800126": {
+      "id": "1710800126",
+      "username": "isaksenjhv16",
+      "name": "Niels Isaksen",
+      "count": 1
+    },
+    "1711713978": {
+      "id": "1711713978",
+      "username": "pennycheck",
+      "name": "⚽️📡",
+      "count": 1
+    },
+    "1889587914": {
+      "id": "1889587914",
+      "username": "agnostoxxx",
+      "name": "Le Shrub🌳",
+      "count": 1
+    },
+    "1901020603": {
+      "id": "1901020603",
+      "username": "judahrhodie",
+      "name": "Judah Rhodie",
+      "count": 1
+    },
+    "1967275506": {
+      "id": "1967275506",
+      "username": "johnarnold",
+      "name": "John Arnold",
+      "count": 1
+    },
+    "1969987273": {
+      "id": "1969987273",
+      "username": "HarrieScarlet",
+      "name": "Harry",
+      "count": 1
+    },
+    "2202853256": {
+      "id": "2202853256",
+      "username": "tuolaji2024",
+      "name": "拖拉机",
+      "count": 1
+    },
+    "2207129125": {
+      "id": "2207129125",
+      "username": "Cointelegraph",
+      "name": "Cointelegraph",
+      "count": 1
+    },
+    "2213577923": {
+      "id": "2213577923",
+      "username": "MarkValek",
+      "name": "Mark J. Valek",
+      "count": 1
+    },
+    "2214652482": {
+      "id": "2214652482",
+      "username": "RampCapitalLLC",
+      "name": "Ramp Capital",
+      "count": 1
+    },
+    "2237865246": {
+      "id": "2237865246",
+      "username": "TateTheTalisman",
+      "name": "Tristan Tate",
+      "count": 1
+    },
+    "2244134066": {
+      "id": "2244134066",
+      "username": "clif_high",
+      "name": "clif is antiselenite 🏴‍☠️",
+      "count": 1
+    },
+    "2272207286": {
+      "id": "2272207286",
+      "username": "HedgeMind",
+      "name": "HedgeMind",
+      "count": 1
+    },
+    "2287471915": {
+      "id": "2287471915",
+      "username": "PanteraCapital",
+      "name": "Pantera Capital",
+      "count": 1
+    },
+    "2289550933": {
+      "id": "2289550933",
+      "username": "vvxiaoyu8888",
+      "name": "小鱼Daisy🔶BNB",
+      "count": 1
+    },
+    "2324608013": {
+      "id": "2324608013",
+      "username": "MichaelKantro",
+      "name": "Kantro",
+      "count": 1
+    },
+    "2326980139": {
+      "id": "2326980139",
+      "username": "WarrenPies",
+      "name": "Warren Pies",
+      "count": 1
+    },
+    "2344061090": {
+      "id": "2344061090",
+      "username": "DA_Stockman",
+      "name": "David Stockman",
+      "count": 1
+    },
+    "2349845856": {
+      "id": "2349845856",
+      "username": "JKempEnergy",
+      "name": "John Kemp",
+      "count": 1
+    },
+    "2353958539": {
+      "id": "2353958539",
+      "username": "NPetallides",
+      "name": "Nicole Petallides",
+      "count": 1
+    },
+    "2362854433": {
+      "id": "2362854433",
+      "username": "freearkshaw",
+      "name": "投研荟",
+      "count": 1
+    },
+    "2365933579": {
+      "id": "2365933579",
+      "username": "OG_PViews",
+      "name": "Mike",
+      "count": 1
+    },
+    "2433648180": {
+      "id": "2433648180",
+      "username": "mtmalinen",
+      "name": "Tuomas Malinen",
+      "count": 1
+    },
+    "2453385626": {
+      "id": "2453385626",
+      "username": "RaoulGMI",
+      "name": "Raoul Pal",
+      "count": 1
+    },
+    "2511153668": {
+      "id": "2511153668",
+      "username": "JeffSnider_EDU",
+      "name": "Jeffrey P. Snider",
+      "count": 1
+    },
+    "2512524721": {
+      "id": "2512524721",
+      "username": "TheMichaelEvery",
+      "name": "Michael Every",
+      "count": 1
+    },
+    "2554980553": {
+      "id": "2554980553",
+      "username": "defianceinvest",
+      "name": "Defiance Investments",
+      "count": 1
+    },
+    "2567843105": {
+      "id": "2567843105",
+      "username": "donnelly_brent",
+      "name": "ʎllǝuuop ʇuǝɹq",
+      "count": 1
+    },
+    "2577484027": {
+      "id": "2577484027",
+      "username": "kuppyskorner",
+      "name": "Kuppy's Korner",
+      "count": 1
+    },
+    "2584103654": {
+      "id": "2584103654",
+      "username": "TaviCosta",
+      "name": "Otavio (Tavi) Costa",
+      "count": 1
+    },
+    "2596655520": {
+      "id": "2596655520",
+      "username": "jimkxa",
+      "name": "Jim Keller",
+      "count": 1
+    },
+    "2600132478": {
+      "id": "2600132478",
+      "username": "IrinaHeaver",
+      "name": "Irina ₿. Heaver",
+      "count": 1
+    },
+    "2663584189": {
+      "id": "2663584189",
+      "username": "fleckcap",
+      "name": "bill fleckenstein",
+      "count": 1
+    },
+    "2704294333": {
+      "id": "2704294333",
+      "username": "DeItaone",
+      "name": "*Walter Bloomberg",
+      "count": 1
+    },
+    "2704681687": {
+      "id": "2704681687",
+      "username": "EthicalSkeptic",
+      "name": "Ethical Skeptic ☀",
+      "count": 1
+    },
+    "2720594754": {
+      "id": "2720594754",
+      "username": "MaoBaoBaomby",
+      "name": "Mao BaoBao",
+      "count": 1
+    },
+    "2740426550": {
+      "id": "2740426550",
+      "username": "o_rips",
+      "name": "Spiro",
+      "count": 1
+    },
+    "2758019555": {
+      "id": "2758019555",
+      "username": "skgoodwin23",
+      "name": "Scott Goodwin",
+      "count": 1
+    },
+    "2773827536": {
+      "id": "2773827536",
+      "username": "vladijoukov",
+      "name": "Dr. Vladimir Joukov",
+      "count": 1
+    },
+    "2776073116": {
+      "id": "2776073116",
+      "username": "Trader_Bran",
+      "name": "Brannigan Barrett",
+      "count": 1
+    },
+    "2803822165": {
+      "id": "2803822165",
+      "username": "DonutShorts",
+      "name": "Donut Shorts",
+      "count": 1
+    },
+    "2808066326": {
+      "id": "2808066326",
+      "username": "IceCapGlobal",
+      "name": "IceCap",
+      "count": 1
+    },
+    "2822407526": {
+      "id": "2822407526",
+      "username": "jameseperloff",
+      "name": "James Perloff",
+      "count": 1
+    },
+    "2855239465": {
+      "id": "2855239465",
+      "username": "Tony_Sycamore",
+      "name": "Tony Sycamore_IG",
+      "count": 1
+    },
+    "2870974910": {
+      "id": "2870974910",
+      "username": "BurggrabenH",
+      "name": "Alexander Stahel 🌻",
+      "count": 1
+    },
+    "2914652777": {
+      "id": "2914652777",
+      "username": "Harry__Faulkner",
+      "name": "Harrison Faulkner",
+      "count": 1
+    },
+    "2936015319": {
+      "id": "2936015319",
+      "username": "LukeGromen",
+      "name": "Luke Gromen",
+      "count": 1
+    },
+    "2939007435": {
+      "id": "2939007435",
+      "username": "HayekAndKeynes",
+      "name": "The Long View",
+      "count": 1
+    },
+    "2954002249": {
+      "id": "2954002249",
+      "username": "myemma",
+      "name": "Emma Muhleman CFA CPA",
+      "count": 1
+    },
+    "2962449658": {
+      "id": "2962449658",
+      "username": "anni_sen",
+      "name": "Anni Sen",
+      "count": 1
+    },
+    "2966660663": {
+      "id": "2966660663",
+      "username": "LongTplexTrader",
+      "name": "M Lebon",
+      "count": 1
+    },
+    "2968189539": {
+      "id": "2968189539",
+      "username": "MSPFX",
+      "name": "MSPFX",
+      "count": 1
+    },
+    "2989966781": {
+      "id": "2989966781",
+      "username": "leopoldasch",
+      "name": "Leopold Aschenbrenner",
+      "count": 2
+    },
+    "2992000138": {
+      "id": "2992000138",
+      "username": "NuttyCLD",
+      "name": "Nutty",
+      "count": 1
+    },
+    "3005733012": {
+      "id": "3005733012",
+      "username": "Jkylebass",
+      "name": "🇺🇸 Kyle Bass 🇹🇼",
+      "count": 1
+    },
+    "3007206859": {
+      "id": "3007206859",
+      "username": "michaelsikand",
+      "name": "Michael Sikand",
+      "count": 2
+    },
+    "3027970893": {
+      "id": "3027970893",
+      "username": "AlessioTMAD",
+      "name": "Alessio",
+      "count": 1
+    },
+    "3107927636": {
+      "id": "3107927636",
+      "username": "tradinganalytix",
+      "name": "Trading Analytix",
+      "count": 1
+    },
+    "3136583157": {
+      "id": "3136583157",
+      "username": "lisaward_",
+      "name": "Lisa Ward",
+      "count": 1
+    },
+    "3145935035": {
+      "id": "3145935035",
+      "username": "echipiuk",
+      "name": "Eva Chipiuk, BSc, LLB, LLM",
+      "count": 1
+    },
+    "3187207969": {
+      "id": "3187207969",
+      "username": "KatusaResearch",
+      "name": "Katusa Research",
+      "count": 1
+    },
+    "3222018178": {
+      "id": "3222018178",
+      "username": "adcock_brett",
+      "name": "Brett Adcock",
+      "count": 1
+    },
+    "3229256723": {
+      "id": "3229256723",
+      "username": "TheShortBear",
+      "name": "THE SHORT BEAR",
+      "count": 1
+    },
+    "3260357396": {
+      "id": "3260357396",
+      "username": "thehealthb0t",
+      "name": "healthbot",
+      "count": 1
+    },
+    "3280573716": {
+      "id": "3280573716",
+      "username": "DiMartinoBooth",
+      "name": "Danielle DiMartino Booth",
+      "count": 1
+    },
+    "3305705498": {
+      "id": "3305705498",
+      "username": "icantevenfilms",
+      "name": "i cant even productions",
+      "count": 1
+    },
+    "3314942552": {
+      "id": "3314942552",
+      "username": "AntonLaVay",
+      "name": "Manchurius Hao — Greeks.live 首席赌狗",
+      "count": 1
+    },
+    "3359503481": {
+      "id": "3359503481",
+      "username": "WhaleFUD",
+      "name": "WF",
+      "count": 1
+    },
+    "3422987236": {
+      "id": "3422987236",
+      "username": "BlueLightDiet",
+      "name": "⚡️ The Blue Light Diet ⚡️",
+      "count": 1
+    },
+    "3508896134": {
+      "id": "3508896134",
+      "username": "Book_of_Job",
+      "name": "Job",
+      "count": 1
+    },
+    "3540699975": {
+      "id": "3540699975",
+      "username": "amlivemon",
+      "name": "Live Monitor",
+      "count": 1
+    },
+    "3765572533": {
+      "id": "3765572533",
+      "username": "SBakerMD",
+      "name": "Dr Shawn Baker 🥩",
+      "count": 1
+    },
+    "4061008757": {
+      "id": "4061008757",
+      "username": "ShaziGoalie",
+      "name": "Shazi",
+      "count": 1
+    },
+    "4110654312": {
+      "id": "4110654312",
+      "username": "zeroxkyle",
+      "name": "Kyle",
+      "count": 1
+    },
+    "4182894076": {
+      "id": "4182894076",
+      "username": "EleanorTerrett",
+      "name": "Eleanor Terrett",
+      "count": 1
+    },
+    "1326937038692769793": {
+      "id": "1326937038692769793",
+      "username": "ren_stocks",
+      "name": "Ren",
+      "count": 1
+    },
+    "1503621835136462849": {
+      "id": "1503621835136462849",
+      "username": "fi56622380",
+      "name": "fin",
+      "count": 1
+    },
+    "1356518215288041473": {
+      "id": "1356518215288041473",
+      "username": "babyfolio",
+      "name": "Babyfolio",
+      "count": 1
+    },
+    "1725736838143639552": {
+      "id": "1725736838143639552",
+      "username": "qtdevlop",
+      "name": "中年码农",
+      "count": 1
+    },
+    "892286366381359105": {
+      "id": "892286366381359105",
+      "username": "oragnes",
+      "name": "比特币橙子Trader",
+      "count": 1
+    },
+    "1374985535169552388": {
+      "id": "1374985535169552388",
+      "username": "BitCloutCat",
+      "name": "LaserCat397.eth2.0",
+      "count": 1
+    },
+    "1890749643325341696": {
+      "id": "1890749643325341696",
+      "username": "ChuckBass14291",
+      "name": "Chuck Bass",
+      "count": 1
+    },
+    "1855607235084185600": {
+      "id": "1855607235084185600",
+      "username": "PaulBonnet",
+      "name": "Paul Bonnet",
+      "count": 1
+    },
+    "1656602956706508803": {
+      "id": "1656602956706508803",
+      "username": "PWenzhen76938",
+      "name": "Powerpei",
+      "count": 1
+    },
+    "1385936263526502403": {
+      "id": "1385936263526502403",
+      "username": "eastweb3eth",
+      "name": "Jealousy 尼卡",
+      "count": 1
+    },
+    "1296211919653736450": {
+      "id": "1296211919653736450",
+      "username": "kakashiii111",
+      "name": "Kakashii",
+      "count": 1
+    },
+    "1279731337578967040": {
+      "id": "1279731337578967040",
+      "username": "leto_bao",
+      "name": "Leto Bao",
+      "count": 1
+    },
+    "1753990410832379904": {
+      "id": "1753990410832379904",
+      "username": "DRbitcoin36",
+      "name": "比特欧 Elvin",
+      "count": 1
+    },
+    "917677387478835200": {
+      "id": "917677387478835200",
+      "username": "Joylou1209",
+      "name": "Joy Lou",
+      "count": 1
+    },
+    "2070631956824698880": {
+      "id": "2070631956824698880",
+      "username": "JensenHuang",
+      "name": "Jensen Huang",
+      "count": 2
+    },
+    "964545706198528000": {
+      "id": "964545706198528000",
+      "username": "allegrajacchia",
+      "name": "Allegra Jacchia",
+      "count": 1
+    },
+    "1994731810358771712": {
+      "id": "1994731810358771712",
+      "username": "SerenityRSH",
+      "name": "Serenity Research",
+      "count": 1
+    },
+    "2015773061396451329": {
+      "id": "2015773061396451329",
+      "username": "yulin98434",
+      "name": "Julian",
+      "count": 1
+    },
+    "954815000371015680": {
+      "id": "954815000371015680",
+      "username": "BitcoinAIGuy",
+      "name": "BitcoinAIGuy",
+      "count": 1
+    },
+    "1907822568314441728": {
+      "id": "1907822568314441728",
+      "username": "sssjeffpu",
+      "name": "Jeff Pu",
+      "count": 2
+    },
+    "1237011752073564164": {
+      "id": "1237011752073564164",
+      "username": "opanpinkoff",
+      "name": "おぱんちゅトレジャリー",
+      "count": 1
+    },
+    "1851533371970895873": {
+      "id": "1851533371970895873",
+      "username": "pcbanalysis",
+      "name": "kokycpcb",
+      "count": 2
+    },
+    "1699557900379992064": {
+      "id": "1699557900379992064",
+      "username": "Midnight_Captl",
+      "name": "Nick Dorsey",
+      "count": 2
+    },
+    "1092240466135957507": {
+      "id": "1092240466135957507",
+      "username": "JackFarley96",
+      "name": "Jack Farley",
+      "count": 2
+    },
+    "1632261908178046977": {
+      "id": "1632261908178046977",
+      "username": "artinmemes",
+      "name": "美股OK哥",
+      "count": 1
+    },
+    "858124064476479488": {
+      "id": "858124064476479488",
+      "username": "ShanghaoJin",
+      "name": "Herman Jin",
+      "count": 1
+    },
+    "1593963565521698816": {
+      "id": "1593963565521698816",
+      "username": "chuge857",
+      "name": "空空的投资日记",
+      "count": 1
+    },
+    "4848269835": {
+      "id": "4848269835",
+      "username": "_FORAB",
+      "name": "AB Kuai.Dong",
+      "count": 1
+    },
+    "1264320021481873408": {
+      "id": "1264320021481873408",
+      "username": "CKCapitalxx",
+      "name": "CK Capital",
+      "count": 1
+    },
+    "2033510161160212480": {
+      "id": "2033510161160212480",
+      "username": "AlmaCap114204",
+      "name": "AlmaCap",
+      "count": 1
+    },
+    "835714059425083392": {
+      "id": "835714059425083392",
+      "username": "Teo_Sinamin",
+      "name": "Teo",
+      "count": 1
+    },
+    "1416680666184306689": {
+      "id": "1416680666184306689",
+      "username": "PANewsCN",
+      "name": "PANews丨APP全面升级",
+      "count": 1
+    },
+    "1026696890304233473": {
+      "id": "1026696890304233473",
+      "username": "OdailyChina",
+      "name": "OdailyNews",
+      "count": 1
+    },
+    "1433135716003766277": {
+      "id": "1433135716003766277",
+      "username": "seti_park",
+      "name": "SETI Park",
+      "count": 1
+    },
+    "1476740293567426573": {
+      "id": "1476740293567426573",
+      "username": "Moon1ightSt",
+      "name": "Moonlight🌙月光",
+      "count": 1
+    },
+    "716924459664277504": {
+      "id": "716924459664277504",
+      "username": "BlockBeatsAsia",
+      "name": "BlockBeats｜We're hiring!",
+      "count": 1
+    },
+    "1328947457653346307": {
+      "id": "1328947457653346307",
+      "username": "Cc_ETHH",
+      "name": "Cc酱",
+      "count": 1
+    },
+    "1801542875764924416": {
+      "id": "1801542875764924416",
+      "username": "SUOHA_AI",
+      "name": "梭哈.AI",
+      "count": 1
+    },
+    "1699444461787381760": {
+      "id": "1699444461787381760",
+      "username": "Leooo2099",
+      "name": "Leo 的宏观笔记",
+      "count": 1
+    },
+    "1283280938298822656": {
+      "id": "1283280938298822656",
+      "username": "HM010169",
+      "name": "币圈荒木｜Araki🪵",
+      "count": 1
+    },
+    "1957772481370157058": {
+      "id": "1957772481370157058",
+      "username": "Mengmengeth",
+      "name": "Cocoa",
+      "count": 1
+    },
+    "1150652947937689600": {
+      "id": "1150652947937689600",
+      "username": "BroBean88",
+      "name": "Bean哥",
+      "count": 1
+    },
+    "2025485609222205440": {
+      "id": "2025485609222205440",
+      "username": "Dmytro_Lebid",
+      "name": "Dmytro Lebid",
+      "count": 1
+    },
+    "1963062568274239488": {
+      "id": "1963062568274239488",
+      "username": "laosanhemao",
+      "name": "CatNarratives老三",
+      "count": 1
+    },
+    "1948334637442560001": {
+      "id": "1948334637442560001",
+      "username": "LeslieLi92210",
+      "name": "🐹_Leslie鼠鼠",
+      "count": 1
+    },
+    "1391698645460807690": {
+      "id": "1391698645460807690",
+      "username": "Baili1018",
+      "name": "百里 🦅",
+      "count": 1
+    },
+    "1435286041259167753": {
+      "id": "1435286041259167753",
+      "username": "Luckyjudy666",
+      "name": "加密小韭菜",
+      "count": 1
+    },
+    "1739685708334575616": {
+      "id": "1739685708334575616",
+      "username": "pprgb888",
+      "name": "沐光钱行 | TMT",
+      "count": 1
+    },
+    "1959136480535908352": {
+      "id": "1959136480535908352",
+      "username": "yijiangren",
+      "name": "Metamental | 方外之域",
+      "count": 1
+    },
+    "1867119476598353920": {
+      "id": "1867119476598353920",
+      "username": "rtk17025",
+      "name": "dd滴滴.base.eth",
+      "count": 1
+    },
+    "1971019061153890305": {
+      "id": "1971019061153890305",
+      "username": "jiroucaigou",
+      "name": "努力赚钱的菜狗",
+      "count": 1
+    },
+    "757429055130071040": {
+      "id": "757429055130071040",
+      "username": "CryptoSociety42",
+      "name": "林克Clean",
+      "count": 1
+    },
+    "1437448913116618759": {
+      "id": "1437448913116618759",
+      "username": "EZ99131",
+      "name": "伊泽🔶BTC |🧡 1000X GEM",
+      "count": 1
+    },
+    "1890601565649821696": {
+      "id": "1890601565649821696",
+      "username": "MMMusol",
+      "name": "Musolsol.𝟎𝐱𝐔",
+      "count": 1
+    },
+    "1943723140682833920": {
+      "id": "1943723140682833920",
+      "username": "platochi",
+      "name": "platochi",
+      "count": 1
+    },
+    "1440004894417559553": {
+      "id": "1440004894417559553",
+      "username": "SOU_BTC",
+      "name": "SOU⚡️投資ニュース / 米国株・日本株・仮想通貨・AI",
+      "count": 1
+    },
+    "1710490876487815168": {
+      "id": "1710490876487815168",
+      "username": "Xuegaogx",
+      "name": "雪糕战神🍦",
+      "count": 1
+    },
+    "1362776343914643460": {
+      "id": "1362776343914643460",
+      "username": "Jason23818126",
+      "name": "摸鱼局长 | MoyuChief",
+      "count": 1
+    },
+    "1705407348502913024": {
+      "id": "1705407348502913024",
+      "username": "innomad_io",
+      "name": "Innomad 一挪迈",
+      "count": 1
+    },
+    "1616462041421840389": {
+      "id": "1616462041421840389",
+      "username": "Rita88",
+      "name": "Rita👻",
+      "count": 1
+    },
+    "1654536386098364418": {
+      "id": "1654536386098364418",
+      "username": "Nicole_yang88",
+      "name": "泥伏雷闯关记",
+      "count": 1
+    },
+    "1503362006191026180": {
+      "id": "1503362006191026180",
+      "username": "ai_9684xtpa",
+      "name": "Ai 姨",
+      "count": 1
+    },
+    "1355223833137930240": {
+      "id": "1355223833137930240",
+      "username": "hanking66",
+      "name": "美股仙人（全网吹存第一人）",
+      "count": 1
+    },
+    "1328666264449867777": {
+      "id": "1328666264449867777",
+      "username": "0xKevin00",
+      "name": "0xkevin (🖤 , 💙)",
+      "count": 1
+    },
+    "1223938335535554560": {
+      "id": "1223938335535554560",
+      "username": "iamai_omni",
+      "name": "✧ 𝕀𝔸𝕄𝔸𝕀 ✧",
+      "count": 1
+    },
+    "1462960587806105605": {
+      "id": "1462960587806105605",
+      "username": "dajingou1",
+      "name": "pandaWL",
+      "count": 1
+    },
+    "1723588608425402368": {
+      "id": "1723588608425402368",
+      "username": "mmk_btc",
+      "name": "MMK",
+      "count": 1
+    },
+    "1853471066410414080": {
+      "id": "1853471066410414080",
+      "username": "JohnsonZ91127",
+      "name": "潘驴邓晓闲缺一",
+      "count": 1
+    },
+    "1556577100693651456": {
+      "id": "1556577100693651456",
+      "username": "tychozzz",
+      "name": "Nico投资有道",
+      "count": 1
+    },
+    "1866068081761759232": {
+      "id": "1866068081761759232",
+      "username": "JinYu762",
+      "name": "JinYu金鱼",
+      "count": 1
+    },
+    "1426509736422383616": {
+      "id": "1426509736422383616",
+      "username": "yiqifacai",
+      "name": "Zoe_yiqifacai",
+      "count": 1
+    },
+    "1474257614800560129": {
+      "id": "1474257614800560129",
+      "username": "NickSung2017",
+      "name": "NickSung",
+      "count": 1
+    },
+    "1338075202798809089": {
+      "id": "1338075202798809089",
+      "username": "qinbafrank",
+      "name": "qinbafrank",
+      "count": 1
+    },
+    "1912757728268705792": {
+      "id": "1912757728268705792",
+      "username": "Jimmy4466597097",
+      "name": "Jimmy",
+      "count": 1
+    },
+    "1323413840235696130": {
+      "id": "1323413840235696130",
+      "username": "0xmagnolia",
+      "name": "magnolia",
+      "count": 1
+    },
+    "1095025372914053120": {
+      "id": "1095025372914053120",
+      "username": "LinQingV",
+      "name": "Macro_Lin",
+      "count": 2
+    },
+    "1762331251208491008": {
+      "id": "1762331251208491008",
+      "username": "Semicon_player",
+      "name": "Mooni Insight 💫",
+      "count": 1
+    },
+    "1807611914966753280": {
+      "id": "1807611914966753280",
+      "username": "LucyBuilding",
+      "name": "Lucy L.",
+      "count": 1
+    },
+    "1899739859084103680": {
+      "id": "1899739859084103680",
+      "username": "linwanwan823",
+      "name": "林晚晚的猫",
+      "count": 1
+    },
+    "1576573316113965061": {
+      "id": "1576573316113965061",
+      "username": "kaikaibtc",
+      "name": "K三 凯",
+      "count": 1
+    },
+    "1753715357028622336": {
+      "id": "1753715357028622336",
+      "username": "USStockSheep",
+      "name": "羊",
+      "count": 1
+    },
+    "706879749470167040": {
+      "id": "706879749470167040",
+      "username": "tidalfg",
+      "name": "Tidal Financial Group",
+      "count": 1
+    },
+    "1470256998163886082": {
+      "id": "1470256998163886082",
+      "username": "DanilSer33",
+      "name": "Danil Sereda",
+      "count": 1
+    },
+    "1813570093181194240": {
+      "id": "1813570093181194240",
+      "username": "dmjk001",
+      "name": "大猫调研信息",
+      "count": 2
+    },
+    "1830556171150991360": {
+      "id": "1830556171150991360",
+      "username": "Money_or_Life_X",
+      "name": "Ace from Money or Life 美股频道",
+      "count": 1
+    },
+    "1751131921655136256": {
+      "id": "1751131921655136256",
+      "username": "LIWEI_TWCapital",
+      "name": "LIWEI_TW Capital",
+      "count": 1
+    },
+    "1480499631431815169": {
+      "id": "1480499631431815169",
+      "username": "demian_ai",
+      "name": "dylan ツ",
+      "count": 1
+    },
+    "1311092083252277248": {
+      "id": "1311092083252277248",
+      "username": "Biz_zatukora",
+      "name": "BKLZ〜雰囲気投資家の矜持〜",
+      "count": 1
+    },
+    "1780529209322168320": {
+      "id": "1780529209322168320",
+      "username": "danjang1205",
+      "name": "지표견",
+      "count": 1
+    },
+    "1604815320338034695": {
+      "id": "1604815320338034695",
+      "username": "machagroup",
+      "name": "chun3e",
+      "count": 1
+    },
+    "973573614023991296": {
+      "id": "973573614023991296",
+      "username": "Firisis_",
+      "name": "Firisis",
+      "count": 1
+    },
+    "1128481490923184128": {
+      "id": "1128481490923184128",
+      "username": "MauroBianchi24",
+      "name": "Mauro",
+      "count": 1
+    },
+    "1877354488539000834": {
+      "id": "1877354488539000834",
+      "username": "pennyhunter_sub",
+      "name": "マックン@米国株トレーダー",
+      "count": 1
+    },
+    "1746030652708048896": {
+      "id": "1746030652708048896",
+      "username": "rklb_invest",
+      "name": "Rocketesla",
+      "count": 1
+    },
+    "996294856078188544": {
+      "id": "996294856078188544",
+      "username": "MacnBTC",
+      "name": "Mac 🐺",
+      "count": 1
+    },
+    "1938346564243877888": {
+      "id": "1938346564243877888",
+      "username": "FirmamentX337",
+      "name": "xXFirmamentXx",
+      "count": 1
+    },
+    "1909265474187341824": {
+      "id": "1909265474187341824",
+      "username": "BSkypia59338",
+      "name": "Moneytopia",
+      "count": 1
+    },
+    "777879333146951680": {
+      "id": "777879333146951680",
+      "username": "XtineFang",
+      "name": "Xtine Fang",
+      "count": 1
+    },
+    "1707505110044069888": {
+      "id": "1707505110044069888",
+      "username": "TheSarge_",
+      "name": "FelixQE",
+      "count": 1
+    },
+    "1123694735548395523": {
+      "id": "1123694735548395523",
+      "username": "sean_________",
+      "name": "Sean",
+      "count": 1
+    },
+    "1499439376392146947": {
+      "id": "1499439376392146947",
+      "username": "genZinvest0r",
+      "name": "Gen Z Investor",
+      "count": 1
+    },
+    "1505657357476507651": {
+      "id": "1505657357476507651",
+      "username": "Minnvestor",
+      "name": "Midwestern Investor",
+      "count": 1
+    },
+    "1563185751051091970": {
+      "id": "1563185751051091970",
+      "username": "dannycheng2022",
+      "name": "Danny cheng",
+      "count": 1
+    },
+    "880412538625810432": {
+      "id": "880412538625810432",
+      "username": "BillAckman",
+      "name": "Bill Ackman",
+      "count": 2
+    },
+    "1891302848862023680": {
+      "id": "1891302848862023680",
+      "username": "Aaronwei3n",
+      "name": "Aaron",
+      "count": 1
+    },
+    "814134230959521792": {
+      "id": "814134230959521792",
+      "username": "QQ_Timmy",
+      "name": "駿HaYaO",
+      "count": 1
+    },
+    "998179257200164865": {
+      "id": "998179257200164865",
+      "username": "degentradingLSD",
+      "name": "degentrading",
+      "count": 1
+    },
+    "1690119524861853696": {
+      "id": "1690119524861853696",
+      "username": "JKeynesAlpha",
+      "name": "J Keynes",
+      "count": 1
+    },
+    "1440064744107298826": {
+      "id": "1440064744107298826",
+      "username": "fabknowledge",
+      "name": "Fabricated Knowledge",
+      "count": 1
+    },
+    "1589016659494330368": {
+      "id": "1589016659494330368",
+      "username": "chinoalemano",
+      "name": "ChinoAleman",
+      "count": 1
+    },
+    "1438809362261286912": {
+      "id": "1438809362261286912",
+      "username": "Blinklebloop",
+      "name": "Davy",
+      "count": 1
+    },
+    "1329828490737233921": {
+      "id": "1329828490737233921",
+      "username": "alc2022",
+      "name": "Antonio Linares",
+      "count": 1
+    },
+    "1969772663611768832": {
+      "id": "1969772663611768832",
+      "username": "Kaizen_Investor",
+      "name": "KaizenInvestor",
+      "count": 2
+    },
+    "1336521079494303744": {
+      "id": "1336521079494303744",
+      "username": "babybluecream",
+      "name": "펭귄",
+      "count": 1
+    },
+    "958217615545049090": {
+      "id": "958217615545049090",
+      "username": "Mr_Derivatives",
+      "name": "Heisenberg",
+      "count": 2
+    },
+    "1675975217003241474": {
+      "id": "1675975217003241474",
+      "username": "UncleAlpha007",
+      "name": "Asymmetric Bets",
+      "count": 2
+    },
+    "1348601075906064385": {
+      "id": "1348601075906064385",
+      "username": "Monolith_Cap",
+      "name": "Monolith Capital",
+      "count": 1
+    },
+    "803639496386355200": {
+      "id": "803639496386355200",
+      "username": "stevehou",
+      "name": "Steve Hou",
+      "count": 1
+    },
+    "1838186195508969472": {
+      "id": "1838186195508969472",
+      "username": "TheValueist",
+      "name": "TheValueist",
+      "count": 1
+    },
+    "1328394486402093057": {
+      "id": "1328394486402093057",
+      "username": "vikramskr",
+      "name": "Vikram Sekar",
+      "count": 2
+    },
+    "1881240196756504576": {
+      "id": "1881240196756504576",
+      "username": "semivision_tw",
+      "name": "SemiVision 🇹🇼 👁️👁️",
+      "count": 2
+    },
+    "833295407182516224": {
+      "id": "833295407182516224",
+      "username": "rwang07",
+      "name": "Ray Wang",
+      "count": 1
+    },
+    "4765100357": {
+      "id": "4765100357",
+      "username": "RihardJarc",
+      "name": "Rihard Jarc",
+      "count": 1
+    },
+    "746932803095400452": {
+      "id": "746932803095400452",
+      "username": "Frenchie_",
+      "name": "Frenchie",
+      "count": 1
+    },
+    "1361662997924610048": {
+      "id": "1361662997924610048",
+      "username": "jrouldz",
+      "name": "Dr J Rould",
+      "count": 1
+    },
+    "1656563451920019456": {
+      "id": "1656563451920019456",
+      "username": "ruth_capital",
+      "name": "Ruth Capital",
+      "count": 1
+    },
+    "1976891290353627136": {
+      "id": "1976891290353627136",
+      "username": "theodore_invest",
+      "name": "TheoDore",
+      "count": 1
+    },
+    "1306828661337718784": {
+      "id": "1306828661337718784",
+      "username": "Alisvolatprop12",
+      "name": "Alis volat propriis",
+      "count": 1
+    },
+    "1096436452576047104": {
+      "id": "1096436452576047104",
+      "username": "StockSavvyShay",
+      "name": "Shay Boloor",
+      "count": 1
+    },
+    "1447102056481837058": {
+      "id": "1447102056481837058",
+      "username": "KawzInvests",
+      "name": "KawzInvests",
+      "count": 2
+    },
+    "942906776562819072": {
+      "id": "942906776562819072",
+      "username": "Yeah_Dave",
+      "name": "YeahDave",
+      "count": 1
+    },
+    "1924580792216518656": {
+      "id": "1924580792216518656",
+      "username": "gofallingknife",
+      "name": "fallingknife",
+      "count": 1
+    },
+    "1979288764313931779": {
+      "id": "1979288764313931779",
+      "username": "damnang2",
+      "name": "Damnang",
+      "count": 2
+    },
+    "1519860178522460163": {
+      "id": "1519860178522460163",
+      "username": "EndicottInvests",
+      "name": "Nate Endicott",
+      "count": 1
+    },
+    "1917312438858588161": {
+      "id": "1917312438858588161",
+      "username": "PhotonCap",
+      "name": "Photon Capital",
+      "count": 2
+    },
+    "1508426880860704771": {
+      "id": "1508426880860704771",
+      "username": "wallstengine",
+      "name": "Wall St Engine",
+      "count": 2
+    },
+    "1679886803967287298": {
+      "id": "1679886803967287298",
+      "username": "MarkosAAIG",
+      "name": "Markos",
+      "count": 1
+    },
+    "1854917160361230336": {
+      "id": "1854917160361230336",
+      "username": "Gubloinvestor",
+      "name": "Gublo",
+      "count": 1
+    },
+    "1468103131737247748": {
+      "id": "1468103131737247748",
+      "username": "amitisinvesting",
+      "name": "amit",
+      "count": 2
+    },
+    "1365809270034477069": {
+      "id": "1365809270034477069",
+      "username": "citrini",
+      "name": "Citrini",
+      "count": 2
+    },
+    "1784182260612075520": {
+      "id": "1784182260612075520",
+      "username": "romanchernin",
+      "name": "Roman Chernin",
+      "count": 1
+    },
+    "1471025154440548353": {
+      "id": "1471025154440548353",
+      "username": "meeijer",
+      "name": "Misunderstood Multibaggers",
+      "count": 1
+    },
+    "1836240683268759552": {
+      "id": "1836240683268759552",
+      "username": "jukan05",
+      "name": "Jukan",
+      "count": 2
+    },
+    "1695126229446479872": {
+      "id": "1695126229446479872",
+      "username": "zephyr_z9",
+      "name": "Zephyr",
+      "count": 2
+    },
+    "1888599248654233600": {
+      "id": "1888599248654233600",
+      "username": "Gaetano2026",
+      "name": "Gaetano",
+      "count": 1
+    },
+    "886396943982899201": {
+      "id": "886396943982899201",
+      "username": "matthew_sigel",
+      "name": "matthew sigel, recovering CFA",
+      "count": 1
+    },
+    "1783307550571585536": {
+      "id": "1783307550571585536",
+      "username": "RKLBMan",
+      "name": "RocketMan",
+      "count": 1
+    },
+    "1350097978652991488": {
+      "id": "1350097978652991488",
+      "username": "beauty_oe",
+      "name": "みみりん@投資系女子",
+      "count": 1
+    },
+    "1964191335101190145": {
+      "id": "1964191335101190145",
+      "username": "sarfatti_IR",
+      "name": "Sarfatti Investment Research",
+      "count": 1
+    },
+    "1525033786257334272": {
+      "id": "1525033786257334272",
+      "username": "Sandeman52",
+      "name": "SandemanStocks",
+      "count": 1
+    },
+    "1785063778666651649": {
+      "id": "1785063778666651649",
+      "username": "HeeraniPK",
+      "name": "Parkash Heerani",
+      "count": 1
+    },
+    "1980972590538674176": {
+      "id": "1980972590538674176",
+      "username": "retail_mourinho",
+      "name": "Retail Mourinho",
+      "count": 1
+    },
+    "1968302536697217024": {
+      "id": "1968302536697217024",
+      "username": "_stockResearch",
+      "name": "Luminara Stocks",
+      "count": 1
+    },
+    "1474490409036521472": {
+      "id": "1474490409036521472",
+      "username": "yianisz",
+      "name": "Yiannis Zourmpanos",
+      "count": 1
+    },
+    "797291293227433984": {
+      "id": "797291293227433984",
+      "username": "Drdebuneko",
+      "name": "Dr.K",
+      "count": 1
+    },
+    "1516930403797458944": {
+      "id": "1516930403797458944",
+      "username": "moninvestor",
+      "name": "mon",
+      "count": 1
+    },
+    "778217013416194049": {
+      "id": "778217013416194049",
+      "username": "Taylor_Notes_",
+      "name": "Taylor",
+      "count": 1
+    },
+    "1269306419104354304": {
+      "id": "1269306419104354304",
+      "username": "SCurveCapital",
+      "name": "S-Curve Capital",
+      "count": 1
+    },
+    "1966602777263800320": {
+      "id": "1966602777263800320",
+      "username": "soulbiri1",
+      "name": "Misaka Mikoto",
+      "count": 1
+    },
+    "1875040188159967232": {
+      "id": "1875040188159967232",
+      "username": "pepemoonboy",
+      "name": "Pepe Invests",
+      "count": 1
+    },
+    "1194889317388374016": {
+      "id": "1194889317388374016",
+      "username": "mattshumer_",
+      "name": "Matt Shumer",
+      "count": 1
+    },
+    "1898179371430821892": {
+      "id": "1898179371430821892",
+      "username": "punchbagstudios",
+      "name": "Punchbag Studios",
+      "count": 1
+    },
+    "765648692099461121": {
+      "id": "765648692099461121",
+      "username": "nathancofnas",
+      "name": "Nathan Cofnas",
+      "count": 1
+    },
+    "1950885947975065600": {
+      "id": "1950885947975065600",
+      "username": "IzzatStatus",
+      "name": "Izzatologist",
+      "count": 1
+    },
+    "1736953965210992640": {
+      "id": "1736953965210992640",
+      "username": "604RAW",
+      "name": "604RAW",
+      "count": 1
+    },
+    "1806374819124154371": {
+      "id": "1806374819124154371",
+      "username": "GrumpierBTDay",
+      "name": "GrumpierByTheDay",
+      "count": 1
+    },
+    "1976988481864798208": {
+      "id": "1976988481864798208",
+      "username": "debt_serious",
+      "name": "DEBT SERIOUS",
+      "count": 1
+    },
+    "1722707325595881472": {
+      "id": "1722707325595881472",
+      "username": "retard3dinvst0r",
+      "name": "retardedinvestor",
+      "count": 1
+    },
+    "2001724228165603331": {
+      "id": "2001724228165603331",
+      "username": "AuditTheHerd",
+      "name": "Audit The Herd",
+      "count": 1
+    },
+    "1691226998642032640": {
+      "id": "1691226998642032640",
+      "username": "NickNemo17",
+      "name": "Nick Nemeth (Mispriced Assets)",
+      "count": 1
+    },
+    "2047968711412494336": {
+      "id": "2047968711412494336",
+      "username": "xenoxidal1234",
+      "name": "Johnathan Lin",
+      "count": 1
+    },
+    "1222773302441148416": {
+      "id": "1222773302441148416",
+      "username": "visegrad24",
+      "name": "Visegrád 24",
+      "count": 1
+    },
+    "1202021665535741952": {
+      "id": "1202021665535741952",
+      "username": "Amaero_3DA",
+      "name": "Amaero Inc.",
+      "count": 1
+    },
+    "1530213353414590464": {
+      "id": "1530213353414590464",
+      "username": "huskirl",
+      "name": "Husk",
+      "count": 1
+    },
+    "2053113221934919688": {
+      "id": "2053113221934919688",
+      "username": "ChairmansLedger",
+      "name": "The Chairman's Ledger",
+      "count": 1
+    },
+    "1811787044722479105": {
+      "id": "1811787044722479105",
+      "username": "0xBADB01E",
+      "name": "Big Boss",
+      "count": 1
+    },
+    "1932848838001504262": {
+      "id": "1932848838001504262",
+      "username": "TBC_on_X",
+      "name": "TBC",
+      "count": 1
+    },
+    "1140762699002871808": {
+      "id": "1140762699002871808",
+      "username": "deus_trader",
+      "name": "Deus Ex Trader",
+      "count": 1
+    },
+    "1433831093711556613": {
+      "id": "1433831093711556613",
+      "username": "Gary_Brode",
+      "name": "Gary Brode",
+      "count": 1
+    },
+    "1486417511763656706": {
+      "id": "1486417511763656706",
+      "username": "GavMcCracken",
+      "name": "Gavin (humanist/acc)",
+      "count": 1
+    },
+    "1149073839432896520": {
+      "id": "1149073839432896520",
+      "username": "RogueWayve",
+      "name": "RogueWayve",
+      "count": 1
+    },
+    "2016569660557119488": {
+      "id": "2016569660557119488",
+      "username": "ThePrudentWhale",
+      "name": "Prudent Whale Research",
+      "count": 1
+    },
+    "1874543766943502336": {
+      "id": "1874543766943502336",
+      "username": "KevInvestingYT",
+      "name": "Kevin Maro",
+      "count": 1
+    },
+    "1980290913302880256": {
+      "id": "1980290913302880256",
+      "username": "sorianmaran",
+      "name": "Sorian",
+      "count": 1
+    },
+    "878311861384613888": {
+      "id": "878311861384613888",
+      "username": "bubbleboi",
+      "name": "bubble boi",
+      "count": 1
+    },
+    "1796611072549404672": {
+      "id": "1796611072549404672",
+      "username": "VistaSharesX",
+      "name": "VistaShares",
+      "count": 1
+    },
+    "1801039343999488001": {
+      "id": "1801039343999488001",
+      "username": "boring_invest",
+      "name": "The Boring Investor",
+      "count": 1
+    },
+    "1973906403501707264": {
+      "id": "1973906403501707264",
+      "username": "RegardingDC",
+      "name": "Regarding Data Centers",
+      "count": 1
+    },
+    "1705576366983573504": {
+      "id": "1705576366983573504",
+      "username": "PegasusFund",
+      "name": "Pegasus",
+      "count": 1
+    },
+    "1650268779786452992": {
+      "id": "1650268779786452992",
+      "username": "pequityresearch",
+      "name": "P Equity Research 📰",
+      "count": 1
+    },
+    "1781426874759131136": {
+      "id": "1781426874759131136",
+      "username": "jasonschips",
+      "name": "Jason's Chips",
+      "count": 1
+    },
+    "1599492546585141254": {
+      "id": "1599492546585141254",
+      "username": "aviancapital",
+      "name": "Avian Capital",
+      "count": 1
+    },
+    "1434266587188666372": {
+      "id": "1434266587188666372",
+      "username": "victor_privin",
+      "name": "Fermion",
+      "count": 1
+    },
+    "1853523284706340864": {
+      "id": "1853523284706340864",
+      "username": "SimeonResearch_",
+      "name": "Simeon Research",
+      "count": 1
+    },
+    "965676004583800834": {
+      "id": "965676004583800834",
+      "username": "METhompson72",
+      "name": "Mark Thompson",
+      "count": 1
+    },
+    "1884362257376894976": {
+      "id": "1884362257376894976",
+      "username": "WhiteFiber_",
+      "name": "WhiteFiber_ NASDAQ: WYFI",
+      "count": 1
+    },
+    "1268166368773279744": {
+      "id": "1268166368773279744",
+      "username": "James56487175",
+      "name": "Keyser Soze",
+      "count": 1
+    },
+    "1524363142150557696": {
+      "id": "1524363142150557696",
+      "username": "OptimusDelta",
+      "name": "OptimusDelta",
+      "count": 1
+    },
+    "1170367186164211712": {
+      "id": "1170367186164211712",
+      "username": "baldassarreted",
+      "name": "Teddy Baldassarre",
+      "count": 1
+    },
+    "1606630387928686592": {
+      "id": "1606630387928686592",
+      "username": "celestialbe1ng",
+      "name": "Veronica, Collagen Scientist 🇵🇱",
+      "count": 1
+    },
+    "1260552306782810112": {
+      "id": "1260552306782810112",
+      "username": "MrMikeInvesting",
+      "name": "Mike Investing",
+      "count": 1
+    },
+    "1465115341810376712": {
+      "id": "1465115341810376712",
+      "username": "BryzonX",
+      "name": "bryan",
+      "count": 1
+    },
+    "1441319604630876167": {
+      "id": "1441319604630876167",
+      "username": "MisterMCAP",
+      "name": "Mr.MCAP",
+      "count": 1
+    },
+    "1941534147861733376": {
+      "id": "1941534147861733376",
+      "username": "TheBigBerbowski",
+      "name": "TheBigBerbowski",
+      "count": 1
+    },
+    "1947270692812345344": {
+      "id": "1947270692812345344",
+      "username": "phithetasigma",
+      "name": "sigma capitalist",
+      "count": 1
+    },
+    "1751114104125747200": {
+      "id": "1751114104125747200",
+      "username": "PolarizingLit",
+      "name": "Nicole Josephine",
+      "count": 1
+    },
+    "1294318189388509184": {
+      "id": "1294318189388509184",
+      "username": "joinautopilot",
+      "name": "Autopilot",
+      "count": 1
+    },
+    "1879554704042033152": {
+      "id": "1879554704042033152",
+      "username": "YoYInvestor",
+      "name": "Sleuth 🔎",
+      "count": 1
+    },
+    "1813374637868560384": {
+      "id": "1813374637868560384",
+      "username": "illyquid",
+      "name": "Illiquid",
+      "count": 1
+    },
+    "895741161175953411": {
+      "id": "895741161175953411",
+      "username": "PhotonBull",
+      "name": "PhotonBull",
+      "count": 1
+    },
+    "1298730881708961797": {
+      "id": "1298730881708961797",
+      "username": "ThematicTrader",
+      "name": "9 Ventures",
+      "count": 1
+    },
+    "1105547841664102401": {
+      "id": "1105547841664102401",
+      "username": "MoodyWriter13",
+      "name": "Moody",
+      "count": 1
+    },
+    "1845105387608965146": {
+      "id": "1845105387608965146",
+      "username": "AtlasShrug1",
+      "name": "John Galt",
+      "count": 1
+    },
+    "1553871184118292481": {
+      "id": "1553871184118292481",
+      "username": "Pray4Equity",
+      "name": "Welfare Capital (Jack)",
+      "count": 1
+    },
+    "1044353324454203393": {
+      "id": "1044353324454203393",
+      "username": "radigancarter",
+      "name": "Radigan Carter",
+      "count": 1
+    },
+    "924713230676758528": {
+      "id": "924713230676758528",
+      "username": "lfg_cap",
+      "name": "Hemingway Capital",
+      "count": 1
+    },
+    "1640352557406068737": {
+      "id": "1640352557406068737",
+      "username": "InvestInJapan",
+      "name": "Made in Japan 🇯🇵",
+      "count": 1
+    },
+    "1523062908929798144": {
+      "id": "1523062908929798144",
+      "username": "LeylaKuni",
+      "name": "Leyla",
+      "count": 1
+    },
+    "4443830716": {
+      "id": "4443830716",
+      "username": "andrewdfeldman",
+      "name": "Andrew Feldman",
+      "count": 1
+    },
+    "1838288550569349120": {
+      "id": "1838288550569349120",
+      "username": "tbpn",
+      "name": "TBPN",
+      "count": 1
+    },
+    "1794506863578419200": {
+      "id": "1794506863578419200",
+      "username": "Sammy_canada2",
+      "name": "sammy 2.0",
+      "count": 1
+    },
+    "1498032293671325699": {
+      "id": "1498032293671325699",
+      "username": "Anc_Aesthetics",
+      "name": "Aesthetica",
+      "count": 1
+    },
+    "1864425660346707968": {
+      "id": "1864425660346707968",
+      "username": "juicystar1908",
+      "name": "juicystar1908",
+      "count": 1
+    },
+    "1694157540932587521": {
+      "id": "1694157540932587521",
+      "username": "ItIsHoeMath",
+      "name": "hoe_math = PsychoMath",
+      "count": 1
+    },
+    "1640521359640993798": {
+      "id": "1640521359640993798",
+      "username": "nicdunz",
+      "name": "Nicholas Dunzelman",
+      "count": 1
+    },
+    "1338915420691161091": {
+      "id": "1338915420691161091",
+      "username": "BoxLongs",
+      "name": "BoxLongs",
+      "count": 1
+    },
+    "1951192959946465282": {
+      "id": "1951192959946465282",
+      "username": "origoinvest",
+      "name": "Origo",
+      "count": 1
+    },
+    "4814182687": {
+      "id": "4814182687",
+      "username": "ErikSTownsend",
+      "name": "Erik Townsend 🛢️",
+      "count": 1
+    },
+    "1772469987279839232": {
+      "id": "1772469987279839232",
+      "username": "insane_analyst",
+      "name": "Irrational Analysis",
+      "count": 1
+    },
+    "1809299404068909059": {
+      "id": "1809299404068909059",
+      "username": "AmirFischer09",
+      "name": "Amir Fischer",
+      "count": 1
+    },
+    "1517523151219044353": {
+      "id": "1517523151219044353",
+      "username": "Eng_china5",
+      "name": "China pulse 🇨🇳",
+      "count": 1
+    },
+    "786375418685165568": {
+      "id": "786375418685165568",
+      "username": "theo",
+      "name": "Theo - t3.gg",
+      "count": 1
+    },
+    "1661811362337619978": {
+      "id": "1661811362337619978",
+      "username": "umesh_ai",
+      "name": "Umesh",
+      "count": 1
+    },
+    "1632883177399422976": {
+      "id": "1632883177399422976",
+      "username": "JapanDeepValue1",
+      "name": "Japan Deep Value",
+      "count": 1
+    },
+    "1326694710933676033": {
+      "id": "1326694710933676033",
+      "username": "taobanker",
+      "name": "taobanker",
+      "count": 1
+    },
+    "1799294856822673408": {
+      "id": "1799294856822673408",
+      "username": "Kling_ai",
+      "name": "Kling AI",
+      "count": 1
+    },
+    "1370821619145379842": {
+      "id": "1370821619145379842",
+      "username": "UnicusResearch",
+      "name": "Unicus",
+      "count": 1
+    },
+    "1286796201640304642": {
+      "id": "1286796201640304642",
+      "username": "Aymanhamzi8",
+      "name": "Ayman.H",
+      "count": 1
+    },
+    "922955517030408192": {
+      "id": "922955517030408192",
+      "username": "venturetwins",
+      "name": "Justine Moore",
+      "count": 1
+    },
+    "1686253469584273408": {
+      "id": "1686253469584273408",
+      "username": "leevalueroach",
+      "name": "Lee Roach",
+      "count": 1
+    },
+    "1695890961094909952": {
+      "id": "1695890961094909952",
+      "username": "cursor_ai",
+      "name": "Cursor",
+      "count": 1
+    },
+    "1691393020288229376": {
+      "id": "1691393020288229376",
+      "username": "capytalmgmt",
+      "name": "Capytal Management",
+      "count": 1
+    },
+    "985281530070265862": {
+      "id": "985281530070265862",
+      "username": "dylan522p",
+      "name": "Dylan Patel",
+      "count": 1
+    },
+    "1828497894598467584": {
+      "id": "1828497894598467584",
+      "username": "TailThatWagsDog",
+      "name": "The Tail That Wags The Dog",
+      "count": 1
+    },
+    "1820860978827055104": {
+      "id": "1820860978827055104",
+      "username": "RealJimChanos",
+      "name": "James Chanos",
+      "count": 1
+    },
+    "1714688881311051778": {
+      "id": "1714688881311051778",
+      "username": "HotAisle",
+      "name": "Hot Aisle",
+      "count": 1
+    },
+    "1883251363179548672": {
+      "id": "1883251363179548672",
+      "username": "RJCcapital",
+      "name": "RJC",
+      "count": 1
+    },
+    "1767366718102355969": {
+      "id": "1767366718102355969",
+      "username": "TaiwanMonitor",
+      "name": "Taiwan Security Monitor (台灣安全觀測站)",
+      "count": 1
+    },
+    "1540344422939983874": {
+      "id": "1540344422939983874",
+      "username": "ForwardGuidance",
+      "name": "Forward Guidance",
+      "count": 1
+    },
+    "1465395468955897859": {
+      "id": "1465395468955897859",
+      "username": "JonathanRoss321",
+      "name": "Jonathan Ross",
+      "count": 1
+    },
+    "1227646314554548224": {
+      "id": "1227646314554548224",
+      "username": "TMTLongShort",
+      "name": "Just Another Pod Guy",
+      "count": 1
+    },
+    "1505909833190592519": {
+      "id": "1505909833190592519",
+      "username": "SpaceInvestor_D",
+      "name": "Space Investor",
+      "count": 1
+    },
+    "1976679731828232192": {
+      "id": "1976679731828232192",
+      "username": "KyberLabsRobots",
+      "name": "Kyber Labs",
+      "count": 1
+    },
+    "888118103095115780": {
+      "id": "888118103095115780",
+      "username": "robin_j_brooks",
+      "name": "Robin Brooks",
+      "count": 1
+    },
+    "1312369470871146496": {
+      "id": "1312369470871146496",
+      "username": "StanphylCap",
+      "name": "Stanphyl Capital 🇺🇸 🇮🇱 🇺🇦",
+      "count": 1
+    },
+    "1130161200191303681": {
+      "id": "1130161200191303681",
+      "username": "EHuanglu",
+      "name": "el.cine",
+      "count": 1
+    },
+    "1598365749940310019": {
+      "id": "1598365749940310019",
+      "username": "ChrisLaubAI",
+      "name": "Chris Laub",
+      "count": 1
+    },
+    "1307411656784277504": {
+      "id": "1307411656784277504",
+      "username": "The_AI_Investor",
+      "name": "The AI Investor",
+      "count": 1
+    },
+    "1598351635108941829": {
+      "id": "1598351635108941829",
+      "username": "T_h_e_Circuit",
+      "name": "The Circuit",
+      "count": 1
+    },
+    "1186731562638946305": {
+      "id": "1186731562638946305",
+      "username": "trustfundterry",
+      "name": "Trust Fund Terry",
+      "count": 1
+    },
+    "1722264444322111488": {
+      "id": "1722264444322111488",
+      "username": "hntrbrkmedia",
+      "name": "Hunterbrook",
+      "count": 1
+    },
+    "1666536805955702793": {
+      "id": "1666536805955702793",
+      "username": "1CoastalJournal",
+      "name": "The Coastal Journal",
+      "count": 1
+    },
+    "1745106082790318080": {
+      "id": "1745106082790318080",
+      "username": "SemiAnalysis_",
+      "name": "SemiAnalysis",
+      "count": 1
+    },
+    "1197943937089982464": {
+      "id": "1197943937089982464",
+      "username": "DrJStrategy",
+      "name": "James E. Thorne",
+      "count": 1
+    },
+    "1580982973754638362": {
+      "id": "1580982973754638362",
+      "username": "praetoriancap",
+      "name": "Praetorian Capital",
+      "count": 1
+    },
+    "911297187664949248": {
+      "id": "911297187664949248",
+      "username": "JeffDean",
+      "name": "Jeff Dean",
+      "count": 1
+    },
+    "1261335549215989760": {
+      "id": "1261335549215989760",
+      "username": "Polymarket",
+      "name": "Polymarket",
+      "count": 1
+    },
+    "1074457475485712384": {
+      "id": "1074457475485712384",
+      "username": "QuiverQuant",
+      "name": "Quiver Quantitative",
+      "count": 1
+    },
+    "1079425544998080512": {
+      "id": "1079425544998080512",
+      "username": "iamtomskinner",
+      "name": "Thomas Skinner ⚒",
+      "count": 1
+    },
+    "1889019333960998912": {
+      "id": "1889019333960998912",
+      "username": "SecScottBessent",
+      "name": "Treasury Secretary Scott Bessent",
+      "count": 1
+    },
+    "1320397899159769088": {
+      "id": "1320397899159769088",
+      "username": "ozzy_livin",
+      "name": "Ozzy",
+      "count": 1
+    },
+    "1240450485594841090": {
+      "id": "1240450485594841090",
+      "username": "Humanlty1o1",
+      "name": "Herb Powell",
+      "count": 1
+    },
+    "1643790929608974336": {
+      "id": "1643790929608974336",
+      "username": "MarcNixon24",
+      "name": "Marc Nixon",
+      "count": 1
+    },
+    "1593597565005602816": {
+      "id": "1593597565005602816",
+      "username": "diana_dukic",
+      "name": "Diana Dukic",
+      "count": 1
+    },
+    "1520737910554824706": {
+      "id": "1520737910554824706",
+      "username": "Alex_Oloyede2",
+      "name": "",
+      "count": 1
+    },
+    "1122623265673891840": {
+      "id": "1122623265673891840",
+      "username": "TrackAIPAC",
+      "name": "AIPAC Tracker",
+      "count": 1
+    },
+    "1156300264070111233": {
+      "id": "1156300264070111233",
+      "username": "RMistereggen",
+      "name": "Rebecca Mistereggen",
+      "count": 1
+    },
+    "761934870432010241": {
+      "id": "761934870432010241",
+      "username": "KirkLubimov",
+      "name": "Kirk Lubimov",
+      "count": 1
+    },
+    "1622588070246641666": {
+      "id": "1622588070246641666",
+      "username": "AFpost",
+      "name": "AF Post",
+      "count": 1
+    },
+    "1236913072180084737": {
+      "id": "1236913072180084737",
+      "username": "AsianDawn4",
+      "name": "Asian Dawn",
+      "count": 1
+    },
+    "1863271160747610112": {
+      "id": "1863271160747610112",
+      "username": "Kash_Patel",
+      "name": "Kash Patel",
+      "count": 1
+    },
+    "1053699875496431617": {
+      "id": "1053699875496431617",
+      "username": "TheMarketHuddle",
+      "name": "The Market Huddle",
+      "count": 1
+    },
+    "1436394384153616384": {
+      "id": "1436394384153616384",
+      "username": "InfoPropagation",
+      "name": "Eric Paradis",
+      "count": 1
+    },
+    "950687846469390336": {
+      "id": "950687846469390336",
+      "username": "OPECSecretariat",
+      "name": "OPEC",
+      "count": 1
+    },
+    "1339166129110065152": {
+      "id": "1339166129110065152",
+      "username": "GBNEWS",
+      "name": "GB News",
+      "count": 1
+    },
+    "1770854260877434880": {
+      "id": "1770854260877434880",
+      "username": "nord_nordic",
+      "name": "NordicGirls🌲",
+      "count": 1
+    },
+    "855186770115256322": {
+      "id": "855186770115256322",
+      "username": "Larryjamieson_",
+      "name": "Buyback Capital",
+      "count": 1
+    },
+    "1470881504633004032": {
+      "id": "1470881504633004032",
+      "username": "ElliottWaveSage",
+      "name": "ElliottWaveSage",
+      "count": 1
+    },
+    "1453726315492700160": {
+      "id": "1453726315492700160",
+      "username": "Martyupnorth",
+      "name": "Martyupnorth®- Unacceptable Fact Checker",
+      "count": 1
+    },
+    "1793106581443563520": {
+      "id": "1793106581443563520",
+      "username": "macro_alchemist",
+      "name": "Macro Alchemist",
+      "count": 1
+    },
+    "958330053804351489": {
+      "id": "958330053804351489",
+      "username": "BlacklionCTA",
+      "name": "Brent aka Blacklion",
+      "count": 1
+    },
+    "1184154123786211328": {
+      "id": "1184154123786211328",
+      "username": "RTNToronto",
+      "name": "RTN",
+      "count": 1
+    },
+    "949369311189139462": {
+      "id": "949369311189139462",
+      "username": "HanifBayat",
+      "name": "Hanif Bayat",
+      "count": 1
+    },
+    "1602443956888817665": {
+      "id": "1602443956888817665",
+      "username": "Figure_robot",
+      "name": "Figure",
+      "count": 1
+    },
+    "1375584696113885186": {
+      "id": "1375584696113885186",
+      "username": "ElephantCapita2",
+      "name": "Elephant Capital",
+      "count": 1
+    },
+    "1149920315415224325": {
+      "id": "1149920315415224325",
+      "username": "acrossthespread",
+      "name": "Weston Nakamura",
+      "count": 1
+    },
+    "1603698749427048450": {
+      "id": "1603698749427048450",
+      "username": "nickgiva1",
+      "name": "Nick G.",
+      "count": 1
+    },
+    "969571031030616071": {
+      "id": "969571031030616071",
+      "username": "TrendSpider",
+      "name": "TrendSpider",
+      "count": 1
+    },
+    "1593632998120882178": {
+      "id": "1593632998120882178",
+      "username": "gas_biz",
+      "name": "Gas Biz Guy",
+      "count": 1
+    },
+    "1541462285465657346": {
+      "id": "1541462285465657346",
+      "username": "MacroEdgeRes",
+      "name": "MacroEdge",
+      "count": 1
+    },
+    "1377690366837731332": {
+      "id": "1377690366837731332",
+      "username": "LastBearStandng",
+      "name": "TheLastBearStanding",
+      "count": 1
+    },
+    "1695181271410864128": {
+      "id": "1695181271410864128",
+      "username": "mlabs0967",
+      "name": "Mlabs0967",
+      "count": 1
+    },
+    "1151424984788717568": {
+      "id": "1151424984788717568",
+      "username": "SartorialShootr",
+      "name": "Joule Sullivan / The Sartorial Shooter",
+      "count": 1
+    },
+    "1364101401530437632": {
+      "id": "1364101401530437632",
+      "username": "DonMiami3",
+      "name": "Don Johnson",
+      "count": 1
+    },
+    "1535297758437023745": {
+      "id": "1535297758437023745",
+      "username": "Smith_Strategy",
+      "name": "Michael Smith | Macro Strategy",
+      "count": 1
+    },
+    "1570831914348548096": {
+      "id": "1570831914348548096",
+      "username": "AristocratView",
+      "name": "Aristocrat View",
+      "count": 1
+    },
+    "1283080769737379840": {
+      "id": "1283080769737379840",
+      "username": "dig_with_kyle",
+      "name": "HeavyEquipmentTrades",
+      "count": 1
+    },
+    "1107681079362641925": {
+      "id": "1107681079362641925",
+      "username": "StephOFRNT",
+      "name": "Stéphane Ouellette",
+      "count": 1
+    },
+    "1212394617020137474": {
+      "id": "1212394617020137474",
+      "username": "TheELongWave",
+      "name": "The Economic LongWave",
+      "count": 1
+    },
+    "1233059061119234048": {
+      "id": "1233059061119234048",
+      "username": "EstateLevy",
+      "name": "Danielle Levy",
+      "count": 1
+    },
+    "1516057346497126401": {
+      "id": "1516057346497126401",
+      "username": "Luckylopez",
+      "name": "Lucky Lopez",
+      "count": 1
+    },
+    "1450247589631336448": {
+      "id": "1450247589631336448",
+      "username": "BowTiedUM",
+      "name": "BowTied Biohacker",
+      "count": 1
+    },
+    "1492053651208159277": {
+      "id": "1492053651208159277",
+      "username": "SirBarefoot",
+      "name": "Sir Barefoot",
+      "count": 1
+    },
+    "1080955041006215168": {
+      "id": "1080955041006215168",
+      "username": "Man_with_a_van",
+      "name": "VanMan",
+      "count": 1
+    },
+    "1639219922034106372": {
+      "id": "1639219922034106372",
+      "username": "stephenrbell_",
+      "name": "Stephen Ronald Bell",
+      "count": 1
+    },
+    "1411914198054051840": {
+      "id": "1411914198054051840",
+      "username": "OlooneyJohn",
+      "name": "John Olooney",
+      "count": 1
+    },
+    "1108458116377530368": {
+      "id": "1108458116377530368",
+      "username": "KingKong9888",
+      "name": "Eric Yeung 👍🚀🌕",
+      "count": 1
+    },
+    "1398828682828038146": {
+      "id": "1398828682828038146",
+      "username": "buccocapital",
+      "name": "BuccoCapital Bloke",
+      "count": 1
+    },
+    "1393162945060917249": {
+      "id": "1393162945060917249",
+      "username": "AndrewKaufmanMD",
+      "name": "Andrew Kaufman MD",
+      "count": 1
+    },
+    "1104564502220161026": {
+      "id": "1104564502220161026",
+      "username": "ShawnRyan762",
+      "name": "Shawn Ryan",
+      "count": 1
+    },
+    "775104300452311041": {
+      "id": "775104300452311041",
+      "username": "AdaLluch",
+      "name": "Ada Lluch",
+      "count": 1
+    },
+    "1415328925958479873": {
+      "id": "1415328925958479873",
+      "username": "JohnLeePettim13",
+      "name": "John Lee Pettimore",
+      "count": 1
+    },
+    "892072054148796416": {
+      "id": "892072054148796416",
+      "username": "HindenburgRes",
+      "name": "Hindenburg Research",
+      "count": 1
+    },
+    "1400837712400158723": {
+      "id": "1400837712400158723",
+      "username": "realEstateTrent",
+      "name": "StripMallGuy",
+      "count": 1
+    },
+    "1251142884931203074": {
+      "id": "1251142884931203074",
+      "username": "van00sa",
+      "name": "van00sa",
+      "count": 1
+    },
+    "1204002849069420552": {
+      "id": "1204002849069420552",
+      "username": "PrivatEquityGuy",
+      "name": "PrivateEquityGuy (Mikk Markus)",
+      "count": 1
+    },
+    "1161261376846946305": {
+      "id": "1161261376846946305",
+      "username": "Babygravy9",
+      "name": "RAW EGG NATIONALIST",
+      "count": 1
+    },
+    "1193823126309818368": {
+      "id": "1193823126309818368",
+      "username": "TonyClimate",
+      "name": "Tony Heller 🇺🇸 🇯🇵",
+      "count": 1
+    },
+    "930773590227718144": {
+      "id": "930773590227718144",
+      "username": "squawksquare",
+      "name": "squawksquare",
+      "count": 1
+    },
+    "1373772003191099392": {
+      "id": "1373772003191099392",
+      "username": "VladTheInflator",
+      "name": "Vlad",
+      "count": 1
+    },
+    "1300661782013304832": {
+      "id": "1300661782013304832",
+      "username": "CFPStrategist4U",
+      "name": "Buy/Sell Research:Views/Facts/Opinions/Charts/4You",
+      "count": 1
+    },
+    "1012401963693232128": {
+      "id": "1012401963693232128",
+      "username": "real_bill_gross",
+      "name": "Bill Gross",
+      "count": 1
+    },
+    "837048318865862666": {
+      "id": "837048318865862666",
+      "username": "GoldTelegraph",
+      "name": "Gold Telegraph ⚡",
+      "count": 1
+    },
+    "1348305278131953664": {
+      "id": "1348305278131953664",
+      "username": "prometheusmacro",
+      "name": "Prometheus Research",
+      "count": 1
+    },
+    "1588948249817358337": {
+      "id": "1588948249817358337",
+      "username": "MilkshakesPod",
+      "name": "🥤 Markets Madness",
+      "count": 1
+    },
+    "1175863361822609408": {
+      "id": "1175863361822609408",
+      "username": "JohnMcDonaldSB",
+      "name": "John McDonald",
+      "count": 1
+    },
+    "1281457267582177280": {
+      "id": "1281457267582177280",
+      "username": "GRDecter",
+      "name": "Genevieve Roch-Decter, CFA",
+      "count": 1
+    },
+    "1219258832985174017": {
+      "id": "1219258832985174017",
+      "username": "INArteCarloDoss",
+      "name": "KKGB",
+      "count": 1
+    },
+    "1068614035044622336": {
+      "id": "1068614035044622336",
+      "username": "qcapital2020",
+      "name": " Q-Cap ",
+      "count": 1
+    },
+    "1539636858170122242": {
+      "id": "1539636858170122242",
+      "username": "burrytracker",
+      "name": "Michael Burry Stock Tracker ♟",
+      "count": 1
+    },
+    "1297651178256257024": {
+      "id": "1297651178256257024",
+      "username": "AutismCapital",
+      "name": "Autism Capital 🧩",
+      "count": 1
+    },
+    "1499109588674793476": {
+      "id": "1499109588674793476",
+      "username": "BobEUnlimited",
+      "name": "Bob Elliott",
+      "count": 1
+    },
+    "904195816335794176": {
+      "id": "904195816335794176",
+      "username": "dana_marlane",
+      "name": "dmac",
+      "count": 1
+    },
+    "1241996065999589377": {
+      "id": "1241996065999589377",
+      "username": "JamesHMackay",
+      "name": "J Mackay",
+      "count": 1
+    },
+    "818849647083003904": {
+      "id": "818849647083003904",
+      "username": "Sall_Goodman",
+      "name": "Paulie B.",
+      "count": 1
+    },
+    "1505187629763076097": {
+      "id": "1505187629763076097",
+      "username": "DrNo_Reformed",
+      "name": "Dr.No (Reformed)",
+      "count": 1
+    },
+    "1450310992202665985": {
+      "id": "1450310992202665985",
+      "username": "shelbystardust",
+      "name": "shelbystardust",
+      "count": 1
+    },
+    "824634606305505280": {
+      "id": "824634606305505280",
+      "username": "RealRickRule",
+      "name": "Rick Rule",
+      "count": 1
+    },
+    "1279534250853666817": {
+      "id": "1279534250853666817",
+      "username": "ChandlerTrading",
+      "name": "Chandler Trades",
+      "count": 1
+    },
+    "1032371282116063235": {
+      "id": "1032371282116063235",
+      "username": "conksresearch",
+      "name": "Conks",
+      "count": 1
+    },
+    "840725668207943680": {
+      "id": "840725668207943680",
+      "username": "eliant_capital",
+      "name": "Eliant Capital",
+      "count": 1
+    },
+    "1004137473679679488": {
+      "id": "1004137473679679488",
+      "username": "CheddarFlow",
+      "name": "Cheddar Flow",
+      "count": 1
+    },
+    "1279851525750300672": {
+      "id": "1279851525750300672",
+      "username": "HighyieldHarry",
+      "name": "High Yield Harry",
+      "count": 1
+    },
+    "1192625531025608705": {
+      "id": "1192625531025608705",
+      "username": "VCBrags",
+      "name": "VCs Congratulating Themselves 👏👏👏",
+      "count": 1
+    },
+    "1455381784351420417": {
+      "id": "1455381784351420417",
+      "username": "CramerTracker",
+      "name": "Inverse Cramer",
+      "count": 1
+    },
+    "700857611810422784": {
+      "id": "700857611810422784",
+      "username": "MichaelMOTTCM",
+      "name": "Michael J. Kramer",
+      "count": 1
+    },
+    "1022689388436701186": {
+      "id": "1022689388436701186",
+      "username": "ChrisWeston_PS",
+      "name": "Chris Weston",
+      "count": 1
+    },
+    "1433764430588829751": {
+      "id": "1433764430588829751",
+      "username": "NikosOnChain",
+      "name": "Nikos K.",
+      "count": 1
+    },
+    "1094621743191347201": {
+      "id": "1094621743191347201",
+      "username": "junkbondinvest",
+      "name": "junkbondinvestor",
+      "count": 1
+    },
+    "1484509871269687298": {
+      "id": "1484509871269687298",
+      "username": "sir_trader1",
+      "name": "DGB",
+      "count": 1
+    },
+    "757791901445521408": {
+      "id": "757791901445521408",
+      "username": "bluewolfpack1",
+      "name": "G 🇦🇺",
+      "count": 1
+    },
+    "1357804158309568513": {
+      "id": "1357804158309568513",
+      "username": "MichaelJBurry__",
+      "name": "Cassandra B.C.",
+      "count": 1
+    },
+    "1387497871751196672": {
+      "id": "1387497871751196672",
+      "username": "WatcherGuru",
+      "name": "Watcher.Guru",
+      "count": 1
+    },
+    "1366565625401909249": {
+      "id": "1366565625401909249",
+      "username": "WallStreetMav",
+      "name": "Wall Street Mav",
+      "count": 1
+    },
+    "1166366182569598976": {
+      "id": "1166366182569598976",
+      "username": "SolBrah",
+      "name": "⚡️🌞 Sol Brah 🌞🐬",
+      "count": 1
+    },
+    "1201405190101798913": {
+      "id": "1201405190101798913",
+      "username": "jesse_kleine",
+      "name": "Jesse @ Kleine Real Estate",
+      "count": 1
+    },
+    "1318279609612267520": {
+      "id": "1318279609612267520",
+      "username": "CentenariusN",
+      "name": "Centenarius Nutrition",
+      "count": 1
+    },
+    "1472945716637179906": {
+      "id": "1472945716637179906",
+      "username": "sm_cmc",
+      "name": "Sanj Mand",
+      "count": 1
+    },
+    "1524407286910930944": {
+      "id": "1524407286910930944",
+      "username": "culturaltutor",
+      "name": "The Cultural Tutor",
+      "count": 1
+    },
+    "1103241617496915971": {
+      "id": "1103241617496915971",
+      "username": "KennethDredd",
+      "name": "Kenneth Dredd",
+      "count": 1
+    },
+    "851583986270957568": {
+      "id": "851583986270957568",
+      "username": "Bitfinexed",
+      "name": "Bitfinex'ed 🔥🐧 Κασσάνδρα 🏺",
+      "count": 1
+    },
+    "1130021685351079938": {
+      "id": "1130021685351079938",
+      "username": "buitengebieden",
+      "name": "Buitengebieden",
+      "count": 1
+    },
+    "900669223122472960": {
+      "id": "900669223122472960",
+      "username": "AndersonAfDMdEP",
+      "name": "Christine Anderson",
+      "count": 1
+    },
+    "711689100731015168": {
+      "id": "711689100731015168",
+      "username": "nasmadotali",
+      "name": "Nasma Ali",
+      "count": 1
+    },
+    "1298730320280289282": {
+      "id": "1298730320280289282",
+      "username": "WidowMakerNQ",
+      "name": "TheWidowMaker",
+      "count": 1
+    },
+    "1234877222457995265": {
+      "id": "1234877222457995265",
+      "username": "TradeFutes",
+      "name": "Alex P",
+      "count": 1
+    },
+    "980516212059856901": {
+      "id": "980516212059856901",
+      "username": "EvaVlaar",
+      "name": "Eva Vlaardingerbroek",
+      "count": 1
+    },
+    "1238511837722882048": {
+      "id": "1238511837722882048",
+      "username": "LindyTasteful",
+      "name": "TastefulLindy",
+      "count": 1
+    },
+    "1070501111512092672": {
+      "id": "1070501111512092672",
+      "username": "Porkchop_EXP",
+      "name": "Porkchop Express",
+      "count": 1
+    },
+    "817773460114046977": {
+      "id": "817773460114046977",
+      "username": "clkleinmonaco",
+      "name": "Christian Klein",
+      "count": 1
+    },
+    "1156656695038357504": {
+      "id": "1156656695038357504",
+      "username": "spotgamma",
+      "name": "SpotGamma",
+      "count": 1
+    },
+    "1295526279194828800": {
+      "id": "1295526279194828800",
+      "username": "ParikPatelCFA",
+      "name": "Dr. Parik Patel, BA, CFA, ACCA Esq.",
+      "count": 1
+    },
+    "1310666978915430402": {
+      "id": "1310666978915430402",
+      "username": "drtomcowan",
+      "name": "Dr. Tom Cowan",
+      "count": 1
+    },
+    "1344759366671589376": {
+      "id": "1344759366671589376",
+      "username": "MacroAlf",
+      "name": "Alf",
+      "count": 1
+    },
+    "906328017986899968": {
+      "id": "906328017986899968",
+      "username": "the_chart_life",
+      "name": "Ian McMillan, CMT",
+      "count": 1
+    },
+    "1053178523324575744": {
+      "id": "1053178523324575744",
+      "username": "TheMaverickWS",
+      "name": "The Maverick of Wall Street",
+      "count": 1
+    },
+    "1082353582228176896": {
+      "id": "1082353582228176896",
+      "username": "DivesTech",
+      "name": "Dan Ives",
+      "count": 1
+    },
+    "1384579353217019906": {
+      "id": "1384579353217019906",
+      "username": "DoombergT",
+      "name": "Doomberg",
+      "count": 1
+    },
+    "1047836007037468672": {
+      "id": "1047836007037468672",
+      "username": "SixSigmaCapital",
+      "name": "SixSigmaCapital",
+      "count": 1
+    },
+    "707231479047315456": {
+      "id": "707231479047315456",
+      "username": "PeterSweden7",
+      "name": "PeterSweden",
+      "count": 1
+    },
+    "1456343326953725953": {
+      "id": "1456343326953725953",
+      "username": "joshmanmode_",
+      "name": "Josh",
+      "count": 1
+    },
+    "1318028333041504256": {
+      "id": "1318028333041504256",
+      "username": "BurryArchive",
+      "name": "Michael Burry Archive",
+      "count": 1
+    },
+    "1374003455195545601": {
+      "id": "1374003455195545601",
+      "username": "DariusDale42",
+      "name": "Darius Dale",
+      "count": 1
+    },
+    "1338068484685754370": {
+      "id": "1338068484685754370",
+      "username": "modernTman",
+      "name": "Texas Slim™",
+      "count": 1
+    },
+    "1390762874809761793": {
+      "id": "1390762874809761793",
+      "username": "DefiantLs",
+      "name": "Defiant L’s",
+      "count": 1
+    },
+    "1070351212044783616": {
+      "id": "1070351212044783616",
+      "username": "glassnodealerts",
+      "name": "glassnode alerts",
+      "count": 1
+    },
+    "949040654860120064": {
+      "id": "949040654860120064",
+      "username": "DoubleWideCap",
+      "name": "Doublewide Capital LLC",
+      "count": 1
+    },
+    "759103977283809280": {
+      "id": "759103977283809280",
+      "username": "rantsofmich",
+      "name": "Pete Bronson, CPA, CA",
+      "count": 1
+    },
+    "816318152950874114": {
+      "id": "816318152950874114",
+      "username": "HiddenForcesPod",
+      "name": "Hidden Forces",
+      "count": 1
+    },
+    "4813775412": {
+      "id": "4813775412",
+      "username": "MacroVoices",
+      "name": "MacroVoices Podcast",
+      "count": 1
+    },
+    "765241482974470144": {
+      "id": "765241482974470144",
+      "username": "_whitneywebb",
+      "name": "Whitney Webb",
+      "count": 1
+    },
+    "1344352026155601921": {
+      "id": "1344352026155601921",
+      "username": "BayInstitute",
+      "name": "Jake Bayfolk",
+      "count": 1
+    },
+    "918804624303382528": {
+      "id": "918804624303382528",
+      "username": "100trillionUSD",
+      "name": "PlanB",
+      "count": 1
+    },
+    "1224185690713460736": {
+      "id": "1224185690713460736",
+      "username": "goddek",
+      "name": "Dr. Simon",
+      "count": 1
+    },
+    "906230721513181184": {
+      "id": "906230721513181184",
+      "username": "coinbureau",
+      "name": "Coin Bureau",
+      "count": 1
+    },
+    "898142955038543873": {
+      "id": "898142955038543873",
+      "username": "MichaelAArouet",
+      "name": "Michael A. Arouet",
+      "count": 1
+    },
+    "1200616796295847936": {
+      "id": "1200616796295847936",
+      "username": "unusual_whales",
+      "name": "unusual_whales",
+      "count": 1
+    },
+    "945817135816654848": {
+      "id": "945817135816654848",
+      "username": "TrungTPhan",
+      "name": "Trung Phan",
+      "count": 1
+    },
+    "989599020996841473": {
+      "id": "989599020996841473",
+      "username": "1Cecilia1967",
+      "name": "Brasil61",
+      "count": 1
+    },
+    "907410554238717953": {
+      "id": "907410554238717953",
+      "username": "LawrenceLepard",
+      "name": "Lawrence Lepard, \"fix the money, fix the world\"",
+      "count": 1
+    },
+    "1354228711466426369": {
+      "id": "1354228711466426369",
+      "username": "DudespostingWs",
+      "name": "Dudes Posting Their W’s",
+      "count": 1
+    },
+    "4914384040": {
+      "id": "4914384040",
+      "username": "TheBabylonBee",
+      "name": "The Babylon Bee",
+      "count": 1
+    },
+    "1252068726087790592": {
+      "id": "1252068726087790592",
+      "username": "HabanoRap",
+      "name": "William “Dollar Bill” Valentine",
+      "count": 1
+    },
+    "1127721862455230464": {
+      "id": "1127721862455230464",
+      "username": "StealthQE4",
+      "name": "QE Infinity",
+      "count": 1
+    },
+    "1335352267961036801": {
+      "id": "1335352267961036801",
+      "username": "BlakeGerard47",
+      "name": "Blake Gerard",
+      "count": 1
+    },
+    "1120564659805929473": {
+      "id": "1120564659805929473",
+      "username": "MacroCharts",
+      "name": "Macro Charts",
+      "count": 1
+    },
+    "860215028053454848": {
+      "id": "860215028053454848",
+      "username": "MetreSteven",
+      "name": "Steven Van Metre - AI 👑",
+      "count": 1
+    },
+    "1001490017917784064": {
+      "id": "1001490017917784064",
+      "username": "DTAPCAP",
+      "name": "Dan Tapiero",
+      "count": 1
+    },
+    "929216678508027904": {
+      "id": "929216678508027904",
+      "username": "MasaSonCap",
+      "name": "Masa Capital",
+      "count": 1
+    },
+    "766312509829705728": {
+      "id": "766312509829705728",
+      "username": "TgMacro",
+      "name": "Tony Greer",
+      "count": 1
+    },
+    "1059708975539675139": {
+      "id": "1059708975539675139",
+      "username": "Ben__Rickert",
+      "name": "Ben Rickert",
+      "count": 1
+    },
+    "851431642950402048": {
+      "id": "851431642950402048",
+      "username": "AndreasSteno",
+      "name": "Andreas Steno Larsen",
+      "count": 1
+    },
+    "1245074816677416960": {
+      "id": "1245074816677416960",
+      "username": "hendry_hugh",
+      "name": "Hugh Hendry Acid Capitalist TV",
+      "count": 1
+    },
+    "984200570541150214": {
+      "id": "984200570541150214",
+      "username": "MikePatersonFX",
+      "name": "Mike Paterson",
+      "count": 1
+    },
+    "823766058909761536": {
+      "id": "823766058909761536",
+      "username": "LynAldenContact",
+      "name": "Lyn Alden",
+      "count": 1
+    },
+    "804270982169030656": {
+      "id": "804270982169030656",
+      "username": "zazzma_",
+      "name": "Zazzma",
+      "count": 1
+    },
+    "1039833297751302144": {
+      "id": "1039833297751302144",
+      "username": "whale_alert",
+      "name": "Whale Alert",
+      "count": 1
+    },
+    "784233687487393792": {
+      "id": "784233687487393792",
+      "username": "pineconemacro",
+      "name": "𝐏𝐢𝐧𝐞𝐜𝐨𝐧𝐞 𝐌𝐚𝐜𝐫𝐨",
+      "count": 1
+    },
+    "964599122442399745": {
+      "id": "964599122442399745",
+      "username": "PeterHanksFX",
+      "name": "Peter Hanks, CFA",
+      "count": 1
+    },
+    "1140865270870769666": {
+      "id": "1140865270870769666",
+      "username": "xtrskcapital",
+      "name": "xtrsk capital",
+      "count": 1
+    },
+    "966476641739444226": {
+      "id": "966476641739444226",
+      "username": "tyropartners",
+      "name": "Tyro Partners",
+      "count": 1
+    },
+    "1006305736777961479": {
+      "id": "1006305736777961479",
+      "username": "paxtrader777",
+      "name": "PaxTrader777🇺🇸",
+      "count": 1
+    },
+    "1098694844006977536": {
+      "id": "1098694844006977536",
+      "username": "CordovaTrades",
+      "name": "Julia Cordova✨",
+      "count": 1
+    },
+    "759774170536251392": {
+      "id": "759774170536251392",
+      "username": "Fongern_FX",
+      "name": "Marc-André Fongern",
+      "count": 1
+    },
+    "4337909658": {
+      "id": "4337909658",
+      "username": "HFI_Research",
+      "name": "HFI Research",
+      "count": 1
+    },
+    "783094981628092416": {
+      "id": "783094981628092416",
+      "username": "mortimer_1",
+      "name": "Mortimer",
+      "count": 1
+    },
+    "939121727581208576": {
+      "id": "939121727581208576",
+      "username": "EconguyRosie",
+      "name": "David Rosenberg",
+      "count": 1
+    },
+    "4392877043": {
+      "id": "4392877043",
+      "username": "ZFXtrading",
+      "name": "Miad",
+      "count": 1
+    },
+    "861619895485726722": {
+      "id": "861619895485726722",
+      "username": "TruthGundlach",
+      "name": "Jeffrey Gundlach",
+      "count": 1
+    },
+    "4688654202": {
+      "id": "4688654202",
+      "username": "ForexAnalytics1",
+      "name": "Forex-Analytics",
+      "count": 1
+    },
+    "4815829211": {
+      "id": "4815829211",
+      "username": "tradegeniustips",
+      "name": "Trade Genius",
+      "count": 1
+    },
+    "784455407486009344": {
+      "id": "784455407486009344",
+      "username": "TankerTrackers",
+      "name": "TankerTrackers.com, Inc.",
+      "count": 1
+    },
+    "800970574684160000": {
+      "id": "800970574684160000",
+      "username": "Amena__Bakr",
+      "name": "Amena Bakr",
+      "count": 1
+    },
+    "4472414799": {
+      "id": "4472414799",
+      "username": "Matrix_Trade",
+      "name": "MatrixTrade",
+      "count": 1
+    }
+  }
+}

@@ -1,0 +1,1 @@
+/home/daniel/QJM/mcp/agent-cco/show_alpha.sh
