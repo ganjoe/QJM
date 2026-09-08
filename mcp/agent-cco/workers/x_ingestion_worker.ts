@@ -1,4 +1,4 @@
-import { supabase, log, X_DISCOVERY_INTERVAL_SEC, twitterApiIoFetch, isTwitterApiIoAvailable } from "../tools/shared.ts";
+import { supabase, log, X_DISCOVERY_INTERVAL_SEC, twitterApiIoFetch, isTwitterApiIoAvailable, X_INITIAL_BACKFILL_LIMIT } from "../tools/shared.ts";
 
 export const activeSyncControllers = new Map<string, AbortController>();
 
@@ -117,7 +117,7 @@ export async function ingestInfluencerTweets(
       if (signal?.aborted) throw new Error("Sync wurde abgebrochen.");
 
       const json = await twitterApiIoFetch("user/tweet_timeline", { userId, cursor });
-      const tweets: any[] = json.tweets || [];
+      const tweets: any[] = json.tweets || (Array.isArray(json.data) ? json.data : json.data?.tweets) || [];
 
       if (tweets.length === 0) break;
 
@@ -194,8 +194,11 @@ export async function ingestInfluencerTweets(
 
       fetchedForBatch += tweets.length;
 
-      if (json.has_next_page && json.next_cursor) {
-        cursor = json.next_cursor;
+      const hasNextPage = Boolean(json.has_next_page ?? json.data?.has_next_page);
+      const nextCursor = json.next_cursor ?? json.data?.next_cursor;
+
+      if (hasNextPage && nextCursor) {
+        cursor = nextCursor;
       } else {
         break;
       }
@@ -205,12 +208,13 @@ export async function ingestInfluencerTweets(
     }
   }
 
-  // Phase 1: Forward Sync (newest tweets we haven't seen yet)
-  await fetchAndSaveBatch({ forwardSync: true, limit: targetLimit });
-
-  // Phase 2: Optional Backward Sync (historical backfill, if not forward-only)
-  if (!onlyForward && startTime) {
-    await fetchAndSaveBatch({ startTime, limit: targetLimit });
+  if (onlyForward) {
+    // Mode 1: Routine Forward Sync (Discovery Loop) – fetch newest tweets until known territory
+    await fetchAndSaveBatch({ forwardSync: true, limit: targetLimit });
+  } else {
+    // Mode 2: Initial Backfill or Historical Backfill – paginate backwards until limit or startTime is reached
+    const backfillLimit = targetLimit || X_INITIAL_BACKFILL_LIMIT;
+    await fetchAndSaveBatch({ forwardSync: false, startTime, limit: backfillLimit });
   }
 
   return totalSaved;

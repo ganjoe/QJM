@@ -32,6 +32,7 @@ export const MAX_CONCURRENT_METADATA_WORKERS = parseInt(Deno.env.get("MAX_CONCUR
 export const MAX_CONCURRENT_YT_CHANNELS = parseInt(Deno.env.get("MAX_CONCURRENT_YT_CHANNELS") || "3");
 export const EMBEDDING_BATCH_SIZE = parseInt(Deno.env.get("EMBEDDING_BATCH_SIZE") || "25");
 export const AUTO_START_WORKERS = Deno.env.get("AUTO_START_WORKERS") !== "false";
+export const X_INITIAL_BACKFILL_LIMIT = parseInt(Deno.env.get("X_INITIAL_BACKFILL_LIMIT") || "200");
 
 // --- Database Client ---
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -288,9 +289,13 @@ export async function twitterApiIoFetch(
   const json = await res.json();
 
   // Auto-unwrap: manche Endpoints wrappen in "data" (user/info, tweet_timeline),
-  // andere nicht (tweets, followings). Einheitlich auflösen.
+  // andere nicht (tweets, followings). Einheitlich auflösen, dabei Paginierungs-Metadaten erhalten.
   if (json.data && typeof json.data === "object" && !Array.isArray(json.data)) {
-    return json.data;
+    return {
+      ...json.data,
+      has_next_page: json.has_next_page ?? json.data.has_next_page ?? json.hasNextPage ?? json.data.hasNextPage,
+      next_cursor: json.next_cursor ?? json.data.next_cursor ?? json.nextCursor ?? json.data.nextCursor ?? json.cursor ?? json.data.cursor,
+    };
   }
 
   return json;

@@ -15,6 +15,7 @@ import {
   throttledXFetch,
   twitterApiIoFetch,
   isTwitterApiIoAvailable,
+  X_INITIAL_BACKFILL_LIMIT,
 } from "./shared.ts";
 import {
   activeSyncControllers,
@@ -275,12 +276,12 @@ export function registerXTools(server: McpServer) {
           if (!activeSyncControllers.has(autoCleanName)) {
             const controller = new AbortController();
             activeSyncControllers.set(autoCleanName, controller);
-            ingestInfluencerTweets(autoCleanName, cleanName, 200, undefined, controller.signal, false)
+            ingestInfluencerTweets(autoCleanName, cleanName, X_INITIAL_BACKFILL_LIMIT, undefined, controller.signal, false)
               .catch(e => log.error(`Initial sync error for ${autoCleanName}: ${e.message}`))
               .finally(() => activeSyncControllers.delete(autoCleanName));
           }
 
-          return { content: [{ type: "text", text: `✅ Influencer @${cleanName} (${screenName}) wurde erfolgreich hinzugefügt und der Initial-Sync (200 Posts) wurde gestartet.` }] };
+          return { content: [{ type: "text", text: `✅ Influencer @${cleanName} (${screenName}) wurde erfolgreich hinzugefügt und der Initial-Sync (${X_INITIAL_BACKFILL_LIMIT} Posts) wurde gestartet.` }] };
         } else if (action === "REMOVE") {
           if (!username) throw new Error("username ist für REMOVE erforderlich");
           const cleanName = username.startsWith("@") ? username.substring(1).toLowerCase() : username.toLowerCase();
@@ -352,7 +353,7 @@ export function registerXTools(server: McpServer) {
       description: "Manually triggers a sync for a specific influencer. Fetches tweets and enqueues them for parallel metadata extraction and embeddings.",
       inputSchema: {
         author: z.string().describe("Influencer username (e.g. '@elonmusk')"),
-        limit: z.number().optional().default(100).describe("Max posts to fetch (default: 100)"),
+        limit: z.number().optional().default(X_INITIAL_BACKFILL_LIMIT).describe(`Max posts to fetch (default: ${X_INITIAL_BACKFILL_LIMIT})`),
         start_time: z.string().optional().describe("Earliest post date (ISO format) for historical backfill"),
       },
     },
@@ -360,6 +361,7 @@ export function registerXTools(server: McpServer) {
       try {
         const cleanName = author.toLowerCase().startsWith("@") ? author.toLowerCase() : `@${author.toLowerCase()}`;
         const username = cleanName.substring(1);
+        const syncLimit = limit || X_INITIAL_BACKFILL_LIMIT;
 
         if (activeSyncControllers.has(cleanName)) {
           return { content: [{ type: "text", text: `Sync für ${cleanName} läuft bereits im Hintergrund.` }] };
@@ -368,8 +370,8 @@ export function registerXTools(server: McpServer) {
         const controller = new AbortController();
         activeSyncControllers.set(cleanName, controller);
 
-        // Run ingestion in background
-        ingestInfluencerTweets(cleanName, username, limit, start_time, controller.signal, !start_time)
+        // Run ingestion in background (onlyForward: false allows paginating back up to limit)
+        ingestInfluencerTweets(cleanName, username, syncLimit, start_time, controller.signal, false)
           .then(count => log.info(`[Sync] Manual sync for ${cleanName} completed: ${count} posts ingested.`))
           .catch(e => log.error(`[Sync] Manual sync for ${cleanName} failed: ${e.message}`))
           .finally(() => activeSyncControllers.delete(cleanName));
@@ -377,7 +379,7 @@ export function registerXTools(server: McpServer) {
         return {
           content: [{
             type: "text",
-            text: `🚀 Hintergrund-Sync für ${cleanName} gestartet (Limit: ${limit || 100} Posts). Die Posts werden sofort gespeichert und asynchron analysiert & ge-embeddet.`
+            text: `🚀 Hintergrund-Sync für ${cleanName} gestartet (Limit: ${syncLimit} Posts). Die Posts werden sofort gespeichert und asynchron analysiert & ge-embeddet.`
           }]
         };
       } catch (err: any) {
