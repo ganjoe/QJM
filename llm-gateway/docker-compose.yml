@@ -56,6 +56,7 @@ services:
       - ../mcp/agent-cco/index.ts:/app/index.ts:ro
       - ../mcp/agent-cco/tools:/app/tools:ro
       - ../mcp/agent-cco/workers:/app/workers:ro
+      - ../dsh_playground:/dsh_playground:ro
       - yt-media:/data/yt
     environment:
       SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}

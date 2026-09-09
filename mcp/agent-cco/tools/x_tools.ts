@@ -16,6 +16,7 @@ import {
   twitterApiIoFetch,
   isTwitterApiIoAvailable,
   X_INITIAL_BACKFILL_LIMIT,
+  X_INITIAL_SYNC_CONCURRENCY,
 } from "./shared.ts";
 import {
   activeSyncControllers,
@@ -48,7 +49,7 @@ export function registerXTools(server: McpServer) {
       title: "Search Influencer Posts",
       description: "Search stored influencer posts in the database using hybrid semantic or exact keyword search.\n\n" +
         "WHEN TO USE: Use when searching for posts discussing specific topics, tickers (e.g. '$NVDA', 'breakout'), trade setups, or sentiment across monitored influencers.\n" +
-        "WHEN NOT TO USE: To simply browse an influencer's chronological timeline feed or fetch a single tweet by ID, use `show_x_content`.",
+        "WHEN NOT TO USE: To simply browse chronological timeline feeds (single or multiple influencers, or specific dates) or fetch a single tweet by ID, use `show_x_content`.",
       inputSchema: {
         action: z.enum(["READ", "READ_IDS"]).default("READ").describe("READ = search posts, READ_IDS = fetch specific posts by ID array"),
         query: z.string().optional().describe("Search query (ticker, topic, keyword). Leave empty to list recent posts."),
@@ -152,18 +153,20 @@ export function registerXTools(server: McpServer) {
     "show_x_content",
     {
       title: "Show X Content (Timeline & Live Tweet)",
-      description: "Browse X/Twitter content.\n- DATABASE: Lists stored posts in reverse chronological order (optional filter by username/handle).\n- ONLINE: Fetches a single live tweet directly from the X API by tweet ID or URL.\n\n" +
-        "WHEN TO USE: Use when asked to show recent tweets from an influencer or to look up a specific tweet by URL/ID.\n" +
+      description: "Browse X/Twitter content.\n- DATABASE: Lists stored posts in reverse chronological order (optional filter by array of usernames, or specific dates/times).\n- ONLINE: Fetches a single live tweet directly from the X API by tweet ID or URL.\n\n" +
+        "WHEN TO USE: Use when asked to show recent tweets from influencers, retrieve tweets from a specific day/time window, or to look up a specific tweet by URL/ID.\n" +
         "WHEN NOT TO USE: To search across posts for specific keywords, topics, or stock tickers, use `search_influencer_posts`.",
       inputSchema: {
         action: z.enum(["DATABASE", "ONLINE"]).describe("DATABASE = list stored posts chronologically. ONLINE = fetch a single tweet live from API."),
-        username: z.string().optional().describe("Filter by influencer handle (for DATABASE, e.g. '@elonmusk')"),
+        usernames: z.array(z.string()).optional().describe("Array of influencer handles to filter by (for DATABASE, e.g. ['@zerohedge']). Leave empty for all."),
+        date: z.string().optional().describe("Specific calendar day to fetch posts for (YYYY-MM-DD) (for DATABASE). Evaluated in UTC."),
+        start_time: z.string().optional().describe("Specific start time window (ISO 8601, e.g. 2026-09-08T09:30:00Z) (for DATABASE). Overrides date shortcut."),
+        end_time: z.string().optional().describe("Specific end time window (ISO 8601, e.g. 2026-09-08T16:00:00Z) (for DATABASE)."),
         limit: z.number().optional().default(10).describe("Max posts to show (for DATABASE, default: 10)"),
-        days_back: z.number().optional().describe("Filter posts from the last X days (for DATABASE)"),
         tweet_id: z.string().optional().describe("Tweet ID or URL to fetch (for ONLINE)"),
       },
     },
-    async ({ action, username, limit, days_back, tweet_id }: any) => {
+    async ({ action, usernames, date, start_time, end_time, limit, tweet_id }: any) => {
       try {
         if (action === "DATABASE") {
           let query = supabase
@@ -173,14 +176,28 @@ export function registerXTools(server: McpServer) {
             .order("created_at", { ascending: false })
             .limit(limit || 10);
 
-          if (username) {
-            const { allHandles } = await resolveAuthorHandles(username);
-            query = query.in("metadata->>author", allHandles);
+          if (usernames && usernames.length > 0) {
+            const allHandlesSet = new Set<string>();
+            for (const u of usernames) {
+              const { allHandles } = await resolveAuthorHandles(u);
+              allHandles.forEach(h => allHandlesSet.add(h));
+            }
+            query = query.in("metadata->>author", Array.from(allHandlesSet));
           }
 
-          if (days_back) {
-            const cutoff = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
-            query = query.gte("created_at", cutoff);
+          let filterStart = start_time;
+          let filterEnd = end_time;
+
+          if (date && !start_time && !end_time) {
+            filterStart = `${date}T00:00:00Z`;
+            filterEnd = `${date}T23:59:59Z`;
+          }
+
+          if (filterStart) {
+            query = query.gte("created_at", filterStart);
+          }
+          if (filterEnd) {
+            query = query.lte("created_at", filterEnd);
           }
 
           const { data, error } = await query;
@@ -224,71 +241,299 @@ export function registerXTools(server: McpServer) {
     }
   );
 
+  // --- Helper Functions for Influencer Management & Batching ---
+  function resolveContainerPath(filePath: string): string {
+    if (filePath.startsWith("/home/daniel/QJM/dsh_playground")) {
+      return filePath.replace("/home/daniel/QJM/dsh_playground", "/dsh_playground");
+    }
+    return filePath;
+  }
+
+  async function extractInfluencerHandles(
+    username?: string,
+    usernames?: string[],
+    filePath?: string,
+    rawText?: string,
+  ): Promise<string[]> {
+    const handles = new Set<string>();
+
+    const addLineOrTokens = (str: string) => {
+      const lineWithoutComment = str.split("#")[0].trim();
+      if (!lineWithoutComment) return;
+      const tokens = lineWithoutComment.split(/[,\s\r\n]+/);
+      for (const t of tokens) {
+        const clean = t.trim().replace(/^@/, "").toLowerCase();
+        if (clean && /^[a-zA-Z0-9_]{1,25}$/.test(clean)) {
+          handles.add(clean);
+        }
+      }
+    };
+
+    if (filePath) {
+      const containerPath = resolveContainerPath(filePath);
+      let readOk = false;
+      try {
+        const content = await Deno.readTextFile(containerPath);
+        for (const line of content.split("\n")) {
+          addLineOrTokens(line);
+        }
+        readOk = true;
+      } catch {
+        // Fallback: try direct path if containerPath failed
+        try {
+          const content = await Deno.readTextFile(filePath);
+          for (const line of content.split("\n")) {
+            addLineOrTokens(line);
+          }
+          readOk = true;
+        } catch (e: any) {
+          throw new Error(`Konnte Datei '${filePath}' (Container: '${containerPath}') nicht lesen: ${e.message}`);
+        }
+      }
+    }
+
+    if (rawText) {
+      for (const line of rawText.split("\n")) {
+        addLineOrTokens(line);
+      }
+    }
+
+    if (usernames && Array.isArray(usernames)) {
+      for (const u of usernames) {
+        if (typeof u === "string") addLineOrTokens(u);
+      }
+    }
+
+    if (username && typeof username === "string") {
+      for (const line of username.split("\n")) {
+        addLineOrTokens(line);
+      }
+    }
+
+    return Array.from(handles);
+  }
+
+  function queueInitialSyncs(handles: string[]) {
+    const queue = [...handles];
+    const concurrency = Math.max(1, Math.min(X_INITIAL_SYNC_CONCURRENCY, queue.length));
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const cleanName = queue.shift();
+        if (!cleanName) break;
+        const autoCleanName = `@${cleanName}`;
+        if (activeSyncControllers.has(autoCleanName)) continue;
+
+        const controller = new AbortController();
+        activeSyncControllers.set(autoCleanName, controller);
+        try {
+          log.info(`[Initial Sync Queue] Starting initial backfill for ${autoCleanName} (${X_INITIAL_BACKFILL_LIMIT} posts)...`);
+          await ingestInfluencerTweets(autoCleanName, cleanName, X_INITIAL_BACKFILL_LIMIT, undefined, controller.signal, false);
+          log.info(`[Initial Sync Queue] Finished initial backfill for ${autoCleanName}.`);
+        } catch (e: any) {
+          log.error(`[Initial Sync Queue] Error for ${autoCleanName}: ${e.message}`);
+        } finally {
+          activeSyncControllers.delete(autoCleanName);
+        }
+      }
+    });
+
+    Promise.all(workers).catch(e => log.error(`[Initial Sync Queue] Worker pool error: ${e.message}`));
+  }
+
   // 3. Tool: Manage Influencers
   server.registerTool(
     "manage_influencers",
     {
       title: "Manage Influencers",
-      description: "List, add, or remove influencers from the database.",
+      description: "List, add, or remove influencers from the database. Supports single handles, batch arrays, multiline text, or local file imports.",
       inputSchema: {
         action: z.enum(["LIST", "ADD", "REMOVE"]).describe("The action to perform"),
-        username: z.string().optional().describe("The X username (for ADD or REMOVE)"),
-        notes: z.string().optional().describe("Optional notes about this influencer (for ADD)"),
+        username: z.string().optional().describe("A single X username or comma-/newline-separated usernames (e.g. '@RayDalio, @fundstrat' or '@RayDalio')"),
+        usernames: z.array(z.string()).optional().describe("An array of X usernames for batch operations (e.g. ['@RayDalio', '@fundstrat'])"),
+        file_path: z.string().optional().describe("Optional path to a text file containing influencer handles (e.g. /home/daniel/QJM/dsh_playground/fintwit/01_makro_strategen.txt)"),
+        raw_text: z.string().optional().describe("Raw text containing comma-, space- or newline-separated handles"),
+        notes: z.string().optional().describe("Optional notes/category about the influencer(s) (for ADD)"),
       },
     },
-    async ({ action, username, notes }: any) => {
+    async ({ action, username, usernames, file_path, raw_text, notes }: any) => {
       try {
         if (action === "LIST") {
-          const { data, error } = await supabase.from("x_users").select("username, screen_name, notes").eq("is_active", true).order("username");
+          const { data, error } = await supabase
+            .from("x_users")
+            .select("username, screen_name, notes")
+            .eq("is_active", true)
+            .order("username");
           if (error) throw error;
-          if (!data || data.length === 0) return { content: [{ type: "text", text: `Keine aktiven Influencer in der Datenbank gefunden.` }] };
+          if (!data || data.length === 0) {
+            return { content: [{ type: "text", text: `Keine aktiven Influencer in der Datenbank gefunden.` }] };
+          }
           const formatted = data.map((i: any, idx: number) => `${idx + 1}. @${i.username} (${i.screen_name || 'N/A'}) - ${i.notes || ''}`).join("\n");
-          return { content: [{ type: "text", text: `Hier sind alle überwachten Influencer:\n\n${formatted}` }] };
-        } else if (action === "ADD") {
-          if (!username) throw new Error("username ist für ADD erforderlich");
-          if (!isTwitterApiIoAvailable()) throw new Error(
-            "❌ TwitterAPI.io ist nicht konfiguriert (TWITTER_API_IO_KEY fehlt). " +
-            "Influencer können nicht hinzugefügt werden. " +
-            "Prüfe den Status mit 'manage_sync_pipeline STATUS'."
-          );
-          const cleanName = username.startsWith("@") ? username.substring(1).toLowerCase() : username.toLowerCase();
+          return { content: [{ type: "text", text: `Hier sind alle überwachten Influencer (${data.length}):\n\n${formatted}` }] };
+        }
 
-          const json = await twitterApiIoFetch("user/info", { userName: cleanName });
-          if (!json.id) throw new Error(`User @${username} nicht auf X gefunden (TwitterAPI.io).`);
+        const targetHandles = await extractInfluencerHandles(username, usernames, file_path, raw_text);
 
-          const userId = json.id;
-          const screenName = json.name;
-          const embedText = `username: ${cleanName} screen_name: ${screenName} notes: ${notes || ''}`;
-          const embedding = (await getEmbeddingsBatch([embedText]))[0];
-
-          const { error } = await supabase.from("x_users").upsert({
-            username: cleanName,
-            x_id: userId,
-            screen_name: screenName,
-            notes: notes || null,
-            embedding: embedding,
-            is_active: true
-          }, { onConflict: "username" });
-          if (error) throw error;
-
-          // Trigger initial ingestion in background
-          const autoCleanName = `@${cleanName}`;
-          if (!activeSyncControllers.has(autoCleanName)) {
-            const controller = new AbortController();
-            activeSyncControllers.set(autoCleanName, controller);
-            ingestInfluencerTweets(autoCleanName, cleanName, X_INITIAL_BACKFILL_LIMIT, undefined, controller.signal, false)
-              .catch(e => log.error(`Initial sync error for ${autoCleanName}: ${e.message}`))
-              .finally(() => activeSyncControllers.delete(autoCleanName));
+        if (action === "ADD") {
+          if (targetHandles.length === 0) {
+            throw new Error("Mindestens ein Benutzername (username, usernames, file_path oder raw_text) ist für ADD erforderlich.");
+          }
+          if (!isTwitterApiIoAvailable()) {
+            throw new Error(
+              "❌ TwitterAPI.io ist nicht konfiguriert (TWITTER_API_IO_KEY fehlt). " +
+              "Influencer können nicht hinzugefügt werden. " +
+              "Prüfe den Status mit 'manage_sync_pipeline STATUS'."
+            );
           }
 
-          return { content: [{ type: "text", text: `✅ Influencer @${cleanName} (${screenName}) wurde erfolgreich hinzugefügt und der Initial-Sync (${X_INITIAL_BACKFILL_LIMIT} Posts) wurde gestartet.` }] };
+          // 1. Check existing users in Supabase
+          const { data: existingUsers } = await supabase
+            .from("x_users")
+            .select("username, is_active, screen_name")
+            .in("username", targetHandles);
+
+          const existingActiveMap = new Map<string, string>();
+          if (existingUsers) {
+            for (const u of existingUsers) {
+              if (u.is_active) {
+                existingActiveMap.set(u.username, u.screen_name || u.username);
+              }
+            }
+          }
+
+          const alreadyTracked: string[] = [];
+          const toProcess: string[] = [];
+
+          for (const h of targetHandles) {
+            if (existingActiveMap.has(h)) {
+              alreadyTracked.push(`@${h} (${existingActiveMap.get(h)})`);
+            } else {
+              toProcess.push(h);
+            }
+          }
+
+          if (toProcess.length === 0) {
+            return {
+              content: [{
+                type: "text",
+                text: `ℹ️ Alle ${targetHandles.length} angegebenen Influencer werden bereits aktiv überwacht:\n${alreadyTracked.map(u => `• ${u}`).join("\n")}`
+              }]
+            };
+          }
+
+          // Helper to onboard a single user
+          const onboardUser = async (cleanName: string) => {
+            const json = await twitterApiIoFetch("user/info", { userName: cleanName });
+            if (!json.id) {
+              throw new Error("User nicht auf X gefunden (TwitterAPI.io)");
+            }
+            const userId = json.id;
+            const screenName = json.name || cleanName;
+            const { error: upsertError } = await supabase.from("x_users").upsert({
+              username: cleanName,
+              x_id: userId,
+              screen_name: screenName,
+              notes: notes || null,
+              is_active: true,
+            }, { onConflict: "username" });
+
+            if (upsertError) throw upsertError;
+
+            // Asynchronously generate profile embedding without blocking user onboarding
+            const embedText = `username: ${cleanName} screen_name: ${screenName} notes: ${notes || ''}`;
+            getEmbeddingsBatch([embedText])
+              .then((emb: any) => {
+                if (emb && emb[0]) {
+                  supabase.from("x_users").update({ embedding: emb[0] }).eq("username", cleanName).then();
+                }
+              })
+              .catch((e: any) => log.debug(`Optional profile embedding for @${cleanName}: ${e.message}`));
+
+            // Trigger initial backfill in background queue
+            queueInitialSyncs([cleanName]);
+            await recordSyncLog("influencer_added", `@${cleanName}`, `Influencer @${cleanName} (${screenName}) registriert und Initial-Sync gestartet.`);
+            return { cleanName, screenName, userId };
+          };
+
+          // Single user: process synchronously for immediate feedback
+          if (toProcess.length === 1) {
+            try {
+              const res = await onboardUser(toProcess[0]);
+              return {
+                content: [{
+                  type: "text",
+                  text: `✅ Influencer @${res.cleanName} (${res.screenName}) wurde erfolgreich hinzugefügt und der Initial-Sync (${X_INITIAL_BACKFILL_LIMIT} Posts) wurde gestartet.`
+                }]
+              };
+            } catch (err: any) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `Fehler beim Hinzufügen von @${toProcess[0]}: ${err.message}`
+                }],
+                isError: true
+              };
+            }
+          }
+
+          // Batch mode (> 1 user): Process progressively in background to prevent MCP 60s timeout
+          (async () => {
+            log.info(`[Batch Import] Starte Hintergrund-Import für ${toProcess.length} Influencer...`);
+            let successCount = 0;
+            let failCount = 0;
+            for (const cleanName of toProcess) {
+              try {
+                await onboardUser(cleanName);
+                successCount++;
+                log.info(`[Batch Import] (${successCount + failCount}/${toProcess.length}) @${cleanName} erfolgreich hinzugefügt.`);
+              } catch (err: any) {
+                failCount++;
+                log.error(`[Batch Import] Fehler bei @${cleanName}: ${err.message}`);
+                await recordSyncLog("influencer_add_failed", `@${cleanName}`, `Fehler: ${err.message}`);
+              }
+            }
+            log.info(`[Batch Import] Abgeschlossen. Erfolgreich: ${successCount}, Fehlgeschlagen: ${failCount}.`);
+          })().catch(e => log.error(`[Batch Import] Fataler Fehler: ${e.message}`));
+
+          let responseText = `🚀 **Batch-Import im Hintergrund gestartet!**\n\n` +
+            `• **Zu importieren:** ${toProcess.length} Accounts\n` +
+            `• **Bereits aktiv:** ${alreadyTracked.length} Accounts\n` +
+            `• **Initial-Backfill:** ${X_INITIAL_BACKFILL_LIMIT} Posts pro Account (Parallelität: ${X_INITIAL_SYNC_CONCURRENCY})\n\n` +
+            `Die Accounts werden nun schrittweise aufgelöst, in der Datenbank gespeichert und synchronisiert.`;
+
+          if (alreadyTracked.length > 0) {
+            responseText += `\n\nBereits aktive Accounts:\n${alreadyTracked.map(u => `• ${u}`).join("\n")}`;
+          }
+
+          return { content: [{ type: "text", text: responseText }] };
+
         } else if (action === "REMOVE") {
-          if (!username) throw new Error("username ist für REMOVE erforderlich");
-          const cleanName = username.startsWith("@") ? username.substring(1).toLowerCase() : username.toLowerCase();
-          const { error } = await supabase.from("x_users").update({ is_active: false }).eq("username", cleanName);
+          if (targetHandles.length === 0) {
+            throw new Error("Mindestens ein Benutzername (username, usernames, file_path oder raw_text) ist für REMOVE erforderlich.");
+          }
+
+          const { data, error } = await supabase
+            .from("x_users")
+            .update({ is_active: false })
+            .in("username", targetHandles)
+            .select("username, screen_name");
+
           if (error) throw error;
-          return { content: [{ type: "text", text: `Influencer @${cleanName} wurde deaktiviert (Soft-Delete). Posts bleiben erhalten.` }] };
+
+          const deactivated = (data || []).map((u: any) => `@${u.username}`);
+          const notFound = targetHandles.filter((h: string) => !data?.some((d: any) => d.username === h)).map((h: string) => `@${h}`);
+
+          const report = [];
+          if (deactivated.length > 0) {
+            report.push(`🛑 Folgende Influencer wurden deaktiviert (Soft-Delete):\n${deactivated.map((u: string) => `• ${u}`).join("\n")}`);
+          }
+          if (notFound.length > 0) {
+            report.push(`ℹ️ Folgende Handles waren nicht als aktiv in der Datenbank hinterlegt:\n${notFound.map((u: string) => `• ${u}`).join("\n")}`);
+          }
+
+          return { content: [{ type: "text", text: report.join("\n\n") || "Keine Änderungen vorgenommen." }] };
         }
+
         throw new Error("Invalid action");
       } catch (err: any) {
         return { content: [{ type: "text", text: `Fehler: ${err.message}` }], isError: true };

@@ -33,6 +33,7 @@ export const MAX_CONCURRENT_YT_CHANNELS = parseInt(Deno.env.get("MAX_CONCURRENT_
 export const EMBEDDING_BATCH_SIZE = parseInt(Deno.env.get("EMBEDDING_BATCH_SIZE") || "25");
 export const AUTO_START_WORKERS = Deno.env.get("AUTO_START_WORKERS") !== "false";
 export const X_INITIAL_BACKFILL_LIMIT = parseInt(Deno.env.get("X_INITIAL_BACKFILL_LIMIT") || "200");
+export const X_INITIAL_SYNC_CONCURRENCY = parseInt(Deno.env.get("X_INITIAL_SYNC_CONCURRENCY") || "2");
 
 // --- Database Client ---
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
