@@ -29,3 +29,22 @@ Thumbs.db
 
 # Scratch & Playground
 dsh_playground/
+
+# Backups & Snapshots
+*.bak
+*.backup_*
+*.old
+
+# Generated Alpha & Graph Data (Large Files)
+*alpha_graph.html
+*alpha_state*.json
+*alpha_state*.js
+
+# Credentials & Secrets
+cookies.txt
+*.pem
+*.key
+
+# IBKR Exports & Altdaten
+ibkr_csv_importer/oldcsv/
+ibkr_csv_importer/trades.xml

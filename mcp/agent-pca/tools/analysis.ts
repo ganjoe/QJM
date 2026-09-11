@@ -265,27 +265,60 @@ export function registerAnalysisTools(server: McpServer) {
     "run_technical_scanner",
     {
       title: "Run Technical Stock Scanner",
-      description: "Evaluates technical pattern scanners on-the-fly across a list of tickers. Returns matches (true/false), trend template scores, and detailed metric evaluations for each ticker.\n\n" +
-        "AVAILABLE SCANNERS:\n" +
-        "- 'minervini_trend': Evaluates Mark Minervini's Trend Template (Score 0-6). Checks Stage 2 uptrend criteria: 200 SMA trending up, Price > 150 & 200 SMA, 50 SMA > 150 & 200 SMA.\n" +
-        "- 'sma_cross': Analyzes 50/200 SMA Golden Cross & Death Cross status and spread percentage.\n\n" +
-        "WHEN TO USE: Use whenever asked to scan, screen, or filter a watchlist or list of tickers for Minervini trend template compliance or moving average breakouts.",
+      description: "Screens a ticker universe with the registered technical scanners — either as a plain true/false check on the latest bar or as a list of hits inside a time range.\n\n" +
+        "UNIVERSE (union of both sources, de-duplicated, '$'-prefixed virtual tickers dropped):\n" +
+        "- `tickers`: explicit symbols, e.g. ['AAPL', 'NVDA'].\n" +
+        "- `watchlists`: Supabase watchlist references — a bare list name ('current_positions'), a PCA service link ('http://<host>:8794/api/watchlists/current_positions'), a PostgREST link containing 'list_name=eq.<name>', or a '<name>.txt' file.\n\n" +
+        "OUTPUT MODES:\n" +
+        "- WITHOUT `from`/`to` ('latest' mode): only the last available bar of each ticker is evaluated and the answer is a plain true/false map per ticker and scanner — no hit list.\n" +
+        "- WITH `from` and/or `to` ('range' mode, inclusive bounds): every bar inside the window is evaluated causally (warm-up bars are loaded before 'from', no look-ahead) and the answer is a list of hits with ticker, scanner, hit date, score and matched bars.\n\n" +
+        "Tickers without parquet data, without enough history or without bars in the window are reported in `skipped` with a machine readable reason — they are never silently reported as false.\n\n" +
+        "AVAILABLE SCANNERS (run `list_scanners` for live metadata and history requirements):\n" +
+        "- 'madbo': MADBO — Moving Average Dollar Volume Breakout. The five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close x volume) exceeds 2x its 50-bar average. Score = dollar-volume multiple. Needs 200 bars.\n" +
+        "- 'minervini_trend': Minervini Trend Template (score 0-6, matched at >= 5: 200 SMA trending up, price above the 150 & 200 SMA, 50 SMA above the 150 & 200 SMA, >= 25% above the 52-week low, within 25% of the 52-week high). Needs 252 bars.\n" +
+        "- 'sma_cross': 50/200 SMA golden cross active; score is the spread in percent. Needs 200 bars.\n\n" +
+        "WHEN TO USE: whenever asked to screen or scan a watchlist/ticker list for a pattern, or to find out WHEN a setup triggered inside a period.\n" +
+        "WHEN NOT TO USE: for raw candle history use `get_timeseries`; for the live price use `get_quote`.",
       inputSchema: {
-        scanners: z.array(z.string()).describe("Array of scanner names to execute (e.g. ['minervini_trend'] or ['minervini_trend', 'sma_cross'])"),
-        tickers: z.array(z.string()).describe("List of stock ticker symbols to evaluate (e.g. ['AAPL', 'NVDA', 'MSFT'])"),
-        timeframe: z.string().optional().default("1D").describe("Candle timeframe (Default: '1D')"),
+        scanners: z.array(z.string()).describe("Scanner names to run, e.g. ['madbo'] or ['minervini_trend', 'sma_cross']"),
+        tickers: z.array(z.string()).optional().describe("Explicit tickers to scan, e.g. ['AAPL', 'NVDA', 'MSFT']"),
+        watchlists: z.array(z.string()).optional().describe("Supabase watchlist references: bare list name, PCA service link, PostgREST link with 'list_name=eq.<name>', or '<name>.txt'"),
+        from: z.union([z.string(), z.number()]).optional().describe("Inclusive range start ('YYYY-MM-DD' or Unix seconds). Supplying from/to switches the output to a hit list"),
+        to: z.union([z.string(), z.number()]).optional().describe("Inclusive range end ('YYYY-MM-DD' means end of that day; or Unix seconds)"),
+        timeframe: z.string().optional().default("1D").describe("Candle timeframe (only '1D' is populated)"),
+        hit_mode: z.enum(["first_of_episode", "all_bars"]).optional().default("first_of_episode").describe("Collapse consecutive matching bars into one hit (default) or return every matching bar"),
+        limit_hits: z.number().optional().default(200).describe("Maximum hits returned (default 200, max 1000)"),
+        include_details: z.boolean().optional().default(false).describe("Attach per-ticker scores/details (latest mode) or per-hit indicator details (range mode)"),
+        max_tickers: z.number().optional().default(2000).describe("Universe cap (default 2000)"),
       },
     },
-    async ({ scanners, tickers, timeframe }: any) => {
+    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, include_details, max_tickers }: any) => {
       try {
+        const body: Record<string, any> = {
+          scanners,
+          timeframe: timeframe || "1D",
+          hit_mode: hit_mode || "first_of_episode",
+          limit_hits: limit_hits ?? 200,
+          include_details: include_details === true,
+          max_tickers: max_tickers ?? 2000,
+        };
+        if (Array.isArray(tickers) && tickers.length > 0) {
+          body.tickers = tickers.map((t: string) => String(t).trim().toUpperCase()).filter(Boolean);
+        }
+        if (Array.isArray(watchlists) && watchlists.length > 0) {
+          body.watchlists = watchlists.map((w: string) => String(w).trim()).filter(Boolean);
+        }
+        if (from !== undefined && from !== null && from !== "") body.from = from;
+        if (to !== undefined && to !== null && to !== "") body.to = to;
+
+        if (!body.tickers && !body.watchlists) {
+          throw new Error("Provide at least one universe source: 'tickers' and/or 'watchlists' (e.g. watchlists: ['current_positions']).");
+        }
+
         const res = await fetch(`${PCA_SERVICE_URL}/api/scanner/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            scanners,
-            tickers: tickers.map((t: string) => t.toUpperCase()),
-            timeframe: timeframe || "1D",
-          }),
+          body: JSON.stringify(body),
         });
 
         if (!res.ok) {
@@ -294,7 +327,112 @@ export function registerAnalysisTools(server: McpServer) {
         }
 
         const data = await res.json();
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        const lines: string[] = [];
+        const scannerNames: string[] = data.scanners || [];
+
+        if (data.mode === "latest") {
+          const scanned: string[] = Object.keys(data.matches || {});
+          const matchSummary = scannerNames.map((s: string) => `${s}: ${data.true_count?.[s] ?? 0}`).join(" | ");
+          lines.push(`🔍 **Scanner — latest bar** (${scannerNames.join(", ")}) | timeframe ${data.timeframe} | as of ${data.as_of ?? "n/a"} | ${scanned.length} tickers`);
+          if (scanned.length > 0) {
+            const header = `| Ticker | ${scannerNames.join(" | ")} |`;
+            const sep = `| :--- |${scannerNames.map(() => " :---: |").join("")}`;
+            const rows = scanned.slice(0, 300).map((t: string) => {
+              const cells = scannerNames.map((s: string) => (data.matches[t]?.[s] ? "✅" : "❌")).join(" | ");
+              return `| ${t} | ${cells} |`;
+            });
+            lines.push([header, sep, ...rows].join("\n"));
+            if (scanned.length > 300) lines.push(`_… ${scanned.length - 300} further tickers in the JSON envelope._`);
+          }
+          lines.push(`**Matches:** ${matchSummary}`);
+        } else {
+          const hits: any[] = data.hits || [];
+          const summary = data.summary || {};
+          const range = data.range || {};
+          lines.push(`🎯 **Scanner hits** (${scannerNames.join(", ")}) | ${range.from ?? "series start"} → ${range.to ?? "series end"} | hit_mode ${range.hit_mode ?? "first_of_episode"} | ${summary.hits_total ?? 0} hits in ${summary.tickers_with_hits ?? 0} tickers`);
+          if (hits.length > 0) {
+            const header = "| Ticker | Scanner | Hit date | Score | Bars | Last match |";
+            const sep = "| :--- | :--- | :--- | :---: | :---: | :--- |";
+            const rows = hits.map((h: any) =>
+              `| ${h.ticker} | ${h.scanner} | ${h.date} | ${h.score ?? "–"} | ${h.bars_matched ?? 1} | ${h.last_match_date ?? h.date} |`);
+            lines.push([header, sep, ...rows].join("\n"));
+          } else {
+            lines.push("_No hits in this window._");
+          }
+          if (summary.by_ticker && Object.keys(summary.by_ticker).length > 0) {
+            const perTicker = Object.entries(summary.by_ticker).map(([t, c]) => `${t} (${c})`).join(", ");
+            lines.push(`**By ticker:** ${perTicker}`);
+          }
+          if (summary.truncated) {
+            lines.push(`⚠️ Output truncated: ${summary.hits_total} hits found, ${summary.hits_returned} returned — narrow the range or raise 'limit_hits'.`);
+          }
+        }
+
+        const skipped: any[] = data.skipped || [];
+        if (skipped.length > 0) {
+          const byReason: Record<string, number> = {};
+          for (const s of skipped) byReason[s.reason] = (byReason[s.reason] || 0) + 1;
+          lines.push(`**Skipped (${skipped.length}):** ${Object.entries(byReason).map(([r, c]) => `${r}: ${c}`).join(", ")}`);
+        }
+        for (const w of data.warnings || []) lines.push(`⚠️ ${w}`);
+
+        const envelope = {
+          status: data.status,
+          mode: data.mode,
+          scanners: data.scanners,
+          timeframe: data.timeframe,
+          universe: data.universe,
+          as_of: data.as_of,
+          true_count: data.true_count,
+          range: data.range,
+          summary: data.summary,
+          skipped,
+          warnings: data.warnings,
+          timing: data.timing,
+        };
+        lines.push("```json\n" + JSON.stringify(envelope, null, 2) + "\n```");
+        if (include_details === true) {
+          lines.push("```json\n" + JSON.stringify(data.mode === "latest" ? { scores: data.scores, details: data.details } : data.hits, null, 2) + "\n```");
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 4b. list_scanners — Live metadata of the registered scanner framework
+  // ─────────────────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_scanners",
+    {
+      title: "List Registered Technical Scanners",
+      description: "Lists every scanner registered in the PCA scanner framework with its metadata (minimum bars of history, feature requirement, range support), plus the available hit modes, output modes and accepted universe sources.\n\n" +
+        "WHEN TO USE: before calling `run_technical_scanner` to confirm the exact scanner names and their history requirements, or when a scan returned an unknown-scanner error.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const res = await fetch(`${PCA_SERVICE_URL}/api/scanner/list`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const data = await res.json();
+        const scanners: any[] = data.scanners || [];
+
+        const header = "| Scanner | Min bars | Features | Range | Description |";
+        const sep = "| :--- | :---: | :---: | :---: | :--- |";
+        const rows = scanners.map((s: any) =>
+          `| \`${s.name}\` | ${s.min_bars} | ${s.requires_features ? "yes" : "no"} | ${s.support_range ? "yes" : "no"} | ${s.description} |`);
+        const modeLines = Object.entries(data.output_modes || {}).map(([k, v]) => `- **${k}**: ${v}`).join("\n");
+
+        const text = `🧰 **Registered scanners (${data.count ?? scanners.length})**\n\n${[header, sep, ...rows].join("\n")}\n\n` +
+          `**Output modes**\n${modeLines}\n\n` +
+          `**Hit modes:** ${Object.keys(data.hit_modes || {}).join(", ")}\n\n` +
+          `**Universe sources:**\n${(data.universe_sources || []).map((u: string) => `- ${u}`).join("\n")}\n\n` +
+          "```json\n" + JSON.stringify(data, null, 2) + "\n```";
+
+        return { content: [{ type: "text", text }] };
       } catch (err: any) {
         return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
       }

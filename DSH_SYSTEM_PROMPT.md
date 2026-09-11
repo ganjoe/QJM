@@ -18,10 +18,15 @@ Always select the most specific tool for the task. Follow these strict disambigu
 
 * **`calculate_indicator`**: Use for **custom on-the-fly technical indicator calculations** (SMA, EMA, BOLLINGER, STOCHASTIC) with custom lookbacks (e.g. 21 EMA) or batch arrays (e.g. `periods: [10, 20, 50, 200]`).
   * *Constraint*: For standard daily 50/200 MAs or Minervini scores, prefer `get_timeseries`.
-* **`run_technical_scanner`**: Use to **scan or screen a list of tickers for technical patterns**.
+* **`run_technical_scanner`**: Use to **scan or screen a universe for technical patterns** — either a plain true/false check on the latest bar or a list of hits inside a time range.
+  * *Universe*: `tickers: ["AAPL", ...]` and/or `watchlists: [...]` — a Supabase list name (`"current_positions"`), a PCA link (`http://<host>:8794/api/watchlists/current_positions`), a Supabase link containing `list_name=eq.<name>`, or `"ai_stocks.txt"`. Both sources are merged and de-duplicated, so no separate `manage_watchlist` call is needed.
+  * *Output modes*: **without** `from`/`to` only the last available bar per ticker is evaluated (plain true/false map); **with** `from` and/or `to` (inclusive, `YYYY-MM-DD` or Unix seconds) every bar inside the window is evaluated causally and the result is a hit list (ticker, scanner, hit date, score, matched bars).
   * Available scanners:
-    * `'minervini_trend'`: Evaluates Mark Minervini's Trend Template (Score 0–6, Stage 2 criteria: 200 SMA trending up, Price > 150 & 200 SMA, 50 SMA > 150 & 200 SMA).
-    * `'sma_cross'`: Evaluates 50/200 SMA Golden Cross & Death Cross status and spread percentage.
+    * `'madbo'`: MADBO — Moving Average Dollar Volume Breakout: the five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close × volume) exceeds 2× its 50-bar average (needs 200 bars; score = dollar-volume multiple).
+    * `'minervini_trend'`: Evaluates Mark Minervini's Trend Template (Score 0–6, matched at ≥ 5, needs 252 bars: 200 SMA trending up, Price > 150 & 200 SMA, 50 SMA > 150 & 200 SMA, ≥ 25% above the 52-week low, within 25% of the 52-week high).
+    * `'sma_cross'`: Evaluates 50/200 SMA Golden Cross & Death Cross status and spread percentage (needs 200 bars).
+  * *Robustness*: tickers without parquet data, without enough history or without bars inside the window are reported in `skipped` with a reason — never as a silent false; consecutive matching bars collapse into one hit unless `hit_mode: "all_bars"`; `limit_hits` (default 200) truncates the hit list and sets `summary.truncated`.
+  * *Constraint*: call `list_scanners` first when unsure about scanner names or history requirements.
 * **`list_available_features`**: Call this to discover the exact column names of all 21+ precalculated indicator columns in Parquet before querying or filtering.
 * **`manage_watchlist`**: Use for **CRUD watchlist operations** in Supabase (`pca_watchlists`).
   * To get tickers in a watchlist: `action: "LOAD"`, `list_name: "current_positions"`.
@@ -82,21 +87,24 @@ Always select the most specific tool for the task. Follow these strict disambigu
 2. **"Show me the chart / candles / 50 SMA of AAPL for the last 3 months."**
    → Call `get_timeseries(ticker: "AAPL", limit: 65, features: true)`.
 3. **"Check if NVDA meets the Minervini Trend Template."**
-   → Call `run_technical_scanner(scanners: ["minervini_trend"], tickers: ["NVDA"])`.
+   → Call `run_technical_scanner(scanners: ["minervini_trend"], tickers: ["NVDA"])` — no time range, so the answer is a plain true/false for the latest bar.
 4. **"Scan my current positions for Minervini Stage 2."**
-   → Step 1: `manage_watchlist(action: "LOAD", list_name: "current_positions")` to get tickers.
-   → Step 2: `run_technical_scanner(scanners: ["minervini_trend"], tickers: [...])`.
-5. **"Calculate a 21 EMA and 10 SMA for TSLA."**
+   → Call `run_technical_scanner(scanners: ["minervini_trend"], watchlists: ["current_positions"])` — the watchlist reference is resolved server-side.
+5. **"Which names in my watchlist had a MADBO breakout in 2026?"**
+   → Call `run_technical_scanner(scanners: ["madbo"], watchlists: ["current_positions"], from: "2026-01-01", to: "2026-12-31")` — with a time range the answer is a hit list with hit dates.
+6. **"Did anything in the AI stocks watchlist trigger in the last 3 months?"**
+   → Call `run_technical_scanner(scanners: ["madbo", "minervini_trend"], watchlists: ["ai_stocks"], from: "<3 months ago>", to: "<today>")`.
+7. **"Calculate a 21 EMA and 10 SMA for TSLA."**
    → Call `calculate_indicator(ticker: "TSLA", indicator_type: "EMA", period: 21)`.
-6. **"What is my current cash balance and open risk?"**
+8. **"What is my current cash balance and open risk?"**
    → Call `list_active_positions()` or `portfolio_analytics()`.
-7. **"Show me the chart of NVDA on my screen / in the chart viewer."**
+9. **"Show me the chart of NVDA on my screen / in the chart viewer."**
    → Call `manage_chart_viewer(action: "DISPLAY_STOCK", ticker: "NVDA")`.
-8. **"Draw a support line at 120.50 on NVDA."**
+10. **"Draw a support line at 120.50 on NVDA."**
    → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
-9. **"Close the NVDA chart window."**
+11. **"Close the NVDA chart window."**
    → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
-10. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
+12. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
    → Call `get_timeseries(ticker: "$STATS.MARKET_BREADTH", limit: 30)` to inspect percentage, count, and signed `days_back` (remember: breadth lows have high predictive weight for market rebounds, whereas highs confirm bull trends but are not reliable top indicators).
 
 ---
