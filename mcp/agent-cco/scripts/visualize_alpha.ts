@@ -558,6 +558,7 @@ async function main() {
     #network-container {
       flex: 1;
       height: 100%;
+      position: relative;
       background: radial-gradient(circle at center, #111827 0%, var(--bg-base) 100%);
     }
 
@@ -1239,10 +1240,23 @@ async function main() {
 
     <!-- CONTROLS: CLIQUE- & GRUPPEN-MODUS -->
     <div id="controls-groups" style="display: ${payload.initialMode === "groups" ? "flex" : "none"}; flex-direction: column; gap: 12px;">
-      <!-- Cliquen-Typ Auswahl (Wechselseitig vs Ko-Signal) -->
+      <!-- Cliquen-Typ Auswahl (Ko-Signal als Standard da 45 Gruppen im Datensatz vorhanden sind) -->
       <div class="clique-type-toggle">
-        <button class="clique-type-btn active" id="clique-type-mutual" title="Echte wechselseitige Follows (A <-> B)">🔄 Wechselseitig (Mutual)</button>
-        <button class="clique-type-btn" id="clique-type-cosignal" title="Trader mit Schnittmengen derselben Influencer">🔗 Ko-Signal (Schnittmenge)</button>
+        <button class="clique-type-btn active" id="clique-type-cosignal" title="Trader mit Schnittmengen derselben Influencer">🔗 Ko-Signal (Schnittmenge)</button>
+        <button class="clique-type-btn" id="clique-type-mutual" title="Echte wechselseitige Follows (A <-> B)">🔄 Wechselseitig (Mutual)</button>
+      </div>
+
+      <!-- Hinweis wenn Wechselseitig gewählt ist, aber 0 Cliquen im Datensatz existieren -->
+      <div id="mutual-empty-notice" style="display: none; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 9px; padding: 10px; font-size: 10.5px; line-height: 1.45; color: var(--text-main);">
+        <div style="font-weight: 700; color: var(--accent-gold); margin-bottom: 4px; display: flex; align-items: center; gap: 4px;">
+          <span>ℹ️ Datensatz-Hinweis</span>
+        </div>
+        <div style="color: var(--text-muted); margin-bottom: 8px;">
+          Der aktuelle Scan enthält gerichtete Follows von Basis-Tradern zu Kandidaten. Da Kandidaten noch nicht rekursiv abgefragt wurden, liegen im aktuellen JSON noch keine bidirektionalen Follows (A ↔ B) vor.
+        </div>
+        <button class="hud-btn" id="btn-switch-to-cosignal" style="width: 100%; padding: 6px; font-size: 10px; background: rgba(6, 182, 212, 0.25); border-color: var(--accent-cyan); color: #fff;">
+          👉 Zu Ko-Signal (45 Gruppen) wechseln
+        </button>
       </div>
 
       <!-- High-Performance Topologie & Limit für Ko-Signal (Optionen vom User gewünscht) -->
@@ -1291,7 +1305,7 @@ async function main() {
           </button>
         </div>
         <div id="grouplevel-hint" style="font-size: 9px; color: var(--text-muted); line-height: 1.35; margin-top: 2px;">
-          Jeder Teilnehmer folgt mindestens 2 Mitgliedern der Gruppe gegenseitig (geschlossene Kreise).
+          Accounts, die dieselben 2+ Basis-Trader teilen (starke Trader-Schnittmengen).
         </div>
       </div>
 
@@ -1460,7 +1474,14 @@ async function main() {
     </a>
   </div>
 
-  <div id="network-container"></div>
+  <div id="network-container">
+    <div id="empty-canvas-overlay" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 50; background: rgba(15, 23, 42, 0.92); border: 1px solid var(--border-color); border-radius: 14px; padding: 24px 28px; box-shadow: 0 16px 36px rgba(0,0,0,0.6); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); max-width: 440px;">
+      <div style="font-size: 32px; margin-bottom: 8px;">🔗</div>
+      <div style="font-size: 14px; font-weight: 700; color: var(--text-main); margin-bottom: 8px;" id="empty-overlay-title">Keine Daten vorhanden</div>
+      <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.45; margin-bottom: 14px;" id="empty-overlay-desc"></div>
+      <button class="hud-btn" id="empty-overlay-action-btn" style="background: rgba(6, 182, 212, 0.25); border-color: var(--accent-cyan); color: #ffffff; padding: 8px 14px; font-size: 11px;">👉 Zu Ko-Signal (45 Gruppen) wechseln</button>
+    </div>
+  </div>
 
   <script>
     const DATA = ${JSON.stringify(payload)};
@@ -1469,7 +1490,7 @@ async function main() {
     let isFrozen = false;
     let currentMode = DATA.initialMode || "network";
     let currentGroupLevel = DATA.initialGroupLevel || 2;
-    let currentCliqueKind = "mutual"; // "mutual" (A<->B) oder "cosignal" (Shared seeds)
+    let currentCliqueKind = "cosignal"; // "cosignal" (Shared seeds, 45 Cluster) oder "mutual" (A<->B)
     let currentMinScore = DATA.minScoreDefault || DATA.maxScore || 8;
     let currentQuality = 2; // 1: Performance, 2: Ausgewogen, 3: Ultra
     let currentPerspective = "alpha";
@@ -1539,8 +1560,14 @@ async function main() {
 
     function updateCliqueControlsUI() {
       const isCosignal = currentMode === 'groups' && currentCliqueKind === 'cosignal';
+      const isMutual = currentMode === 'groups' && currentCliqueKind === 'mutual';
       if (topologyToggleGroup) topologyToggleGroup.style.display = isCosignal ? 'block' : 'none';
       if (clusterLimitGroup) clusterLimitGroup.style.display = isCosignal ? 'block' : 'none';
+      const mutualNotice = document.getElementById('mutual-empty-notice');
+      const pool = getActiveClustersPool();
+      if (mutualNotice) {
+        mutualNotice.style.display = (isMutual && pool.length === 0) ? 'block' : 'none';
+      }
     }
 
     function getColorForScore(score, isSeed) {
@@ -1801,6 +1828,24 @@ async function main() {
     function initNetwork() {
       const graphData = buildGraphData();
       nodeCountBadge.innerText = graphData.nodes.length + ' Knoten, ' + graphData.edges.length + ' Kanten';
+
+      const emptyOverlay = document.getElementById('empty-canvas-overlay');
+      if (emptyOverlay) {
+        if (graphData.nodes.length === 0) {
+          emptyOverlay.style.display = 'block';
+          if (currentMode === 'groups' && currentCliqueKind === 'mutual') {
+            document.getElementById('empty-overlay-title').innerText = 'Keine wechselseitigen Follows im Datensatz';
+            document.getElementById('empty-overlay-desc').innerText = 'Der aktuelle Scan enthält gerichtete 1-Wege-Follows (Seeds ➔ Kandidaten). Bidirektionale Follows (A ↔ B) erfordern einen rekursiven 2-Wege-Crawl. Nutze "Ko-Signal", um die 45 Schnittmengen-Netzwerke zu analysieren!';
+            document.getElementById('empty-overlay-action-btn').style.display = 'inline-block';
+          } else {
+            document.getElementById('empty-overlay-title').innerText = 'Keine Knoten gefunden';
+            document.getElementById('empty-overlay-desc').innerText = 'Passe die Filter oder den Mindest-Score an, um Knoten anzuzeigen.';
+            document.getElementById('empty-overlay-action-btn').style.display = 'none';
+          }
+        } else {
+          emptyOverlay.style.display = 'none';
+        }
+      }
 
       const isCosignal = currentMode === 'groups' && currentCliqueKind === 'cosignal';
 
@@ -2234,6 +2279,13 @@ async function main() {
       if (activeClusterId && activeClusterId !== 'all') {
         isolateCluster(activeClusterId, true);
       }
+    });
+
+    document.getElementById('btn-switch-to-cosignal')?.addEventListener('click', () => {
+      document.getElementById('clique-type-cosignal')?.click();
+    });
+    document.getElementById('empty-overlay-action-btn')?.addEventListener('click', () => {
+      document.getElementById('clique-type-cosignal')?.click();
     });
 
     document.getElementById('close-inspector').addEventListener('click', () => {
