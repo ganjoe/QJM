@@ -111,8 +111,14 @@ class ViewerApp(QObject):
             self._handle_watchlist_open(payload, envelope.message_id)
 
         elif msg_type == "watchlist.data" and win_id:
-            wl_state = self.state_manager.apply_watchlist_snapshot(win_id, payload)
-            if win_id in self.watchlists:
+            # Partial updates from the agent ({replace, columns, rows}) must be applied
+            # via update_watchlist_data(): decoding them as a full WatchlistState raises
+            # (list_id + display_name are required), which silently swallowed both the
+            # update and the ack.
+            wl_state = self.state_manager.update_watchlist_data(win_id, payload)
+            if wl_state is None:
+                logger.warning("watchlist.data for unknown watchlist '%s' ignored", win_id)
+            elif win_id in self.watchlists:
                 self.watchlists[win_id].set_data(wl_state)
             self._send_ack(envelope.message_id)
 
@@ -301,12 +307,29 @@ class ViewerApp(QObject):
 
             win.show()
         else:
-            # Reusing existing watchlist: reposition and resize
+            # Reusing existing watchlist: reposition, resize and — only when the payload
+            # actually carries content — refresh the data. Without set_data() a re-sent
+            # watchlist.open never updated the content. A LOAD_SETUP-style reopen sends
+            # empty columns/rows and must leave the existing content untouched
+            # (set_data() clears the table before bailing out on empty columns).
             win = self.watchlists[win_id]
+
+            # Read the target geometry up front: move()/resize() emit geometry events that
+            # the agent writes back into its ledger, and with the in-process transport that
+            # ledger entry IS this payload dict — reading afterwards could see the reported
+            # (i.e. still old) geometry instead of the requested one.
             pos = payload.get("position")
+            size = payload.get("size")
+
+            if payload.get("columns") or payload.get("rows"):
+                try:
+                    wl_state = self.state_manager.apply_watchlist_snapshot(win_id, payload)
+                    win.set_data(wl_state)
+                except Exception as e:
+                    logger.warning("Failed to refresh watchlist '%s': %s", win_id, e)
+
             if pos and "x" in pos and "y" in pos:
                 win.move(pos["x"], pos["y"])
-            size = payload.get("size")
             if size and "width" in size and "height" in size:
                 win.resize(size["width"], size["height"])
             win.show()

@@ -21,6 +21,10 @@ export function registerPcaTools(server: McpServer) {
     {
       title: "Manage Watchlists (CRUD)",
       description: "Standard watchlist management in Supabase (`pca_watchlists`).\n\n" +
+        "HINWEIS ZUM MASTER UNIVERSE:\n" +
+        "- Die Tabelle `pca_watchlists` speichert benutzerdefinierte Listen (z. B. 'current_positions', 'ai_stocks').\n" +
+        "- Für das gesamte Universum aller 5.500+ Aktien existiert die Master-Watchlist 'all' bzw. 'all.txt' (kann direkt in Scannern wie `run_technical_scanner` über watchlists: ['all'] genutzt werden).\n" +
+        "- Fundamentale Stammdaten (Marktkapitalisierung / Shares Outstanding, EPS, Umsatz) liegen im Master Universe (`cda_master_universe`) und werden über `manage_ticker_metadata` (CDA-Agent) abgerufen.\n\n" +
         "ACTIONS:\n" +
         "- LIST: List all existing watchlist names (if `list_name` is omitted) or show tickers in a specific list.\n" +
         "- LOAD: Load all tickers of a specific watchlist (returns formatted text + JSON ticker array).\n" +
@@ -150,7 +154,28 @@ export function registerPcaTools(server: McpServer) {
           if (error) throw error;
           return { content: [{ type: "text", text: `Watchlist '${list_name}' geleert.` }] };
         } else if (action === "CLUSTER") {
-          return { content: [{ type: "text", text: `Cluster-Berechnung für Watchlisten wird über features-service gesteuert.` }] };
+          const { data: allTickers, error: fetchErr } = await supabase
+            .from("pca_watchlists")
+            .select("ticker")
+            .eq("list_name", "all");
+          if (fetchErr) throw fetchErr;
+
+          const tickersList = (allTickers || []).map((r: any) => r.ticker).filter(Boolean);
+          const chunkSize = 500;
+          let synced = 0;
+          for (let i = 0; i < tickersList.length; i += chunkSize) {
+            const chunk = tickersList.slice(i, i + chunkSize).map((t: string) => ({
+              ticker: t,
+              has_parquet: true,
+              last_updated: new Date().toISOString(),
+            }));
+            const { error: upsertErr } = await supabase
+              .from("cda_master_universe")
+              .upsert(chunk, { onConflict: "ticker", ignoreDuplicates: false });
+            if (upsertErr) throw upsertErr;
+            synced += chunk.length;
+          }
+          return { content: [{ type: "text", text: `Erfolgreich ${synced} Ticker in cda_master_universe synchronisiert.` }] };
         }
         throw new Error("Ungültige Aktion");
       } catch (err: any) {

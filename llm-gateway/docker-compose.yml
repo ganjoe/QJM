@@ -262,6 +262,11 @@ services:
     restart: unless-stopped
     environment:
       - APP_BASE_DIR=/app
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - UNIVERSE_SYNC_CHUNK_SIZE=${UNIVERSE_SYNC_CHUNK_SIZE:-500}
+      - UNIVERSE_SYNC_TIMEOUT=${UNIVERSE_SYNC_TIMEOUT:-30}
+      - UNIVERSE_SYNC_ON_STARTUP=${UNIVERSE_SYNC_ON_STARTUP:-true}
     volumes:
       - /home/daniel/stock-data-node/config:/app/config
       - /home/daniel/stock-data-node/src:/app/src

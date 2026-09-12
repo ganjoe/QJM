@@ -109,7 +109,6 @@ class ChartAgent:
         self.series_data: Dict[str, dict] = {}
         self.received_events: List[Envelope] = []
         self._pending_screenshots: Dict[str, dict] = {}
-        self._seq = 0
         self.on_viewer_ready_callback = None
 
         # Window Setup Management
@@ -122,9 +121,11 @@ class ChartAgent:
     def start(self) -> None:
         self.transport.connect()
 
-    def _next_seq(self) -> int:
-        self._seq += 1
-        return self._seq
+    # NOTE: Outbound sequence numbers are stamped exclusively by the transport
+    # (WebSocketServerTransport.send_command). The Agent must NOT pre-assign
+    # sequence numbers from its own counter: two independent counters feeding the
+    # same wire produce interleaved sequence series, which the viewer reports as
+    # "Sequence gap detected" and answers with a full state resync.
 
     def schedule_autosave(self) -> None:
         """Schedule an asynchronous debounced autosave (non-blocking)."""
@@ -274,7 +275,6 @@ class ChartAgent:
             payload=win_info,
             kind=MessageKind.COMMAND,
             window_id=window_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -286,7 +286,6 @@ class ChartAgent:
             payload=snapshot_data,
             kind=MessageKind.COMMAND,
             window_id=window_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -325,7 +324,6 @@ class ChartAgent:
             payload=wl_info,
             kind=MessageKind.COMMAND,
             window_id=list_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -342,7 +340,6 @@ class ChartAgent:
             payload=payload,
             kind=MessageKind.COMMAND,
             window_id=list_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -405,7 +402,6 @@ class ChartAgent:
             payload={"bar": bar_data},
             kind=MessageKind.COMMAND,
             window_id=window_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -416,7 +412,6 @@ class ChartAgent:
             payload={"price": price, "volume": volume},
             kind=MessageKind.EVENT,
             window_id=window_id,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -430,7 +425,6 @@ class ChartAgent:
             msg_type="layout.restore",
             payload={"windows": windows_list},
             kind=MessageKind.COMMAND,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 
@@ -477,7 +471,6 @@ class ChartAgent:
             msg_type="screenshot.request",
             payload=payload,
             kind=MessageKind.COMMAND,
-            sequence=self._next_seq(),
         )
         self.send_command(env)
 

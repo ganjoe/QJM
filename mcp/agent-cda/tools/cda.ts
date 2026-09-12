@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { STOCK_DATA_NODE_URL, log, supabase } from "./shared.ts";
 
+declare const Deno: any;
+
 export function registerCdaTools(server: McpServer) {
   server.registerTool(
     "manage_chart_downloads",
@@ -9,6 +11,7 @@ export function registerCdaTools(server: McpServer) {
       title: "Manage Chart Downloads & OHLCV Database Status",
       description:
         "Zentrales Tool zur Überwachung, Diagnose und Steuerung der automatischen Chart-Downloads (stock-data-node).\n" +
+        "DAS GESAMTE UNIVERSUM: Alle 5.500+ Aktien liegen im Parquet-Speicher und sind über die Master-Watchlist 'all' (bzw. 'all.txt') oder die Tabelle 'cda_master_universe' abrufbar.\n\n" +
         "ACTIONS:\n" +
         "- GET_STATUS: Liefert Queue-Größe, Service-Health und IBKR-Verbindungsstatus.\n" +
         "- STALENESS_REPORT: Liefert Altersverteilung der gesamten Parquet-Chartdatenbank.\n" +
@@ -412,25 +415,146 @@ export function registerCdaTools(server: McpServer) {
   server.registerTool(
     "manage_ticker_metadata",
     {
-      title: "Manage Ticker Metadata (Fundamental & System)",
-      description: "Verwaltet fundamentale und systemische Metadaten zu Aktien. Nutze action='GET' um Daten abzufragen. Nutze action='UPDATE' um neue Datenpunkte hinzuzufügen.",
+      title: "Manage Ticker Metadata & Master Universe (cda_master_universe)",
+      description:
+        "Verwaltet fundamentale und systemische Metadaten zu Aktien im zentralen Master Universe (`cda_master_universe` in Supabase).\n\n" +
+        "DAS MASTER UNIVERSE:\n" +
+        "- Enthält alle Aktien des Systems (5.500+ Ticker aus stock-data-node).\n" +
+        "- Speichert Fundamentaldaten und System-Flags:\n" +
+        "  * `shares_outstanding`: Ausstehende Aktien (mit aktuellem Kurs multipliziert ergibt das die Marktkapitalisierung / Market Capitalisation).\n" +
+        "  * `currency`: Handelswährung (z.B. USD, EUR, JPY).\n" +
+        "  * `eps`: Earnings per Share.\n" +
+        "  * `revenue`: Umsatz.\n" +
+        "  * `earnings`: Datum der nächsten/letzten Earnings (UTC).\n" +
+        "  * `has_parquet`: Gibt an, ob lokale Parquet-Chartdaten vorliegen.\n\n" +
+        "AKTIONEN:\n" +
+        "- GET: Fragt Metadaten für einen oder mehrere Ticker ab (z.B. ticker: 'AAPL' oder 'AAPL,MSFT').\n" +
+        "- UPDATE: Aktualisiert/ergänzt fundamentale Metadaten für einen Ticker.\n" +
+        "- COUNT: Liefert Gesamtstatistik des Master Universe (Gesamtanzahl Ticker, mit Parquet, mit Marktkapitalisierung, mit EPS/Umsatz).\n" +
+        "- SYNC: Synchronisiert eine Liste von Tickern (oder alle lokalen Ticker) als 'has_parquet=true' in die cda_master_universe Tabelle.",
       inputSchema: {
-        action: z.enum(["GET", "UPDATE"]).describe("Die auszuführende Aktion"),
-        ticker: z.string().describe("Einzelner Ticker (z.B. AAPL) oder kommaseparierte Liste (AAPL,MSFT) bei GET."),
+        action: z.enum(["GET", "UPDATE", "COUNT", "SYNC"]).describe("Die auszuführende Aktion: 'GET', 'UPDATE', 'COUNT', oder 'SYNC'"),
+        ticker: z.string().optional().describe("Einzelner Ticker (z.B. AAPL) oder kommaseparierte Liste (AAPL,MSFT) bei GET/UPDATE."),
+        tickers: z.array(z.string()).optional().describe("Array von Tickersymbolen für SYNC (Bulk-Upsert)."),
         utime: z.string().optional().describe("ISO-8601 Zeitstempel. Gültigkeitsbeginn der Daten. Bei Leer wird now() genutzt."),
         currency: z.string().optional().describe("Währung (z.B. USD, EUR)"),
-        shares_outstanding: z.number().optional().describe("Ausstehende Aktien (Shares Outstanding)"),
+        shares_outstanding: z.number().optional().describe("Ausstehende Aktien (Shares Outstanding) für Marktkapitalisierung"),
         eps: z.number().optional().describe("Earnings per share"),
         revenue: z.number().optional().describe("Umsatz"),
         earnings: z.string().optional().describe("Datum der nächsten/letzten Earnings (UTC Zeitstempel)"),
         has_parquet: z.boolean().optional().describe("Gibt an, ob lokale Chartdaten vorliegen."),
+        chunk_size: z.number().optional().describe("Batch-Größe für Bulk-Sync (Standard: 500 oder UNIVERSE_SYNC_CHUNK_SIZE)"),
       },
     },
-    async ({ action, ticker, utime, currency, shares_outstanding, eps, revenue, earnings, has_parquet }: any) => {
+    async ({ action, ticker, tickers, utime, currency, shares_outstanding, eps, revenue, earnings, has_parquet, chunk_size }: any) => {
       try {
-        const tickersList = ticker.split(",").map((t: string) => t.trim().toUpperCase()).filter(Boolean);
+        if (action === "COUNT") {
+          log.info("[manage_ticker_metadata] COUNT requested");
+          const [totalRes, parquetRes, sharesRes, epsRes, revRes] = await Promise.all([
+            supabase.from("cda_master_universe").select("*", { count: "exact", head: true }),
+            supabase.from("cda_master_universe").select("*", { count: "exact", head: true }).eq("has_parquet", true),
+            supabase.from("cda_master_universe").select("*", { count: "exact", head: true }).not("shares_outstanding", "is", null),
+            supabase.from("cda_master_universe").select("*", { count: "exact", head: true }).not("eps", "is", null),
+            supabase.from("cda_master_universe").select("*", { count: "exact", head: true }).not("revenue", "is", null),
+          ]);
+
+          const stats = {
+            total_tickers: totalRes.count ?? 0,
+            has_parquet: parquetRes.count ?? 0,
+            has_market_cap_shares: sharesRes.count ?? 0,
+            has_eps: epsRes.count ?? 0,
+            has_revenue: revRes.count ?? 0,
+          };
+
+          return {
+            content: [{
+              type: "text",
+              text: `Master Universe (cda_master_universe) Statistik:\n` +
+                `• Gesamtzahl Ticker: ${stats.total_tickers}\n` +
+                `• Mit lokalen Parquet-Daten (has_parquet): ${stats.has_parquet}\n` +
+                `• Mit Marktkapitalisierung / Shares Outstanding: ${stats.has_market_cap_shares}\n` +
+                `• Mit EPS: ${stats.has_eps}\n` +
+                `• Mit Umsatz: ${stats.has_revenue}\n\n` +
+                `JSON: ${JSON.stringify(stats, null, 2)}`,
+            }],
+          };
+        }
+
+        if (action === "SYNC") {
+          let syncList: string[] = [];
+          if (tickers && Array.isArray(tickers) && tickers.length > 0) {
+            syncList = tickers.map((t: string) => String(t).trim().toUpperCase()).filter(Boolean);
+          } else if (ticker) {
+            syncList = ticker.split(",").map((t: string) => t.trim().toUpperCase()).filter(Boolean);
+          } else {
+            // Fetch list from stock-data-node /staleness/report or watchlists
+            try {
+              const repRes = await fetch(`${STOCK_DATA_NODE_URL}/staleness/report`, { signal: AbortSignal.timeout(15000) });
+              if (repRes.ok) {
+                const repData = await repRes.json();
+                if (Array.isArray(repData.tickers)) {
+                  syncList = repData.tickers;
+                } else if (repData.distribution && typeof repData.distribution === "object") {
+                  // If distribution returned, we may not have full list directly
+                }
+              }
+            } catch (fetchErr: any) {
+              log.warn(`[manage_ticker_metadata] Could not fetch tickers from stock-data-node: ${fetchErr.message}`);
+            }
+
+            if (!syncList || syncList.length === 0) {
+              const { data: wlData } = await supabase
+                .from("pca_watchlists")
+                .select("ticker")
+                .eq("list_name", "all");
+              if (wlData && wlData.length > 0) {
+                syncList = wlData.map((r: any) => r.ticker);
+                log.info(`[manage_ticker_metadata] SYNC: ${syncList.length} Ticker aus pca_watchlists('all') geladen.`);
+              }
+            }
+          }
+
+          if (!syncList || syncList.length === 0) {
+            throw new Error("Keine Ticker für SYNC angegeben und automatische Erkennung lieferte keine Ticker. Bitte 'tickers' Array übergeben.");
+          }
+
+          const defaultChunk = Number(Deno.env.get("UNIVERSE_SYNC_CHUNK_SIZE") || 500);
+          const effectiveChunk = chunk_size && chunk_size > 0 ? chunk_size : defaultChunk;
+          let syncedCount = 0;
+
+          log.info(`[manage_ticker_metadata] SYNC: Synchronisiere ${syncList.length} Ticker in Batches von ${effectiveChunk}...`);
+          for (let i = 0; i < syncList.length; i += effectiveChunk) {
+            const batch = syncList.slice(i, i + effectiveChunk).map((t: string) => ({
+              ticker: t,
+              has_parquet: has_parquet !== undefined ? has_parquet : true,
+              last_updated: new Date().toISOString(),
+            }));
+
+            const { error } = await supabase
+              .from("cda_master_universe")
+              .upsert(batch, { onConflict: "ticker", ignoreDuplicates: false });
+
+            if (error) {
+              log.error(`[manage_ticker_metadata] Batch ${i / effectiveChunk + 1} fehlgeschlagen: ${error.message}`);
+              throw error;
+            }
+            syncedCount += batch.length;
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Erfolgreich ${syncedCount} Ticker in cda_master_universe synchronisiert (has_parquet=${has_parquet ?? true}).`,
+            }],
+          };
+        }
+
+        const tickersList = (ticker || "").split(",").map((t: string) => t.trim().toUpperCase()).filter(Boolean);
 
         if (action === "GET") {
+          if (tickersList.length === 0) {
+            throw new Error("Für GET ist mindestens ein Ticker erforderlich (z.B. ticker: 'AAPL'). Für Gesamtstatistiken nutze action: 'COUNT'.");
+          }
           log.info(`[manage_ticker_metadata] GET for tickers: ${tickersList.join(", ")}`);
           const { data, error } = await supabase
             .from("cda_master_universe")
@@ -440,13 +564,16 @@ export function registerCdaTools(server: McpServer) {
           if (error) throw new Error(error.message);
           return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
         } else if (action === "UPDATE") {
+          if (tickersList.length === 0) {
+            throw new Error("Für UPDATE ist der Parameter 'ticker' erforderlich.");
+          }
           log.info(`[manage_ticker_metadata] UPDATE for ticker: ${tickersList[0]}`);
           if (tickersList.length > 1) {
-             throw new Error("UPDATE only supports a single ticker at a time.");
+            throw new Error("UPDATE unterstützt nur einen einzelnen Ticker zur selben Zeit.");
           }
           const t = tickersList[0];
           
-          const { data: existingData } = await supabase.from("cda_master_universe").select("*").eq("ticker", t).single();
+          const { data: existingData } = await supabase.from("cda_master_universe").select("*").eq("ticker", t).maybeSingle();
           
           const payload: any = { ticker: t };
           if (utime !== undefined) payload.utime = utime;
@@ -461,10 +588,10 @@ export function registerCdaTools(server: McpServer) {
           const { error } = await supabase.from("cda_master_universe").upsert(payload, { onConflict: "ticker" });
           if (error) throw new Error(error.message);
           
-          return { content: [{ type: "text", text: `Successfully updated metadata for ${t}.` }] };
+          return { content: [{ type: "text", text: `Erfolgreich Metadaten für ${t} aktualisiert.` }] };
         }
         
-        return { content: [{ type: "text", text: "Unknown action" }], isError: true };
+        return { content: [{ type: "text", text: "Unbekannte Aktion" }], isError: true };
       } catch (err: any) {
         log.error(`manage_ticker_metadata failed: ${err.message}`);
         return { content: [{ type: "text", text: `Internal Error: ${err.message}` }], isError: true };

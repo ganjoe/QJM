@@ -299,18 +299,16 @@ export function registerAnalysisTools(server: McpServer) {
         timeframe: z.string().optional().default("1D").describe("Candle timeframe (only '1D' is populated)"),
         hit_mode: z.enum(["first_of_episode", "all_bars"]).optional().default("first_of_episode").describe("Collapse consecutive matching bars into one hit (default) or return every matching bar"),
         limit_hits: z.number().optional().default(200).describe("Maximum hits returned (default 200, max 1000)"),
-        include_details: z.boolean().optional().default(false).describe("Attach per-ticker scores/details (latest mode) or per-hit indicator details (range mode)"),
         max_tickers: z.number().optional().default(2000).describe("Universe cap (default 2000)"),
       },
     },
-    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, include_details, max_tickers }: any) => {
+    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, max_tickers }: any) => {
       try {
         const body: Record<string, any> = {
           scanners,
           timeframe: timeframe || "1D",
           hit_mode: hit_mode || "first_of_episode",
           limit_hits: limit_hits ?? 200,
-          include_details: include_details === true,
           max_tickers: max_tickers ?? 2000,
         };
         if (Array.isArray(tickers) && tickers.length > 0) {
@@ -343,17 +341,20 @@ export function registerAnalysisTools(server: McpServer) {
 
         if (data.mode === "latest") {
           const scanned: string[] = Object.keys(data.matches || {});
+          const matchedTickers = scanned.filter((t: string) => scannerNames.some((s: string) => data.matches[t]?.[s] === true));
           const matchSummary = scannerNames.map((s: string) => `${s}: ${data.true_count?.[s] ?? 0}`).join(" | ");
           lines.push(`🔍 **Scanner — latest bar** (${scannerNames.join(", ")}) | timeframe ${data.timeframe} | as of ${data.as_of ?? "n/a"} | ${scanned.length} tickers`);
-          if (scanned.length > 0) {
+          if (matchedTickers.length > 0) {
             const header = `| Ticker | ${scannerNames.join(" | ")} |`;
             const sep = `| :--- |${scannerNames.map(() => " :---: |").join("")}`;
-            const rows = scanned.slice(0, 300).map((t: string) => {
+            const rows = matchedTickers.slice(0, 300).map((t: string) => {
               const cells = scannerNames.map((s: string) => (data.matches[t]?.[s] ? "✅" : "❌")).join(" | ");
               return `| ${t} | ${cells} |`;
             });
             lines.push([header, sep, ...rows].join("\n"));
-            if (scanned.length > 300) lines.push(`_… ${scanned.length - 300} further tickers in the JSON envelope._`);
+            if (matchedTickers.length > 300) lines.push(`_… ${matchedTickers.length - 300} further matches omitted._`);
+          } else {
+            lines.push("_No matches found._");
           }
           lines.push(`**Matches:** ${matchSummary}`);
         } else {
@@ -386,25 +387,6 @@ export function registerAnalysisTools(server: McpServer) {
           lines.push(`**Skipped (${skipped.length}):** ${Object.entries(byReason).map(([r, c]) => `${r}: ${c}`).join(", ")}`);
         }
         for (const w of data.warnings || []) lines.push(`⚠️ ${w}`);
-
-        const envelope = {
-          status: data.status,
-          mode: data.mode,
-          scanners: data.scanners,
-          timeframe: data.timeframe,
-          universe: data.universe,
-          as_of: data.as_of,
-          true_count: data.true_count,
-          range: data.range,
-          summary: data.summary,
-          skipped,
-          warnings: data.warnings,
-          timing: data.timing,
-        };
-        lines.push("```json\n" + JSON.stringify(envelope, null, 2) + "\n```");
-        if (include_details === true) {
-          lines.push("```json\n" + JSON.stringify(data.mode === "latest" ? { scores: data.scores, details: data.details } : data.hits, null, 2) + "\n```");
-        }
 
         return { content: [{ type: "text", text: lines.join("\n\n") }] };
       } catch (err: any) {

@@ -19,7 +19,8 @@ Always select the most specific tool for the task. Follow these strict disambigu
 * **`calculate_indicator`**: Use for **custom on-the-fly technical indicator calculations** (SMA, EMA, BOLLINGER, STOCHASTIC) with custom lookbacks (e.g. 21 EMA) or batch arrays (e.g. `periods: [10, 20, 50, 200]`).
   * *Constraint*: For standard daily 50/200 MAs or Minervini scores, prefer `get_timeseries`.
 * **`run_technical_scanner`**: Use to **scan or screen a universe for technical patterns** — either a plain true/false check on the latest bar or a list of hits inside a time range.
-  * *Universe*: `tickers: ["AAPL", ...]` and/or `watchlists: [...]` — a Supabase list name (`"current_positions"`), a PCA link (`http://<host>:8794/api/watchlists/current_positions`), a Supabase link containing `list_name=eq.<name>`, or `"ai_stocks.txt"`. Both sources are merged and de-duplicated, so no separate `manage_watchlist` call is needed.
+  * *Universe*: `tickers: ["AAPL", ...]` and/or `watchlists: [...]` — a Supabase list name (`"current_positions"`), a PCA link (`http://<host>:8794/api/watchlists/current_positions`), a Supabase link containing `list_name=eq.<name>`, or `"ai_stocks.txt"`.
+  * *Full Database Universe*: Pass `watchlists: ["all"]` or `["all.txt"]` to screen all 5,500+ stocks currently available in the system's Parquet storage. Both sources are merged and de-duplicated, so no separate `manage_watchlist` call is needed.
   * *Output modes*: **without** `from`/`to` only the last available bar per ticker is evaluated (plain true/false map); **with** `from` and/or `to` (inclusive, `YYYY-MM-DD` or Unix seconds) every bar inside the window is evaluated causally and the result is a hit list (ticker, scanner, hit date, score, matched bars).
   * Available scanners:
     * `'madbo'`: MADBO — Moving Average Dollar Volume Breakout: the five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close × volume) exceeds 2× its 50-bar average (needs 200 bars; score = dollar-volume multiple).
@@ -28,10 +29,11 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * *Robustness*: tickers without parquet data, without enough history or without bars inside the window are reported in `skipped` with a reason — never as a silent false; consecutive matching bars collapse into one hit unless `hit_mode: "all_bars"`; `limit_hits` (default 200) truncates the hit list and sets `summary.truncated`.
   * *Constraint*: call `list_scanners` first when unsure about scanner names or history requirements.
 * **`list_available_features`**: Call this to discover the exact column names of all 21+ precalculated indicator columns in Parquet before querying or filtering.
-* **`manage_watchlist`**: Use for **CRUD watchlist operations** in Supabase (`pca_watchlists`).
+* **`manage_watchlist`**: Use for **CRUD watchlist operations** on user lists in Supabase (`pca_watchlists`).
   * To get tickers in a watchlist: `action: "LOAD"`, `list_name: "current_positions"`.
   * To see all list names: `action: "LIST"`.
   * Also supports `ADD`, `REMOVE`, `CREATE`, `DELETE`, `CLEAR`, `RENAME`.
+  * *Note*: User-curated lists reside in `pca_watchlists`. The complete universe of all 5,500+ stocks is referenced via the master list `"all"` / `"all.txt"` or queried with fundamental metadata via `manage_ticker_metadata` in CDA.
 * **`import_watchlist`**: Use when **bulk importing new watchlists from text/files** with automatic verification of local Parquet chart data availability.
 * **`manage_feature_calculation`**: System-level background daemon control (GET_STATUS, TRIGGER, SET_SCHEDULE).
   * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.
@@ -39,12 +41,18 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * Actions:
     * `'DISPLAY_STOCK'`: Loads historical candles, indicators, and topbar metrics into the desktop viewer (e.g. `ticker: "NVDA"`, optional `preset`: `'default'` [SMA 50/200 + BB 20], `'trend_template'` [6 Minervini SMAs + Topbar RS/Minervini/ADR], `'momentum'` [EMA 8/21], `'clean'` [candles only] OR any dynamically created user preset like `'qmaggi'`).
     * `'OPEN_WINDOW'`: Registers a custom window.
-  * **`manage_chart_presets`**: Manage dynamically created chart presets (CRUD) and their overlay indicators (like SMA/EMA). Use `CREATE`, `GET`, `LIST`, `UPDATE`, `DELETE`. Specify `preset_id` and the `members` (features like `sma_10`, `ema_20`, `bb_20`, `adr_1_pct`) to automatically render them.
     * `'ADD_ANNOTATION'`: Draws support/resistance lines (`hline`), trendlines, rectangles, or buy/sell trade markers (`trade_marker`).
     * `'REMOVE_ANNOTATION'`: Removes a drawing object by ID.
     * `'SET_TOPBAR'`: Displays formatted status/metric blocks in the chart topbar (e.g. Minervini Stage 2 rating, ATR, Stop-loss level).
     * `'STATUS'`: Checks viewer connection & open windows.
+    * `'SCREENSHOT'`: Captures screenshots of open chart windows (optional `window_id`, `hires`).
     * `'CLOSE_WINDOW'`: Closes a chart window.
+    * `'SAVE_SETUP'`: Saves the **current window layout** (positions, sizes, color flags, window type) to Supabase under `setup_name` (required). Saving a non-`default` name disables the autosave of `default` until another setup is loaded/deleted.
+    * `'LOAD_SETUP'`: Restores a saved layout under `setup_name`: reuses existing windows of matching type, closes excess windows, creates missing ones, picks the variant matching the current monitor count (or the closest one). Restores geometry only — symbol/preset are NOT restored (by design; follow up with `DISPLAY_STOCK`).
+    * `'LIST_SETUPS'`: Lists all saved setups with their monitor-count variants (no `setup_name` needed).
+    * `'DELETE_SETUP'`: Deletes a setup; `monitor_count` optionally targets a single monitor variant.
+    * `'RENAME_SETUP'`: Renames all variants; requires `setup_name` and `new_setup_name`.
+  * **`manage_chart_presets`**: Manage dynamically created chart presets (CRUD) and their overlay indicators (like SMA/EMA). Use `CREATE`, `GET`, `LIST`, `UPDATE`, `DELETE`. Specify `preset_id` and the `members` (features like `sma_10`, `ema_20`, `bb_20`, `adr_1_pct`) to automatically render them.
 
 
 ### B. Trading, Execution & Portfolio (`openbrain-pta`)
@@ -75,6 +83,13 @@ Always select the most specific tool for the task. Follow these strict disambigu
     * `'MAPPING'`: Displays provider and ticker alias mapping.
     * `'TRIGGER_DOWNLOAD'`: Enqueues one or more tickers for immediate priority download.
     * `'SET_PROVIDER'`: Sets the provider for a ticker (`IBKR` or `YFINANCE`).
+* **`manage_ticker_metadata`**: Manages fundamental metrics and system properties in the **Master Universe** (`cda_master_universe` in Supabase).
+  * *Actions*:
+    * `'GET'`: Fetches fundamental metrics for one or more tickers (e.g. `ticker: "AAPL"` or `"AAPL,NVDA"`).
+    * `'COUNT'`: Summarizes universe statistics (total ticker count, count with Parquet data, count with shares outstanding/market cap, count with EPS/revenue).
+    * `'UPDATE'`: Updates/upserts fundamental metrics for a single stock (`shares_outstanding`, `currency`, `eps`, `revenue`, `earnings`, `has_parquet`).
+    * `'SYNC'`: Synchronizes a list of tickers into the master universe.
+  * *Market Capitalisation*: Calculate market cap by multiplying `shares_outstanding` with the current stock price (from `get_quote`).
 * **`add_ticker`**: Add new stock or ETF tickers to the database and queue immediate priority downloads. Automatically resolves unknown symbols across ranked data providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
 * **`override_ticker_mapping`**: Explicitly override or correct a ticker's provider or symbol mapping.
 
@@ -84,27 +99,35 @@ Always select the most specific tool for the task. Follow these strict disambigu
 
 1. **"What is the price of AAPL?"**
    → Call `get_quote(ticker: "AAPL")`.
-2. **"Show me the chart / candles / 50 SMA of AAPL for the last 3 months."**
+2. **"What is the market cap / shares outstanding / EPS / revenue of AAPL?"**
+   → Call `manage_ticker_metadata(action: "GET", ticker: "AAPL")`. (To get market cap in dollars, multiply `shares_outstanding` by current price from `get_quote`).
+3. **"How many stocks are in our master database / how complete is the data?"**
+   → Call `manage_ticker_metadata(action: "COUNT")`.
+4. **"Show me the chart / candles / 50 SMA of AAPL for the last 3 months."**
    → Call `get_timeseries(ticker: "AAPL", limit: 65, features: true)`.
-3. **"Check if NVDA meets the Minervini Trend Template."**
+5. **"Check if NVDA meets the Minervini Trend Template."**
    → Call `run_technical_scanner(scanners: ["minervini_trend"], tickers: ["NVDA"])` — no time range, so the answer is a plain true/false for the latest bar.
-4. **"Scan my current positions for Minervini Stage 2."**
+6. **"Scan the entire database / all stocks for Minervini Trend Template."**
+   → Call `run_technical_scanner(scanners: ["minervini_trend"], watchlists: ["all"])` — screens all 5,500+ stocks in the Parquet archive.
+7. **"Scan my current positions for Minervini Stage 2."**
    → Call `run_technical_scanner(scanners: ["minervini_trend"], watchlists: ["current_positions"])` — the watchlist reference is resolved server-side.
-5. **"Which names in my watchlist had a MADBO breakout in 2026?"**
+8. **"Which names in my watchlist had a MADBO breakout in 2026?"**
    → Call `run_technical_scanner(scanners: ["madbo"], watchlists: ["current_positions"], from: "2026-01-01", to: "2026-12-31")` — with a time range the answer is a hit list with hit dates.
-6. **"Did anything in the AI stocks watchlist trigger in the last 3 months?"**
+9. **"Did anything in the AI stocks watchlist trigger in the last 3 months?"**
    → Call `run_technical_scanner(scanners: ["madbo", "minervini_trend"], watchlists: ["ai_stocks"], from: "<3 months ago>", to: "<today>")`.
-7. **"Calculate a 21 EMA and 10 SMA for TSLA."**
+10. **"Calculate a 21 EMA and 10 SMA for TSLA."**
    → Call `calculate_indicator(ticker: "TSLA", indicator_type: "EMA", period: 21)`.
-8. **"What is my current cash balance and open risk?"**
+11. **"What is my current cash balance and open risk?"**
    → Call `list_active_positions()` or `portfolio_analytics()`.
-9. **"Show me the chart of NVDA on my screen / in the chart viewer."**
+12. **"Show me the chart of NVDA on my screen / in the chart viewer."**
    → Call `manage_chart_viewer(action: "DISPLAY_STOCK", ticker: "NVDA")`.
-10. **"Draw a support line at 120.50 on NVDA."**
+13. **"Draw a support line at 120.50 on NVDA."**
    → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
-11. **"Close the NVDA chart window."**
+14. **"Close the NVDA chart window."**
    → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
-12. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
+15. **"Save my current chart viewer layout as a setup named 'main'."**
+   → Call `manage_chart_viewer(action: "SAVE_SETUP", setup_name: "main")` — saves window positions/sizes/color flags of the live `layout_ledger`. Related: `LIST_SETUPS` (show saved setups), `LOAD_SETUP` (`setup_name: "main"`), `DELETE_SETUP`, `RENAME_SETUP`.
+16. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
    → Call `get_timeseries(ticker: "$STATS.MARKET_BREADTH", limit: 30)` to inspect percentage, count, and signed `days_back` (remember: breadth lows have high predictive weight for market rebounds, whereas highs confirm bull trends but are not reliable top indicators).
 
 ---
