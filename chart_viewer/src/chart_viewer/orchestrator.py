@@ -379,6 +379,21 @@ def build_display_stock(
                     topbar_parts.append(f"{display_name}: {val:.2f}")
                 else:
                     topbar_parts.append(f"{display_name}: {val}")
+        elif metric_col == "days_back":
+            try:
+                source_col = "breadth_40_pct" if "breadth_40_pct" in col_idx else "close"
+                db_res = _pca_post("/api/indicators/calculate", {
+                    "symbol": symbol,
+                    "indicator_type": "DAYS_BACK",
+                    "source": source_col,
+                    "limit": 1,
+                })
+                latest_db = db_res.get("latest_values", {}).get("days_back")
+                if latest_db is not None:
+                    sign = "+" if latest_db > 0 else ""
+                    topbar_parts.append(f"Days Back: {sign}{int(latest_db)}")
+            except Exception as e:
+                logger.warning("Could not calculate live days_back for topbar: %s", e)
 
     last_close = bars[-1]["close"] if bars else 0
     topbar_content = f"{symbol} | Last: ${last_close:.2f}"

@@ -55,6 +55,8 @@ FEATURE_MAP = {
     
     # Breadth
     "breadth_minervini": ("breadth_min", "BREADTH_MINERVINI", {"aggregation": "all"}, "topbar_metric", "Breadth Minervini", {}),
+    "breadth_40_pct": ("breadth_40_pct", "BREADTH", {}, "subchart", "Breadth 40", {"color": "#2962FF"}),
+    "breadth_200_pct": ("breadth_200_pct", "BREADTH", {}, "subchart", "Breadth 200", {"color": "#FF9800"}),
     # breadth_minervini_pct is a derived column from breadth_min
 
     # ADR
@@ -157,12 +159,23 @@ def insert_presets():
                 ("ema_21", 1, {"color": "#FF5252", "width": 2}),
             ],
         },
+        {
+            "id": "market_breadth",
+            "display_name": "Market Breadth ($STATS.MARKET_BREADTH)",
+            "description": "40 and 200 SMA Breadth + Days Back",
+            "topbar_metrics": ["days_back"],
+            "members": [
+                ("breadth_40_pct",  0, {"color": "#2962FF", "width": 2}),
+                ("breadth_200_pct", 1, {"color": "#FF9800", "width": 2}),
+            ],
+        },
     ]
 
     # First, ensure momentum preset's online-only EMAs exist
     online_features = [
         ("ema_8",  "EMA", {"window": 8, "source": "close"},  "overlay_line", "EMA 8",  {"color": "#00E676", "width": 2}),
         ("ema_21", "EMA", {"window": 21, "source": "close"}, "overlay_line", "EMA 21", {"color": "#FF5252", "width": 2}),
+        ("days_back", "DAYS_BACK", {"source": "close"}, "topbar_metric", "Days Back", {}),
     ]
     for canonical_id, calc_type, calc_params, plot_type, display_name, default_style in online_features:
         sql = f"""

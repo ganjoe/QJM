@@ -196,15 +196,16 @@ export function registerAnalysisTools(server: McpServer) {
     "calculate_indicator",
     {
       title: "Calculate Technical Indicator On-The-Fly",
-      description: "Calculates technical indicators dynamically on-the-fly for custom parameters, custom lookbacks, or batch period arrays (e.g. periods: [10, 20, 50, 200]). Supports SMA, EMA, BOLLINGER, and STOCHASTIC on configurable price sources (close, open, high, low, volume).\n\n" +
-        "WHEN TO USE: Use when you need custom indicator calculations (e.g., 21 EMA, 10 SMA, custom Stochastic) not found in precalculated features, or batch lookback comparisons on a single stock.\n" +
+      description: "Calculates technical indicators dynamically on-the-fly for custom parameters, lookbacks, batch periods, or direct value arrays. Supports SMA, EMA, BOLLINGER, STOCHASTIC, ADR_PCT, and DAYS_BACK on configurable sources (close, open, high, low, volume, or feature columns like breadth_40_pct).\n\n" +
+        "WHEN TO USE: Use when you need custom indicator calculations (e.g., 21 EMA, 10 SMA, custom Stochastic), live days_back extremes on any series, or calculations on directly passed number arrays.\n" +
         "WHEN NOT TO USE: For standard precalculated indicators (like 50/200 SMA, Minervini score), use `get_timeseries`. Do NOT use for bulk database calculations (use `manage_feature_calculation`).",
       inputSchema: {
-        ticker: z.string().describe("Stock ticker symbol (e.g. 'MSFT', 'AAPL')"),
-        indicator_type: z.enum(["SMA", "EMA", "BOLLINGER", "STOCHASTIC"]).describe("The indicator type to calculate"),
+        ticker: z.string().optional().describe("Stock ticker symbol (e.g. 'MSFT', 'AAPL', '$STATS.MARKET_BREADTH'). Optional if 'values' is provided."),
+        values: z.array(z.number()).optional().describe("Direct array of numbers to calculate indicator on (e.g. custom series, live data, or passed lists)"),
+        indicator_type: z.enum(["SMA", "EMA", "BOLLINGER", "STOCHASTIC", "ADR_PCT", "DAYS_BACK"]).describe("The indicator type to calculate"),
         periods: z.array(z.number()).optional().describe("Batch array of lookback periods (e.g. [10, 20, 50, 200])"),
         period: z.number().optional().describe("Single lookback period (e.g. 20)"),
-        source: z.enum(["close", "open", "high", "low", "volume"]).optional().default("close").describe("Price source column for calculation (Default: 'close')"),
+        source: z.string().optional().default("close").describe("Price or feature source column for calculation (Default: 'close', e.g. 'close', 'volume', 'breadth_40_pct')"),
         timeframe: z.string().optional().default("1D").describe("Timeframe (Default: '1D')"),
         limit: z.number().optional().default(200).describe("Number of candles to calculate over (Default: 200, Max: 2000)"),
         std_dev: z.number().optional().default(2.0).describe("Standard deviation multiplier for Bollinger Bands (Default: 2.0)"),
@@ -213,15 +214,25 @@ export function registerAnalysisTools(server: McpServer) {
         slowing: z.number().optional().default(3).describe("Stochastic slowing period (Default: 3)"),
       },
     },
-    async ({ ticker, indicator_type, periods, period, source, timeframe, limit, std_dev, k_period, d_period, slowing }: any) => {
+    async ({ ticker, values, indicator_type, periods, period, source, timeframe, limit, std_dev, k_period, d_period, slowing }: any) => {
       try {
+        if (!ticker && (!values || values.length === 0)) {
+          throw new Error("Entweder 'ticker' oder 'values' muss angegeben werden.");
+        }
+
         const body: Record<string, any> = {
-          symbol: ticker.toUpperCase(),
           timeframe: timeframe || "1D",
           limit: limit ?? 200,
           source: source || "close",
           indicator_type,
         };
+
+        if (ticker) {
+          body.symbol = ticker.toUpperCase();
+        }
+        if (values && Array.isArray(values)) {
+          body.values = values;
+        }
 
         if (periods && periods.length > 0) {
           body.periods = periods;
