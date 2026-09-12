@@ -272,20 +272,10 @@ class ChartCanvas(QWidget):
                 self.data_request_more.emit()
 
     def _on_pane_crosshair_moved(self, source_pane_id: str, x_px: float, y_px: float) -> None:
-        """Distribute crosshair from one pane to all panes."""
+        """Slot for user mouse moves: render locally and broadcast inter-window."""
+        self._apply_crosshair(source_pane_id, x_px, y_px)
         if x_px < 0:
-            # Mouse left the pane — clear all crosshairs
-            for pane in self._panes.values():
-                pane.set_crosshair(None, None, False)
-
             return
-
-        # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
-        for pane_id, pane in self._panes.items():
-            is_active = (pane_id == source_pane_id)
-            pane.set_crosshair(x_px, y_px if is_active else None, is_active)
-
-
 
         # Emit crosshair_moved for inter-window sync
         if self.window_data and self.window_data.bars:
@@ -293,6 +283,19 @@ class ChartCanvas(QWidget):
             duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
             ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
             self.crosshair_moved.emit(ts, bar_idx)
+
+    def _apply_crosshair(self, source_pane_id: str, x_px: float, y_px: float) -> None:
+        """Render crosshair locally WITHOUT re-broadcasting (for incoming inter-window sync)."""
+        if x_px < 0:
+            # Mouse left the pane — clear all crosshairs
+            for pane in self._panes.values():
+                pane.set_crosshair(None, None, False)
+            return
+
+        # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
+        for pane_id, pane in self._panes.items():
+            is_active = (pane_id == source_pane_id)
+            pane.set_crosshair(x_px, y_px if is_active else None, is_active)
 
     def mark_layers_dirty(self) -> None:
         """Mark all panes dirty for repaint."""

@@ -96,6 +96,7 @@ def test_criterion_2_multi_window_crosshair_sync_with_downtime_clamping(qapp):
     qapp.processEvents()
 
     # Verify Window B clamped to the closest available bar and crosshair did NOT disappear!
-    crosshair_pos_b = win_5m.canvas.layer4_interaction.crosshair_pos
-    assert crosshair_pos_b is not None, "Crosshair should NOT disappear over exchange downtime gap!"
-    assert win_5m.canvas.layer4_interaction.is_crosshair_visible is True
+    main_pane_b = win_5m.canvas._panes["main"]
+    assert main_pane_b._crosshair_x is not None, (
+        "Crosshair should NOT disappear over exchange downtime gap!"
+    )

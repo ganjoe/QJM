@@ -432,7 +432,7 @@ class ViewerApp(QObject):
 
             target_data = self.state_manager.get_window_data(win_id)
             if not target_data or not target_data.bars:
-                win.canvas._on_pane_crosshair_moved("main", -1.0, -1.0)
+                win.canvas._apply_crosshair("main", -1.0, -1.0)
                 win.canvas.update()
                 continue
 
@@ -441,7 +441,7 @@ class ViewerApp(QObject):
 
             if clamped_ts is None:
                 # Out of loaded range -> crosshair disappears (Section 4)
-                win.canvas._on_pane_crosshair_moved("main", -1.0, -1.0)
+                win.canvas._apply_crosshair("main", -1.0, -1.0)
             else:
                 # Calculate pixel X for clamped timestamp
                 duration = target_data.timeframe.to_seconds() if target_data.timeframe else 86400
@@ -449,7 +449,7 @@ class ViewerApp(QObject):
                 px_x = win.canvas.x_trans.bar_to_x(bar_idx)
                 # Keep target Y at center
                 curr_y = win.canvas.height() / 2.0
-                win.canvas._on_pane_crosshair_moved("main", px_x, curr_y)
+                win.canvas._apply_crosshair("main", px_x, curr_y)
 
             win.canvas.update()
 
