@@ -1,6 +1,8 @@
+declare const Deno: any;
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log, STOCK_DATA_NODE_URL } from "./shared.ts";
+import { supabase, log, STOCK_DATA_NODE_URL, POSTGREST_UNIVERSE_LIMIT } from "./shared.ts";
 
 function triggerBackgroundDownload(tickers: string[]) {
   if (!tickers || tickers.length === 0) return;
@@ -13,6 +15,12 @@ function triggerBackgroundDownload(tickers: string[]) {
   });
 }
 
+function isMasterUniverseName(name?: string): boolean {
+  if (!name) return false;
+  const lower = name.trim().toLowerCase();
+  return lower === "all" || lower === "all.txt" || lower === "master" || lower === "universe";
+}
+
 export function registerPcaTools(server: McpServer) {
 
   // ── manage_watchlist ──────────────────────────────────────────
@@ -23,7 +31,8 @@ export function registerPcaTools(server: McpServer) {
       description: "Standard watchlist management in Supabase (`pca_watchlists`).\n\n" +
         "HINWEIS ZUM MASTER UNIVERSE:\n" +
         "- Die Tabelle `pca_watchlists` speichert benutzerdefinierte Listen (z. B. 'current_positions', 'ai_stocks').\n" +
-        "- Für das gesamte Universum aller 5.500+ Aktien existiert die Master-Watchlist 'all' bzw. 'all.txt' (kann direkt in Scannern wie `run_technical_scanner` über watchlists: ['all'] genutzt werden).\n" +
+        "- Für das gesamte Universum aller 5.500+ Aktien existiert das dynamische Master Universe 'all' bzw. 'all.txt' (gespeichert in `cda_master_universe`).\n" +
+        "- 'all' kann direkt in Scannern wie `run_technical_scanner` über watchlists: ['all'] genutzt werden.\n" +
         "- Fundamentale Stammdaten (Marktkapitalisierung / Shares Outstanding, EPS, Umsatz) liegen im Master Universe (`cda_master_universe`) und werden über `manage_ticker_metadata` (CDA-Agent) abgerufen.\n\n" +
         "ACTIONS:\n" +
         "- LIST: List all existing watchlist names (if `list_name` is omitted) or show tickers in a specific list.\n" +
@@ -37,7 +46,7 @@ export function registerPcaTools(server: McpServer) {
         "WHEN TO USE: Use for standard operations: viewing available lists, loading tickers from a watchlist (like 'current_positions'), or adding/removing tickers.\n" +
         "WHEN NOT TO USE: When importing raw text or files with verification of local Parquet data, use `import_watchlist`.",
       inputSchema: {
-        action: z.enum(["LIST", "LOAD", "ADD", "REMOVE", "DELETE", "CLEAR", "CREATE", "RENAME", "CLUSTER"]).describe("The action to perform"),
+        action: z.enum(["LIST", "LOAD", "ADD", "REMOVE", "DELETE", "CLEAR", "CREATE", "RENAME"]).describe("The action to perform"),
         list_name: z.string().optional().describe("Watchlist name (required for LOAD, ADD, REMOVE, CREATE, DELETE, CLEAR, RENAME)"),
         new_list_name: z.string().optional().describe("New name for watchlist (required for RENAME)"),
         ticker: z.string().optional().describe("Single ticker symbol (for ADD, REMOVE)"),
@@ -50,6 +59,25 @@ export function registerPcaTools(server: McpServer) {
       try {
         if (action === "LIST" || action === "LOAD") {
           if (list_name) {
+            if (isMasterUniverseName(list_name)) {
+              const { data, error } = await supabase
+                .from("cda_master_universe")
+                .select("ticker")
+                .eq("has_parquet", true)
+                .order("ticker")
+                .limit(POSTGREST_UNIVERSE_LIMIT);
+              if (error) throw error;
+              const tickerList = (data ?? []).map((r: any) => r.ticker);
+              const resultTickers = tickerList.join(", ");
+              const verb = action === "LOAD" ? "loaded" : "listed";
+              return {
+                content: [{
+                  type: "text",
+                  text: `Master Universe 'all' ${verb} (${tickerList.length} Ticker mit lokalen Parquet-Daten): ${resultTickers || "leer"}\n\nJSON: ${JSON.stringify({ list_name: "all", count: tickerList.length, tickers: tickerList })}`,
+                }],
+              };
+            }
+
             const { data, error } = await supabase
               .from("pca_watchlists")
               .select("ticker, position")
@@ -69,6 +97,7 @@ export function registerPcaTools(server: McpServer) {
             const { data, error } = await supabase
               .from("pca_watchlists")
               .select("list_name, ticker")
+              .neq("list_name", "all")
               .order("list_name");
             if (error) throw error;
             const counts: Record<string, number> = {};
@@ -77,8 +106,20 @@ export function registerPcaTools(server: McpServer) {
                 counts[r.list_name] = (counts[r.list_name] || 0) + 1;
               }
             }
+            const { count: masterCount, error: countErr } = await supabase
+              .from("cda_master_universe")
+              .select("*", { count: "exact", head: true })
+              .eq("has_parquet", true);
+            if (!countErr && typeof masterCount === "number") {
+              counts["all"] = masterCount;
+            }
             const names = Object.keys(counts);
-            const lines = names.map((name) => `• ${name} (${counts[name]} Einträge)`);
+            const lines = names.map((name) => {
+              if (name === "all") {
+                return `• all (${counts[name]} Einträge [Master Universe - Single Source of Truth])`;
+              }
+              return `• ${name} (${counts[name]} Einträge)`;
+            });
             return {
               content: [{
                 type: "text",
@@ -88,6 +129,9 @@ export function registerPcaTools(server: McpServer) {
           }
         } else if (action === "ADD") {
           if (!list_name) throw new Error("list_name ist für ADD erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("Watchlist 'all' wird dynamisch aus cda_master_universe verwaltet. Um neue Ticker hinzuzufügen, verwende das Tool add_ticker im CDA-Agenten.");
+          }
           if (tickers && tickers.length > 0) {
             const cleanTickers = tickers.map((t: string) => t.trim().toUpperCase()).filter(Boolean);
             const rows = cleanTickers.map((t: string, idx: number) => ({
@@ -113,6 +157,9 @@ export function registerPcaTools(server: McpServer) {
           throw new Error("ticker oder tickers ist für ADD erforderlich");
         } else if (action === "REMOVE") {
           if (!list_name || !ticker) throw new Error("list_name und ticker sind für REMOVE erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("Ticker aus 'all' können nicht manuell entfernt werden, da 'all' das System-Master-Universe darstellt.");
+          }
           const { error } = await supabase
             .from("pca_watchlists")
             .delete()
@@ -122,6 +169,9 @@ export function registerPcaTools(server: McpServer) {
           return { content: [{ type: "text", text: `${ticker.toUpperCase()} aus '${list_name}' entfernt.` }] };
         } else if (action === "CREATE") {
           if (!list_name) throw new Error("list_name ist für CREATE erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("'all' ist als Name für das Master Universe reserviert und kann nicht als benutzerdefinierte Watchlist erstellt werden. Verwende add_ticker im CDA-Agenten.");
+          }
           if (tickers && tickers.length > 0) {
             const cleanTickers = tickers.map((t: string) => t.trim().toUpperCase()).filter(Boolean);
             const rows = cleanTickers.map((t: string, idx: number) => ({
@@ -137,6 +187,12 @@ export function registerPcaTools(server: McpServer) {
           return { content: [{ type: "text", text: `Watchlist '${list_name}' registriert.` }] };
         } else if (action === "RENAME") {
           if (!list_name || !new_list_name) throw new Error("list_name und new_list_name sind für RENAME erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("Das Master Universe 'all' kann nicht umbenannt werden.");
+          }
+          if (isMasterUniverseName(new_list_name)) {
+            throw new Error("Eine Watchlist kann nicht in den geschützten Namen des Master Universe ('all') umbenannt werden.");
+          }
           const { error } = await supabase
             .from("pca_watchlists")
             .update({ list_name: new_list_name })
@@ -145,37 +201,20 @@ export function registerPcaTools(server: McpServer) {
           return { content: [{ type: "text", text: `Watchlist '${list_name}' erfolgreich in '${new_list_name}' umbenannt.` }] };
         } else if (action === "DELETE") {
           if (!list_name) throw new Error("list_name ist für DELETE erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("Das Master Universe 'all' (cda_master_universe) kann nicht gelöscht werden.");
+          }
           const { error } = await supabase.from("pca_watchlists").delete().eq("list_name", list_name);
           if (error) throw error;
           return { content: [{ type: "text", text: `Watchlist '${list_name}' gelöscht.` }] };
         } else if (action === "CLEAR") {
           if (!list_name) throw new Error("list_name ist für CLEAR erforderlich");
+          if (isMasterUniverseName(list_name)) {
+            throw new Error("Das Master Universe 'all' kann nicht geleert werden.");
+          }
           const { error } = await supabase.from("pca_watchlists").delete().eq("list_name", list_name);
           if (error) throw error;
           return { content: [{ type: "text", text: `Watchlist '${list_name}' geleert.` }] };
-        } else if (action === "CLUSTER") {
-          const { data: allTickers, error: fetchErr } = await supabase
-            .from("pca_watchlists")
-            .select("ticker")
-            .eq("list_name", "all");
-          if (fetchErr) throw fetchErr;
-
-          const tickersList = (allTickers || []).map((r: any) => r.ticker).filter(Boolean);
-          const chunkSize = 500;
-          let synced = 0;
-          for (let i = 0; i < tickersList.length; i += chunkSize) {
-            const chunk = tickersList.slice(i, i + chunkSize).map((t: string) => ({
-              ticker: t,
-              has_parquet: true,
-              last_updated: new Date().toISOString(),
-            }));
-            const { error: upsertErr } = await supabase
-              .from("cda_master_universe")
-              .upsert(chunk, { onConflict: "ticker", ignoreDuplicates: false });
-            if (upsertErr) throw upsertErr;
-            synced += chunk.length;
-          }
-          return { content: [{ type: "text", text: `Erfolgreich ${synced} Ticker in cda_master_universe synchronisiert.` }] };
         }
         throw new Error("Ungültige Aktion");
       } catch (err: any) {

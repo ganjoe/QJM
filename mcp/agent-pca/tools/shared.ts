@@ -15,6 +15,9 @@ export const PCA_SERVICE_URL           = Deno.env.get("PCA_SERVICE_URL") || "htt
 // Stock Data Node URL
 export const STOCK_DATA_NODE_URL       = Deno.env.get("STOCK_DATA_NODE_URL") || "http://host.docker.internal:8002";
 
+// Universe query limit (PostgREST)
+export const POSTGREST_UNIVERSE_LIMIT  = parseInt(Deno.env.get("POSTGREST_UNIVERSE_LIMIT") || "20000", 10);
+
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Logger Helper ---

@@ -11,7 +11,7 @@ export function registerCdaTools(server: McpServer) {
       title: "Manage Chart Downloads & OHLCV Database Status",
       description:
         "Zentrales Tool zur Überwachung, Diagnose und Steuerung der automatischen Chart-Downloads (stock-data-node).\n" +
-        "DAS GESAMTE UNIVERSUM: Alle 5.500+ Aktien liegen im Parquet-Speicher und sind über die Master-Watchlist 'all' (bzw. 'all.txt') oder die Tabelle 'cda_master_universe' abrufbar.\n\n" +
+        "DAS GESAMTE UNIVERSUM: Alle 5.500+ Aktien liegen im Parquet-Speicher und sind über die dynamische Master-Watchlist 'all' (Single Source of Truth: 'cda_master_universe') abrufbar.\n\n" +
         "ACTIONS:\n" +
         "- GET_STATUS: Liefert Queue-Größe, Service-Health und IBKR-Verbindungsstatus.\n" +
         "- STALENESS_REPORT: Liefert Altersverteilung der gesamten Parquet-Chartdatenbank.\n" +
@@ -362,6 +362,24 @@ export function registerCdaTools(server: McpServer) {
           } else {
             hasErrors = true;
             lines.push(`❌ ${item.ticker}: Failed (${item.error || "Could not resolve on any provider"})`);
+          }
+        }
+
+        const successfulTickers = results
+          .filter((item: any) => item.status === "ok" || item.status === "resolved")
+          .map((item: any) => item.ticker);
+
+        if (successfulTickers.length > 0) {
+          try {
+            const rows = successfulTickers.map((t: string) => ({
+              ticker: t,
+              has_parquet: true,
+              last_updated: new Date().toISOString(),
+            }));
+            await supabase.from("cda_master_universe").upsert(rows, { onConflict: "ticker", ignoreDuplicates: false });
+            log.info(`[add_ticker] Synced ${successfulTickers.join(", ")} into cda_master_universe.`);
+          } catch (upsertErr: any) {
+            log.warn(`[add_ticker] Warning: could not upsert into cda_master_universe: ${upsertErr.message}`);
           }
         }
 

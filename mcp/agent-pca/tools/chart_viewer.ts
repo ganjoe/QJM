@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PCA_SERVICE_URL, log, supabase } from "./shared.ts";
+import { PCA_SERVICE_URL, log, supabase, POSTGREST_UNIVERSE_LIMIT } from "./shared.ts";
 
 export const CHART_VIEWER_API_URL = Deno.env.get("CHART_VIEWER_API_URL") || "http://host.docker.internal:8766";
 
@@ -318,17 +318,34 @@ export function registerChartViewerTools(server: McpServer) {
           const actualListName = list_name || window_id || "watchlist";
 
           if (list_name) {
-            log.info(`[chart_viewer] Fetching watchlist '${list_name}' from Supabase...`);
-            const { data, error } = await supabase
-              .from("pca_watchlists")
-              .select("ticker")
-              .eq("list_name", list_name);
+            const lower = list_name.trim().toLowerCase();
+            if (lower === "all" || lower === "all.txt" || lower === "master" || lower === "universe") {
+              log.info(`[chart_viewer] Fetching master universe from cda_master_universe...`);
+              const { data, error } = await supabase
+                .from("cda_master_universe")
+                .select("ticker")
+                .eq("has_parquet", true)
+                .order("ticker")
+                .limit(POSTGREST_UNIVERSE_LIMIT);
 
-            if (error) throw new Error(`Supabase error: ${error.message}`);
-            if (!data || data.length === 0) {
-              throw new Error(`Watchlist '${list_name}' is empty or does not exist.`);
+              if (error) throw new Error(`Supabase error: ${error.message}`);
+              if (!data || data.length === 0) {
+                throw new Error("Master universe in 'cda_master_universe' is empty.");
+              }
+              symbols = data.map((row: any) => row.ticker);
+            } else {
+              log.info(`[chart_viewer] Fetching watchlist '${list_name}' from Supabase...`);
+              const { data, error } = await supabase
+                .from("pca_watchlists")
+                .select("ticker")
+                .eq("list_name", list_name);
+
+              if (error) throw new Error(`Supabase error: ${error.message}`);
+              if (!data || data.length === 0) {
+                throw new Error(`Watchlist '${list_name}' is empty or does not exist.`);
+              }
+              symbols = data.map((row: any) => row.ticker);
             }
-            symbols = data.map((row: any) => row.ticker);
           } else if (ticker) {
             symbols = ticker.split(",").map((s: string) => s.trim().toUpperCase()).filter((s: string) => s.length > 0);
           } else {

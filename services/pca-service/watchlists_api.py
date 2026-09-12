@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,12 @@ router = APIRouter()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://host.docker.internal:8001")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
+POSTGREST_UNIVERSE_LIMIT = int(os.environ.get("POSTGREST_UNIVERSE_LIMIT", "20000"))
+UNIVERSE_CACHE_TTL_SEC = float(os.environ.get("UNIVERSE_CACHE_TTL_SEC", "30.0"))
+
+# Global In-Memory Cache: (timestamp, tickers_list)
+_master_universe_cache: Tuple[float, List[str]] = (0.0, [])
+
 
 def _headers():
     return {
@@ -21,6 +28,64 @@ def _headers():
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
     }
+
+
+def is_master_universe(name: Optional[str]) -> bool:
+    """Checks if a watchlist name or reference refers to the master universe."""
+    if not name:
+        return False
+    clean = name.strip().lower()
+    if clean.endswith(".txt"):
+        clean = clean[:-4]
+    return clean in {"all", "master", "universe"}
+
+
+async def fetch_master_universe_tickers(client: Optional[httpx.AsyncClient] = None, force_refresh: bool = False) -> List[str]:
+    """Fetches all tickers with local parquet data from cda_master_universe with in-memory TTL caching."""
+    global _master_universe_cache
+    now = time.time()
+    last_ts, cached_tickers = _master_universe_cache
+    if not force_refresh and cached_tickers and (now - last_ts < UNIVERSE_CACHE_TTL_SEC):
+        return cached_tickers
+
+    url = f"{SUPABASE_URL}/rest/v1/cda_master_universe"
+    params = {
+        "has_parquet": "eq.true",
+        "select": "ticker",
+        "order": "ticker.asc",
+        "limit": str(POSTGREST_UNIVERSE_LIMIT),
+    }
+
+    async def _run(c: httpx.AsyncClient) -> List[str]:
+        r = await c.get(url, params=params, headers=_headers(), timeout=15.0)
+        r.raise_for_status()
+        tickers: List[str] = []
+        seen = set()
+        for row in r.json():
+            t = str(row.get("ticker", "")).strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+        return tickers
+
+    try:
+        if client is not None:
+            tickers = await _run(client)
+        else:
+            async with httpx.AsyncClient() as own_client:
+                tickers = await _run(own_client)
+        if tickers:
+            _master_universe_cache = (now, tickers)
+            logger.info("Loaded %d master universe tickers from cda_master_universe", len(tickers))
+            return tickers
+    except Exception as e:
+        logger.error("Failed to fetch master universe from cda_master_universe: %s", e)
+        if cached_tickers:
+            logger.warning("Returning stale master universe cache due to Supabase error.")
+            return cached_tickers
+        raise
+
+    return []
 
 
 class WatchlistAddRequest(BaseModel):
@@ -37,7 +102,7 @@ class WatchlistBatchRequest(BaseModel):
 
 @router.get("/watchlists")
 async def get_watchlists():
-    """Return all distinct watchlist names."""
+    """Return all distinct watchlist names, dynamically including 'all'."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -47,8 +112,8 @@ async def get_watchlists():
                 timeout=10.0,
             )
             r.raise_for_status()
-        names = sorted(set(row["list_name"] for row in r.json()))
-        return {"watchlists": names}
+        user_lists = sorted(set(row["list_name"] for row in r.json() if not is_master_universe(row.get("list_name"))))
+        return {"watchlists": ["all"] + user_lists}
     except Exception as e:
         logger.error("Failed to fetch watchlists: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to fetch watchlists from Supabase: {str(e)}")
@@ -57,6 +122,15 @@ async def get_watchlists():
 @router.get("/watchlists/{list_name}")
 async def get_watchlist(list_name: str):
     """Return all tickers in a named watchlist, ordered by position."""
+    if is_master_universe(list_name):
+        try:
+            tickers = await fetch_master_universe_tickers()
+            formatted = [{"ticker": t, "position": i, "added_at": None} for i, t in enumerate(tickers)]
+            return {"list_name": "all", "tickers": formatted}
+        except Exception as e:
+            logger.error("Failed to fetch master universe %s: %s", list_name, e)
+            raise HTTPException(status_code=500, detail=f"Failed to fetch master universe: {str(e)}")
+
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -79,6 +153,9 @@ async def get_watchlist(list_name: str):
 @router.post("/watchlists")
 async def add_to_watchlist(body: WatchlistAddRequest):
     """Add a single ticker to a watchlist."""
+    if is_master_universe(body.list_name):
+        raise HTTPException(status_code=400, detail="Die Master-Watchlist 'all' ist geschützt. Nutze 'add_ticker' in CDA.")
+
     ticker_clean = body.ticker.strip().upper()
     try:
         async with httpx.AsyncClient() as client:
@@ -100,6 +177,9 @@ async def add_to_watchlist(body: WatchlistAddRequest):
 @router.post("/watchlists/batch")
 async def batch_add_watchlist(body: WatchlistBatchRequest):
     """Adds multiple tickers to a watchlist. Optionally replaces existing tickers."""
+    if is_master_universe(body.list_name):
+        raise HTTPException(status_code=400, detail="Die Master-Watchlist 'all' ist geschützt und kann nicht manipuliert werden.")
+
     tickers_clean = []
     seen = set()
     for t in body.tickers:
@@ -143,6 +223,9 @@ async def batch_add_watchlist(body: WatchlistBatchRequest):
 @router.delete("/watchlists/{list_name}/{ticker}")
 async def remove_from_watchlist(list_name: str, ticker: str):
     """Remove a single ticker from a watchlist."""
+    if is_master_universe(list_name):
+        raise HTTPException(status_code=400, detail="Ticker aus der Master-Watchlist 'all' können nicht manuell entfernt werden.")
+
     ticker_clean = ticker.strip().upper()
     try:
         async with httpx.AsyncClient() as client:
@@ -162,6 +245,9 @@ async def remove_from_watchlist(list_name: str, ticker: str):
 @router.delete("/watchlists/{list_name}")
 async def delete_entire_watchlist(list_name: str):
     """Delete an entire watchlist."""
+    if is_master_universe(list_name):
+        raise HTTPException(status_code=400, detail="Die Master-Watchlist 'all' ist geschützt und kann nicht gelöscht werden.")
+
     try:
         async with httpx.AsyncClient() as client:
             r = await client.delete(
@@ -263,7 +349,10 @@ def load_watchlist_from_file(reference: str) -> Optional[List[str]]:
 
 
 async def fetch_watchlist_tickers(list_name: str, client: Optional[httpx.AsyncClient] = None) -> List[str]:
-    """Fetches all tickers of a Supabase watchlist (pca_watchlists), ordered by position."""
+    """Fetches all tickers of a watchlist. For 'all', fetches dynamically from cda_master_universe."""
+    if is_master_universe(list_name):
+        return await fetch_master_universe_tickers(client=client)
+
     url = f"{SUPABASE_URL}/rest/v1/pca_watchlists"
     params = {"list_name": f"eq.{list_name}", "order": "position.asc", "select": "ticker"}
 
@@ -288,13 +377,15 @@ async def fetch_watchlist_tickers(list_name: str, client: Optional[httpx.AsyncCl
 async def resolve_watchlist_reference(reference: str) -> Dict[str, Any]:
     """
     Resolves a watchlist reference (bare name, PCA link, PostgREST link or text file) into tickers.
-
-    Returns {"reference", "list_name", "source": "supabase"|"file", "tickers": [...]}.
-    Raises ValueError with a user readable message when the reference cannot be resolved.
+    'all', 'all.txt', 'master', 'universe' resolve dynamically to cda_master_universe.
     """
     ref = (reference or "").strip()
     if not ref:
         raise ValueError("Empty watchlist reference.")
+
+    if is_master_universe(ref) or ref.lower().rstrip("/").endswith(("/watchlists/all", "/watchlists/all.txt")):
+        tickers = await fetch_master_universe_tickers()
+        return {"reference": ref, "list_name": "all", "source": "cda_master_universe", "tickers": tickers}
 
     is_url = ref.lower().startswith(("http://", "https://"))
 
@@ -311,6 +402,10 @@ async def resolve_watchlist_reference(reference: str) -> Dict[str, Any]:
             f"(e.g. 'current_positions'), a PCA service link ('.../api/watchlists/current_positions'), "
             f"a Supabase link containing 'list_name=eq.<name>', or a '<name>.txt' file reference."
         )
+
+    if is_master_universe(list_name):
+        tickers = await fetch_master_universe_tickers()
+        return {"reference": ref, "list_name": "all", "source": "cda_master_universe", "tickers": tickers}
 
     supabase_error: Optional[str] = None
     try:

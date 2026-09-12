@@ -20,7 +20,7 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * *Constraint*: For standard daily 50/200 MAs or Minervini scores, prefer `get_timeseries`.
 * **`run_technical_scanner`**: Use to **scan or screen a universe for technical patterns** — either a plain true/false check on the latest bar or a list of hits inside a time range.
   * *Universe*: `tickers: ["AAPL", ...]` and/or `watchlists: [...]` — a Supabase list name (`"current_positions"`), a PCA link (`http://<host>:8794/api/watchlists/current_positions`), a Supabase link containing `list_name=eq.<name>`, or `"ai_stocks.txt"`.
-  * *Full Database Universe*: Pass `watchlists: ["all"]` or `["all.txt"]` to screen all 5,500+ stocks currently available in the system's Parquet storage. Both sources are merged and de-duplicated, so no separate `manage_watchlist` call is needed.
+  * *Full Database Universe*: Pass `watchlists: ["all"]` to screen all 5,500+ stocks currently available in the system's Parquet storage (dynamically queried from `cda_master_universe`).
   * *Output modes*: **without** `from`/`to` only the last available bar per ticker is evaluated (plain true/false map); **with** `from` and/or `to` (inclusive, `YYYY-MM-DD` or Unix seconds) every bar inside the window is evaluated causally and the result is a hit list (ticker, scanner, hit date, score, matched bars).
   * Available scanners:
     * `'madbo'`: MADBO — Moving Average Dollar Volume Breakout: the five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close × volume) exceeds 2× its 50-bar average (needs 200 bars; score = dollar-volume multiple).
@@ -33,7 +33,7 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * To get tickers in a watchlist: `action: "LOAD"`, `list_name: "current_positions"`.
   * To see all list names: `action: "LIST"`.
   * Also supports `ADD`, `REMOVE`, `CREATE`, `DELETE`, `CLEAR`, `RENAME`.
-  * *Note*: User-curated lists reside in `pca_watchlists`. The complete universe of all 5,500+ stocks is referenced via the master list `"all"` / `"all.txt"` or queried with fundamental metadata via `manage_ticker_metadata` in CDA.
+  * *Note*: User-curated lists reside in `pca_watchlists`. The complete universe of all 5,500+ stocks is referenced via the dynamic master list `"all"` (Single Source of Truth: `cda_master_universe`) or queried with fundamental metadata via `manage_ticker_metadata` in CDA. Master universe `"all"` is protected against accidental deletion, clearing, or overwriting.
 * **`import_watchlist`**: Use when **bulk importing new watchlists from text/files** with automatic verification of local Parquet chart data availability.
 * **`manage_feature_calculation`**: System-level background daemon control (GET_STATUS, TRIGGER, SET_SCHEDULE).
   * *Constraint*: NEVER call this to get an indicator for a single stock! It runs a heavy batch job across all stocks in the database.

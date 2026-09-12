@@ -139,7 +139,10 @@ services:
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - DEFAULT_CANDLE_LIMIT=2000
       - MAX_CANDLE_LIMIT=10000
+      - POSTGREST_UNIVERSE_LIMIT=${POSTGREST_UNIVERSE_LIMIT:-20000}
+      - UNIVERSE_CACHE_TTL_SEC=${UNIVERSE_CACHE_TTL_SEC:-30}
     volumes:
+      - ../services/pca-service:/app
       - /home/daniel/stock-data-node/data/parquet:/parquet:ro
       - /home/daniel/stock-data-node/data/watchlists:/app/watchlists:ro
     ports:
@@ -173,6 +176,7 @@ services:
       FEATURES_SERVICE_URL: http://host.docker.internal:8003
       PCA_SERVICE_URL: http://pca-service:8791
       STOCK_DATA_NODE_URL: http://stock-data-node:8002
+      POSTGREST_UNIVERSE_LIMIT: ${POSTGREST_UNIVERSE_LIMIT:-20000}
       PORT: "8790"
       AGENT_ID: "pca"
       CHART_VIEWER_API_URL: http://chart-viewer-server:8766
