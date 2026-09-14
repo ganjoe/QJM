@@ -22,6 +22,23 @@ from chart_viewer.models.validation import validate_bar
 
 logger = logging.getLogger(__name__)
 
+# Epoch timestamps above this value are treated as milliseconds and normalized to seconds.
+_MS_EPOCH_THRESHOLD = 1_000_000_000_000
+
+
+def _normalize_epoch(t: int) -> int:
+    """Normalize an epoch timestamp to seconds (divides millisecond timestamps by 1000)."""
+    if t > _MS_EPOCH_THRESHOLD:
+        return t // 1000
+    return t
+
+
+def _normalize_bar_epochs(bar: Bar) -> Bar:
+    """Normalize a bar's t_open/t_close to seconds (in place)."""
+    bar.t_open = _normalize_epoch(bar.t_open)
+    bar.t_close = _normalize_epoch(bar.t_close)
+    return bar
+
 
 class WindowData:
     """RAM-only data cache for a single window."""
@@ -134,6 +151,21 @@ class StateManager:
         if "style_defaults" in payload:
             win_data.style_defaults = payload["style_defaults"]
 
+        # Parse topbar blocks so the info row survives a layout.restore / viewer reconnect.
+        # The live "topbar.set_block" message is not persisted by the agent, so the
+        # snapshot must carry the blocks for restore_layout to re-apply them.
+        for tb in payload.get("topbar_blocks", []):
+            if isinstance(tb, TopBarBlock):
+                win_data.topbar_blocks[tb.block_id] = tb
+            elif isinstance(tb, dict):
+                tb_obj = TopBarBlock(
+                    block_id=tb["block_id"],
+                    position=tb.get("position", {"row": 0, "col": 0}),
+                    content=tb.get("content", ""),
+                    ttl_ms=tb.get("ttl_ms"),
+                )
+                win_data.topbar_blocks[tb_obj.block_id] = tb_obj
+
         # Parse bars
         raw_bars = payload.get("bars", [])
         bars = []
@@ -155,6 +187,8 @@ class StateManager:
                     )
                 )
             bars.append(bar_obj)
+        for bar_obj in bars:
+            _normalize_bar_epochs(bar_obj)
         win_data.bars = bars
 
         # Parse overlays
@@ -235,7 +269,7 @@ class StateManager:
                 color_override=bar.get("color_override"),
                 fill_override=bar.get("fill_override"),
             )
-        win_data.bars.append(validate_bar(bar))
+        win_data.bars.append(_normalize_bar_epochs(validate_bar(bar)))
 
     def update_bar(self, window_id: str, bar: Bar | dict) -> None:
         win_data = self.get_or_create_window_data(window_id)
@@ -251,7 +285,7 @@ class StateManager:
                 color_override=bar.get("color_override"),
                 fill_override=bar.get("fill_override"),
             )
-        validated = validate_bar(bar)
+        validated = _normalize_bar_epochs(validate_bar(bar))
         if win_data.bars:
             win_data.bars[-1] = validated
         else:

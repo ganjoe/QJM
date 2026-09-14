@@ -12,6 +12,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("AgentServer")
 
 
+def _src_version():
+    """Cheap, stable content version of the client src tree (mtime+size based).
+
+    Mirrors the file set served by /api/sync (excludes __pycache__ and .pyc),
+    so the Windows client can skip the download when nothing changed.
+    """
+    import hashlib
+    import os
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    src_dir = os.path.abspath(os.path.join(base_dir, ".."))
+    entries = []
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for name in files:
+            if name.endswith(".pyc"):
+                continue
+            p = os.path.join(root, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            rel = os.path.relpath(p, src_dir).replace(os.sep, "/")
+            entries.append((rel, st.st_size, st.st_mtime_ns))
+    entries.sort()
+    h = hashlib.sha256()
+    for rel, size, mtime in entries:
+        h.update(f"{rel}\0{size}\0{mtime}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
 def main():
     port = 8765
     server_transport = WebSocketServerTransport(host="0.0.0.0", port=port)
@@ -68,6 +98,21 @@ def main():
                     "layout_ledger": agent.layout_ledger,
                 }
                 self.wfile.write(json.dumps(res).encode("utf-8"))
+
+            elif self.path == "/api/sync_version":
+                try:
+                    ver = _src_version()
+                    body = ver.encode("ascii")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as e:
+                    logger.exception(f"Error serving sync version: {e}")
+                    self.send_response(500)
+                    self.end_headers()
 
             elif self.path == "/api/sync" or self.path == "/api/sync_bundle":
                 import io, tarfile, os
@@ -218,6 +263,11 @@ def main():
                             window_id=win_id,
                         )
                         server_transport.send_command(env)
+                        # Persist so the block survives a viewer reconnect / layout.restore
+                        if win_id in agent.series_data:
+                            blocks = agent.series_data[win_id].setdefault("topbar_blocks", [])
+                            blocks[:] = [b for b in blocks if b.get("block_id") != block["block_id"]]
+                            blocks.append(block)
                         result = {"status": "ok", "action": action, "window_id": win_id}
 
                     elif action == "CLOSE_WINDOW" and win_id:
@@ -277,6 +327,15 @@ def main():
                                 if ds_win_id in agent.layout_ledger and cmd.get("preset"):
                                     agent.layout_ledger[ds_win_id]["preset"] = cmd.get("preset")
 
+                                topbar = display_cmd.get("topbar")
+                                topbar_block = None
+                                if topbar:
+                                    topbar_block = {
+                                        "block_id": topbar.get("block_id", "info_block"),
+                                        "position": {"row": 0, "col": 0},
+                                        "content": topbar.get("content", ""),
+                                    }
+
                                 snap = {
                                     "symbol": ds_symbol,
                                     "timeframe": ds_tf,
@@ -284,20 +343,18 @@ def main():
                                     "bars": display_cmd["bars"],
                                     "overlays": display_cmd.get("overlays", []),
                                     "annotations": display_cmd.get("annotations", []),
+                                    # Persist topbar blocks so they survive a viewer reconnect /
+                                    # layout.restore (the live push below is not persisted).
+                                    "topbar_blocks": [topbar_block] if topbar_block else [],
                                 }
                                 agent.send_snapshot(ds_win_id, snap)
 
-                                # Set topbar if provided
-                                topbar = display_cmd.get("topbar")
-                                if topbar:
+                                # Live push too, so the info row shows up immediately.
+                                if topbar_block:
                                     from chart_viewer.models.envelope import make_envelope as mk_env, MessageKind as MK
                                     tb_env = mk_env(
                                         msg_type="topbar.set_block",
-                                        payload={
-                                            "block_id": topbar.get("block_id", "info_block"),
-                                            "position": {"row": 0, "col": 0},
-                                            "content": topbar.get("content", ""),
-                                        },
+                                        payload=topbar_block,
                                         kind=MK.COMMAND,
                                         window_id=ds_win_id,
                                     )

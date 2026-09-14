@@ -23,6 +23,69 @@ export const ytIngestionStats = {
 
 let ytAbortController: AbortController | null = null;
 const YT_COOKIES_PATH = "/app/cookies.txt";
+const EMBED_VERSION = Deno.env.get("EMBED_VERSION") || "v2-qwen3-embedding-8b";
+const EMBED_MODEL_NAME = "qwen3-embedding:8b";
+const RETRY_BASE_SEC = parseInt(Deno.env.get("YT_RETRY_BASE_SEC") || "300");
+const RETRY_MAX_SEC = parseInt(Deno.env.get("YT_RETRY_MAX_SEC") || "21600");
+
+// Selbstreparatur: Es gibt KEINE endgueltige Aufgabe. Jeder Fehler wird unbegrenzt
+// wiederholt; der Backoff ist gedeckelt, damit auch ein dauerhaft nicht verfuegbares
+// Video nur alle RETRY_MAX_SEC erneut versucht wird (statt zu verschwinden).
+// PERMANENT_ERROR_PATTERNS bleibt als Erweiterungspunkt (aktuell leer).
+const PERMANENT_ERROR_PATTERNS: RegExp[] = [];
+function isPermanentError(message: string): boolean {
+  return PERMANENT_ERROR_PATTERNS.some((re) => re.test(message || ""));
+}
+function retryDelaySec(retryCount: number): number {
+  const exp = Math.min(retryCount, 30); // Overflow-Schutz
+  return Math.min(RETRY_MAX_SEC, RETRY_BASE_SEC * Math.pow(2, exp));
+}
+/**
+ * Fehler werden unbegrenzt erneut eingeplant (Selbstreparatur).
+ * stage "download" -> zurueck auf pending, stage "embed" -> zurueck auf downloaded.
+ * Nur Muster in PERMANENT_ERROR_PATTERNS wuerden endgueltig failed setzen.
+ */
+async function scheduleRetry(videoId: string, stage: "download" | "embed", message: string, retryCount: number) {
+  const count = retryCount || 0;
+  if (isPermanentError(message)) {
+    const { error: permErr } = await supabase.from("yt_videos").update({
+      status: "failed",
+      error_msg: message,
+    }).eq("video_id", videoId);
+    if (permErr) log.error(`[YT Retry] Endgueltig-Update fehlgeschlagen fuer ${videoId}: ${permErr.message}`);
+    return;
+  }
+  const delaySec = retryDelaySec(count);
+  const next = new Date(Date.now() + delaySec * 1000).toISOString();
+  const { error: retryErr } = await supabase.from("yt_videos").update({
+    status: stage === "download" ? "pending" : "downloaded",
+    retry_count: count + 1,
+    next_retry_at: next,
+    error_msg: `Retry #${count + 1} (naechster in ${Math.round(delaySec / 60)} min): ${message}`,
+  }).eq("video_id", videoId);
+  if (retryErr) log.error(`[YT Retry] Retry-Update fehlgeschlagen fuer ${videoId}: ${retryErr.message}`);
+}
+
+function extractTimecodes(text: string): { start: number | null; end: number | null } {
+  const re = /^\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]$/gm;
+  let m: RegExpExecArray | null;
+  let first: number | null = null;
+  let last: number | null = null;
+  while ((m = re.exec(text)) !== null) {
+    const a = parseInt(m[1]);
+    const b = parseInt(m[2]);
+    const c = m[3] ? parseInt(m[3]) : null;
+    const sec = c === null ? a * 60 + b : a * 3600 + b * 60 + c;
+    if (first === null) first = sec;
+    last = sec;
+  }
+  return { start: first, end: last };
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export async function runCommandWithTimeout(
   args: string[],
@@ -105,23 +168,27 @@ function determineTargetLang(meta: any): string {
 }
 
 /**
- * Resolve a usable ISO published_at timestamp from a yt-dlp JSON entry.
+ * Resolve a usable upload date from a yt-dlp JSON entry.
  * yt-dlp exposes the date in different fields depending on extraction mode:
  * - "upload_date" (YYYYMMDD string): present in full/per-video extraction.
  * - "timestamp" / "release_timestamp" (epoch seconds): present when
  *   --extractor-args "youtubetab:approximate_date" is used in flat-playlist mode.
- * Falls back to "" (unknown) only if none of these are present, instead of
- * silently producing null further down the pipeline.
+ * Falls back to null (unknown) if none of these are present, and marks the
+ * value as approximate when it came from the flat-playlist fast path.
  */
-function derivePublishedAt(data: any): string {
+function deriveUploadDate(data: any, mode: "exact" | "approximate"): { date: string | null; source: string | null; precision: string | null } {
+  let ymd = "";
   if (data.upload_date && typeof data.upload_date === "string" && data.upload_date.length === 8) {
-    return `${data.upload_date.substring(0, 4)}-${data.upload_date.substring(4, 6)}-${data.upload_date.substring(6, 8)}T00:00:00Z`;
+    ymd = data.upload_date;
+  } else {
+    const epochSeconds = data.timestamp ?? data.release_timestamp;
+    if (typeof epochSeconds === "number" && epochSeconds > 0) {
+      ymd = new Date(epochSeconds * 1000).toISOString().substring(0, 10).replace(/-/g, "");
+    }
   }
-  const epochSeconds = data.timestamp ?? data.release_timestamp;
-  if (typeof epochSeconds === "number" && epochSeconds > 0) {
-    return new Date(epochSeconds * 1000).toISOString();
-  }
-  return "";
+  if (!/^\d{8}$/.test(ymd)) return { date: null, source: null, precision: null };
+  const iso = `${ymd.substring(0,4)}-${ymd.substring(4,6)}-${ymd.substring(6,8)}`;
+  return { date: iso, source: mode, precision: "day" };
 }
 
 async function getChannelVideos(channelUrl: string, limit?: number, signal?: AbortSignal) {
@@ -133,8 +200,8 @@ async function getChannelVideos(channelUrl: string, limit?: number, signal?: Abo
     args.push("--flat-playlist");
     // Flat-playlist mode normally omits upload_date entirely. This flag asks the
     // youtubetab extractor to derive an approximate upload date/timestamp per
-    // entry (e.g. "3 weeks ago" -> resolved date) so published_at is never left
-    // null just because we took the fast listing path.
+    // entry (e.g. "3 weeks ago" -> resolved date) so upload_date is not left
+    // null just because we took the fast listing path (marked approximate).
     args.push("--extractor-args", "youtubetab:approximate_date");
   }
   if (limit !== undefined) args.push("--playlist-end", String(limit));
@@ -144,17 +211,20 @@ async function getChannelVideos(channelUrl: string, limit?: number, signal?: Abo
   if (!output.success) throw new Error(`yt-dlp video list failed: ${output.stderr.substring(0, 200)}`);
 
   const lines = output.stdout.trim().split("\n");
-  const videos: Array<{ videoId: string; title: string; duration: number; publishedAt: string; targetLang: string }> = [];
+  const videos: Array<{ videoId: string; title: string; duration: number; uploadDate: string | null; uploadDateSource: string | null; uploadDatePrecision: string | null; targetLang: string }> = [];
 
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
       const data = JSON.parse(line);
+      const ud = deriveUploadDate(data, useFlat ? "approximate" : "exact");
       videos.push({
         videoId: data.id,
         title: data.title || "Unknown",
         duration: data.duration || 0,
-        publishedAt: derivePublishedAt(data),
+        uploadDate: ud.date,
+        uploadDateSource: ud.source,
+        uploadDatePrecision: ud.precision,
         targetLang: useFlat ? "en" : determineTargetLang(data),
       });
     } catch {
@@ -240,7 +310,10 @@ export async function syncSingleChannel(handle: string, signal?: AbortSignal) {
         channel: handle,
         title: video.title,
         duration: video.duration,
-        published_at: video.publishedAt || null,
+        upload_date: video.uploadDate || null,
+        upload_date_source: video.uploadDateSource || null,
+        upload_date_precision: video.uploadDatePrecision || null,
+        metadata_synced_at: new Date().toISOString(),
         status: "pending",
         language: video.targetLang || "en",
       }, { onConflict: "video_id" });
@@ -306,21 +379,24 @@ async function downloadSingleTranscript(video: any, signal?: AbortSignal): Promi
   try {
     const vtt = await downloadVtt(video.video_id, video.language || "en", signal);
     if (!vtt) {
-      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Auto-Captions" }).eq("video_id", video.video_id);
+      await scheduleRetry(video.video_id, "download", "Keine Auto-Captions", video.retry_count);
       return false;
     }
 
     const plaintext = vttToPlaintext(vtt);
     if (!plaintext || plaintext.trim().length === 0) {
-      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Leeres Transkript" }).eq("video_id", video.video_id);
+      await scheduleRetry(video.video_id, "download", "Leeres Transkript", video.retry_count);
       return false;
     }
 
-    await supabase.from("yt_videos").update({
+    const { error: upErr } = await supabase.from("yt_videos").update({
       transcript: plaintext,
       status: "downloaded",
       error_msg: null,
+      retry_count: 0,
+      next_retry_at: new Date().toISOString(),
     }).eq("video_id", video.video_id);
+    if (upErr) log.error(`[YT Downloader] Status-Update fehlgeschlagen fuer ${video.video_id}: ${upErr.message}`);
 
     ytIngestionStats.totalTranscriptsDownloaded++;
     log.info(`[YT Downloader] Transkript geladen für "${video.title}" (${video.channel})`);
@@ -328,7 +404,7 @@ async function downloadSingleTranscript(video: any, signal?: AbortSignal): Promi
   } catch (err: any) {
     if (err.name === "AbortError" || signal?.aborted) throw err;
     log.error(`[YT Downloader] Video ${video.video_id} download failed: ${err.message}`);
-    await supabase.from("yt_videos").update({ status: "failed", error_msg: err.message }).eq("video_id", video.video_id);
+    await scheduleRetry(video.video_id, "download", err.message, video.retry_count);
     return false;
   }
 }
@@ -340,19 +416,20 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
   try {
     const plaintext = video.transcript;
     if (!plaintext || plaintext.trim().length === 0) {
-      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Leeres Transkript" }).eq("video_id", video.video_id);
+      await scheduleRetry(video.video_id, "embed", "Leeres Transkript", video.retry_count);
       return false;
     }
 
     const chunks = chunkTranscript(plaintext);
     if (chunks.length === 0) {
-      await supabase.from("yt_videos").update({ status: "failed", error_msg: "Keine Chunks generierbar" }).eq("video_id", video.video_id);
+      await scheduleRetry(video.video_id, "embed", "Keine Chunks generierbar", video.retry_count);
       return false;
     }
 
-    const augmentedTexts = chunks.map((chunk, idx) =>
-      `[Video: "${video.title}" | Kanal: ${video.channel} | Datum: ${video.published_at || "Unbekannt"}]\n\n${chunk}`
-    );
+    const contextHeader = `[Video: "${video.title}" | Kanal: ${video.channel}`
+      + (video.upload_date ? ` | Upload: ${video.upload_date}` : "")
+      + `]`;
+    const augmentedTexts = chunks.map((chunk) => `${contextHeader}\n\n${chunk}`);
 
     ytIngestionStats.activeEmbeddingsRunning++;
     const t0 = Date.now();
@@ -382,39 +459,56 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
     ytIngestionStats.lastProcessedTitle = video.title || "";
     ytIngestionStats.lastProcessedChannel = video.channel || "";
 
-    const rowsToInsert = chunks.map((chunk, idx) => ({
-      agent_id: AGENT_ID || "cco",
-      artifact_type: "yt_chunk",
-      content: augmentedTexts[idx],
-      embedding: embeddings[idx],
-      created_at: video.published_at || new Date().toISOString(),
-      metadata: {
-        channel: video.channel,
+    const sourceHashes = await Promise.all(augmentedTexts.map((t) => sha256Hex(t)));
+
+    const rowsToInsert = chunks.map((chunk, idx) => {
+      const tc = extractTimecodes(chunk);
+      return {
+        agent_id: AGENT_ID || "cco",
+        artifact_type: "yt_chunk",
         video_id: video.video_id,
-        video_title: video.title,
-        block_index: idx,
-        total_blocks: chunks.length,
-        published_at: video.published_at,
-        stage: "embedded",
-      },
-    }));
+        chunk_index: idx,
+        t_start_sec: tc.start,
+        t_end_sec: tc.end,
+        content: augmentedTexts[idx],
+        embedding: embeddings[idx],
+        embedding_model: EMBED_MODEL_NAME,
+        embedding_version: EMBED_VERSION,
+        embedded_at: new Date().toISOString(),
+        source_hash: sourceHashes[idx],
+        created_at: new Date().toISOString(),
+        metadata: {
+          channel: video.channel,
+          video_id: video.video_id,
+          video_title: video.title,
+          block_index: idx,
+          total_blocks: chunks.length,
+          upload_date: video.upload_date,
+          upload_date_source: video.upload_date_source,
+          stage: "embedded",
+        },
+      };
+    });
 
     await supabase.from("agent_workspace").delete().eq("artifact_type", "yt_chunk").eq("metadata->>video_id", video.video_id);
     const { error: insErr } = await supabase.from("agent_workspace").insert(rowsToInsert);
     if (insErr) throw insErr;
 
-    await supabase.from("yt_videos").update({
+    const { error: upErr } = await supabase.from("yt_videos").update({
       status: "embedded",
       chunk_count: chunks.length,
       error_msg: null,
+      retry_count: 0,
+      next_retry_at: new Date().toISOString(),
     }).eq("video_id", video.video_id);
+    if (upErr) log.error(`[YT Embedder] Status-Update fehlgeschlagen fuer ${video.video_id}: ${upErr.message}`);
 
     log.info(`[YT Embedder] Fertig: ${chunks.length} Chunks in ${(durationMs / 1000).toFixed(2)}s (${chunksPerSec} Chunks/s, ~${tokensPerSec} t/s) für "${video.title}"`);
     return true;
   } catch (err: any) {
     if (err.name === "AbortError" || signal?.aborted) throw err;
     log.error(`[YT Embedder] Video ${video.video_id} failed: ${err.message}`);
-    await supabase.from("yt_videos").update({ status: "failed", error_msg: err.message }).eq("video_id", video.video_id);
+    await scheduleRetry(video.video_id, "embed", err.message, video.retry_count);
     return false;
   }
 }
@@ -434,9 +528,11 @@ async function runTranscriptDownloadLoop() {
     try {
       const { data: pendingVideos, error } = await supabase
         .from("yt_videos")
-        .select("video_id, channel, title, published_at, language")
+        .select("video_id, channel, title, upload_date, language, retry_count")
         .eq("status", "pending")
-        .order("published_at", { ascending: false, nullsFirst: false })
+        .lte("next_retry_at", new Date().toISOString())
+        .order("next_retry_at", { ascending: true })
+        .order("upload_date", { ascending: false, nullsFirst: false })
         .limit(downloadBatchLimit);
 
       if (error) throw error;
@@ -486,9 +582,11 @@ async function runEmbeddingLoop() {
     try {
       const { data: downloadedVideos, error } = await supabase
         .from("yt_videos")
-        .select("video_id, channel, title, published_at, language, transcript, status")
+        .select("video_id, channel, title, upload_date, upload_date_source, upload_date_precision, language, transcript, status, retry_count")
         .eq("status", "downloaded")
-        .order("published_at", { ascending: false, nullsFirst: false })
+        .lte("next_retry_at", new Date().toISOString())
+        .order("next_retry_at", { ascending: true })
+        .order("upload_date", { ascending: false, nullsFirst: false })
         .limit(embedBatchLimit);
 
       if (error) throw error;
@@ -580,7 +678,24 @@ export async function runYtLoop() {
 export function startYtWorker() {
   if (ytIngestionStats.isRunning) return;
   ytAbortController = new AbortController();
-  runYtLoop().catch(err => log.error(`YT Worker fatal error: ${err.message}`));
+  const supervise = async () => {
+    while (ytAbortController && !ytAbortController.signal.aborted) {
+      const ctrl = ytAbortController;
+      try {
+        await runYtLoop();
+      } catch (err: any) {
+        if (err.name !== "AbortError") log.error(`[YT Supervisor] runYtLoop abgestuerzt: ${err.message}`);
+      }
+      if (!ytAbortController || ytAbortController.signal.aborted) break;
+      log.warn("[YT Supervisor] Pipeline unerwartet beendet - Neustart in 30s");
+      try { ctrl.abort(); } catch {}
+      await new Promise((r) => setTimeout(r, 30000));
+      if (ytAbortController && !ytAbortController.signal.aborted) {
+        ytAbortController = new AbortController();
+      }
+    }
+  };
+  supervise().catch((err) => log.error(`[YT Supervisor] fatal: ${err.message}`));
 }
 
 export function stopYtWorker() {

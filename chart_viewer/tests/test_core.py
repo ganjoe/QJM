@@ -4,36 +4,19 @@ from chart_viewer.config import ViewerConfig
 from chart_viewer.core.event_hub import EventHub
 from chart_viewer.core.backpressure import TickCoalescer
 from chart_viewer.core.state_manager import StateManager
-from chart_viewer.models.entities import WindowState, Timeframe, Bar
 
 
 def test_event_hub_crosshair_sync_and_clamping():
     hub = EventHub()
 
-    # Register two windows in the same sync_group
-    win_a = WindowState(
-        window_id="daily-1",
-        symbol="BTCUSDT",
-        timeframe=Timeframe(unit="D", multiplier=1),
-        sync_group_id="group-crypto",
-    )
-    win_b = WindowState(
-        window_id="5m-1",
-        symbol="BTCUSDT",
-        timeframe=Timeframe(unit="min", multiplier=5),
-        sync_group_id="group-crypto",
-    )
-    hub.register_window(win_a)
-    hub.register_window(win_b)
-
     received_broadcasts = []
     hub.on_crosshair_broadcast(lambda payload: received_broadcasts.append(payload))
 
-    # Broadcast from win_a
+    # Broadcast from a source window with an explicit sync group
     hub.broadcast_crosshair(
         source_window_id="daily-1",
         timestamp=1738762200000,
-        bar_index_fraction=142.37,
+        source_sync_group_id="group-crypto",
     )
 
     assert len(received_broadcasts) == 1
@@ -57,6 +40,10 @@ def test_event_hub_crosshair_sync_and_clamping():
     # Timestamp completely outside -> returns None (crosshair disappears)
     assert EventHub.clamp_timestamp_to_available_bars(800, available_bars) is None
     assert EventHub.clamp_timestamp_to_available_bars(1200, available_bars) is None
+
+    # nearest_bar returns (timestamp, index)
+    assert EventHub.nearest_bar(available_bars, 1010) == (1000, 2)
+    assert EventHub.nearest_bar(available_bars, 1050) == (1060, 3)
 
 
 def test_tick_coalescer_backpressure():

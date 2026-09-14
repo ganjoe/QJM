@@ -85,11 +85,22 @@ Always select the most specific tool for the task. Follow these strict disambigu
     * `'SET_PROVIDER'`: Sets the provider for a ticker (`IBKR` or `YFINANCE`).
 * **`manage_ticker_metadata`**: Manages fundamental metrics and system properties in the **Master Universe** (`cda_master_universe` in Supabase).
   * *Actions*:
-    * `'GET'`: Fetches fundamental metrics for one or more tickers (e.g. `ticker: "AAPL"` or `"AAPL,NVDA"`).
+    * `'GET'`: Fetches fundamental metrics for one or more tickers (e.g. `ticker: "AAPL"` or `"AAPL,NVDA"`). Also returns joined links to attached stock documents & distillates.
     * `'COUNT'`: Summarizes universe statistics (total ticker count, count with Parquet data, count with shares outstanding/market cap, count with EPS/revenue).
     * `'UPDATE'`: Updates/upserts fundamental metrics for a single stock (`shares_outstanding`, `currency`, `eps`, `revenue`, `earnings`, `has_parquet`).
     * `'SYNC'`: Synchronizes a list of tickers into the master universe.
   * *Market Capitalisation*: Calculate market cap by multiplying `shares_outstanding` with the current stock price (from `get_quote`).
+* **`manage_stock_documents`**: Manages, searches, and inspects fundamental stock documents (Earnings Reports, SEC Filings 10-K/10-Q/8-K, Investor Presentations, Transcripts) and their structured Markdown Distillates (`.distillate.md`) stored in `stock-data-node/data/documents/<TICKER>/`.
+  * *Destillat-First Principle*: Financial documents are paired with a dense, structured Markdown summary capturing key financial metrics, segment trends, management remarks, and forward guidance in clean tables. Fits directly into the LLM context window without lossy chunking.
+  * *Full-Text Search (FTS)*: Fast PostgreSQL GIN search across document titles, types, and the entire distillate text (e.g. `query: "AI server shipments backlog"` or `"cloud margin guidance"`).
+  * *Actions*:
+    * `'GET'`: Retrieves full metadata, resolved absolute file path, and complete distillate text for a stock or document ID (e.g. `ticker: "DELL"` or `document_id: "..."`).
+    * `'SEARCH'`: Full-text keyword search across distillates and titles (optional filters: `ticker`, `doc_type`, `fiscal_year`).
+    * `'LIST'`: Lists all registered documents for a ticker with report dates, file sizes, and distillate availability.
+    * `'ADD'`: Registers a document in the ticker folder (`stock-data-node/data/documents/<TICKER>/`), computes SHA-256 hash, and saves the companion distillate.
+    * `'SCAN_FOLDER'`: Scans the ticker folder for newly downloaded, untracked files for semi-automatic registration.
+    * `'CREATE_DISTILLATE'`: Creates or updates a structured Markdown distillate for an existing document.
+    * `'DELETE'`: Removes a document registration from the database.
 * **`add_ticker`**: Add new stock or ETF tickers to the database and queue immediate priority downloads. Automatically resolves unknown symbols across ranked data providers (IBKR -> YFinance fallback, e.g. `4GLD` -> `4GLD.DE`). The first ticker in the list receives highest download priority.
 * **`override_ticker_mapping`**: Explicitly override or correct a ticker's provider or symbol mapping.
 
@@ -129,6 +140,14 @@ Always select the most specific tool for the task. Follow these strict disambigu
    → Call `manage_chart_viewer(action: "SAVE_SETUP", setup_name: "main")` — saves window positions/sizes/color flags of the live `layout_ledger`. Related: `LIST_SETUPS` (show saved setups), `LOAD_SETUP` (`setup_name: "main"`), `DELETE_SETUP`, `RENAME_SETUP`.
 16. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
    → Call `get_timeseries(ticker: "$STATS.MARKET_BREADTH", limit: 30)` to inspect percentage, count, and signed `days_back` (remember: breadth lows have high predictive weight for market rebounds, whereas highs confirm bull trends but are not reliable top indicators).
+17. **"Show me the latest earnings report / 10-K / presentation of DELL."**
+   → Call `manage_stock_documents(action: "GET", ticker: "DELL")` to receive document metadata, file paths, and the full high-density Markdown distillate (key metrics, segment breakdowns, guidance).
+18. **"Search our financial filings for AI server backlog or cloud margin expansion."**
+   → Call `manage_stock_documents(action: "SEARCH", query: "AI server backlog")` — searches across all stored document distillates using PostgreSQL GIN full-text search.
+19. **"What filings / reports do we have on file for AAPL?"**
+   → Call `manage_stock_documents(action: "LIST", ticker: "AAPL")`.
+20. **"Check if there are any new uncataloged PDF reports in the DELL folder."**
+   → Call `manage_stock_documents(action: "SCAN_FOLDER", ticker: "DELL")`.
 
 ---
 

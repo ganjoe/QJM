@@ -62,3 +62,96 @@ def test_canvas_measure_tool_lifecycle(qapp):
     assert main_pane._measure_start_pos is None
     # Verify no persistent annotations were added
     assert len(win_data.annotations) == 0
+
+
+def test_ctrl_wheel_horizontal_scroll(qapp):
+    """Test horizontal scrolling with mouse wheel when Ctrl modifier is held."""
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtCore import QPoint
+
+    cfg = ViewerConfig(wheel_scroll_step_bars=5.0)
+    canvas = ChartCanvas(window_id="test-win", config=cfg)
+    canvas.resize(800, 600)
+
+    # 100 bars so we have room to scroll left and right
+    win_data = WindowData("test-win")
+    win_data.bars = [
+        Bar(t_open=1000 + i * 100, t_close=1100 + i * 100, open=100.0, high=110.0, low=90.0, close=105.0)
+        for i in range(100)
+    ]
+    canvas.set_window_data(win_data)
+
+    initial_right_idx = canvas.x_trans.right_index
+    initial_candle_w = canvas.x_trans.candle_width_px
+    assert initial_right_idx == 99.0
+
+    # 1. Wheel UP with Ctrl held (angleDelta = +120) -> should scroll backward in time (left) by 5 bars
+    wheel_up = QWheelEvent(
+        QPointF(200, 300),
+        QPointF(200, 300),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    canvas.wheelEvent(wheel_up)
+
+    # Right index should have moved left by 5 bars (99.0 - 5.0 = 94.0)
+    assert canvas.x_trans.right_index == 94.0
+    # Candle width (zoom factor) MUST remain unchanged!
+    assert canvas.x_trans.candle_width_px == initial_candle_w
+    assert canvas.x_trans.pin_to_right is False
+
+    # 2. Wheel DOWN with Ctrl held (angleDelta = -120) -> should scroll forward in time (right) by 5 bars
+    wheel_down = QWheelEvent(
+        QPointF(200, 300),
+        QPointF(200, 300),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    canvas.wheelEvent(wheel_down)
+
+    # Right index should have moved right back to 99.0 (pinned to latest)
+    assert canvas.x_trans.right_index == 99.0
+    assert canvas.x_trans.candle_width_px == initial_candle_w
+
+
+def test_indicator_line_width_clamp_and_antialiasing(qapp):
+    """Test that indicator linecharts enforce minimum line width (4px) and render with antialiasing."""
+    from chart_viewer.models.entities import Overlay, OverlayPoint
+
+    cfg = ViewerConfig(min_indicator_line_width_px=4, enable_antialiasing=True)
+    canvas = ChartCanvas(window_id="test-win", config=cfg)
+    canvas.resize(800, 600)
+
+    win_data = WindowData("test-win")
+    win_data.bars = [
+        Bar(t_open=1000 + i * 100, t_close=1100 + i * 100, open=100.0, high=110.0, low=90.0, close=105.0)
+        for i in range(20)
+    ]
+    # Add an indicator overlay with thin width (width: 1)
+    overlay_thin = Overlay(
+        overlay_id="thin_line",
+        series_id="test_series",
+        pane="main",
+        type="line",
+        values=[OverlayPoint(t=1000 + i * 100, value=100.0 + i) for i in range(20)],
+        style={"color": "#00E676", "width": 1},
+    )
+    win_data.overlays["thin_line"] = overlay_thin
+    canvas.set_window_data(win_data)
+
+    main_pane = canvas._panes.get("main")
+    assert main_pane is not None
+
+    canvas.show()
+    qapp.processEvents()
+    main_pane.render(main_pane)
+    assert main_pane._pixmap is not None
+

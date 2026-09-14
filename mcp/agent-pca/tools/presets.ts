@@ -20,7 +20,8 @@ export function registerPresetTools(server: McpServer) {
                     z.object({
                         feature_id: z.string().describe("The canonical feature ID (e.g. 'sma_10', 'ema_20', 'bb_20', 'adr_1_pct', 'adr_20_sma')."),
                         sort_order: z.number().default(0).describe("Order in the overlay list."),
-                        style_override: z.record(z.string(), z.any()).optional().describe("Style overrides (e.g. { color: '#FF00FF', width: 2 }).")
+                        style_override: z.record(z.string(), z.any()).optional().describe("Style overrides (e.g. { color: '#FF00FF', width: 2 })."),
+                        pane: z.string().optional().describe("Target pane: 'main' = Overlay im Chartfenster, beliebiger Name (z. B. 'rs') = eigene Subpane mit eigener Y-Achse, 'none' = nur Topbar-Metrik. Weglassen = aus plot_type des Features ableiten.")
                     })
                 ).optional().describe("List of indicators for this preset. Used in CREATE and UPDATE.")
             }
@@ -67,7 +68,8 @@ export function registerPresetTools(server: McpServer) {
                     members: members.map((m: any, idx: number) => ({
                         feature_id: m.feature_id,
                         sort_order: m.sort_order ?? idx,
-                        style_override: m.style_override || {}
+                        style_override: m.style_override || {},
+                        pane: m.pane ?? null
                     }))
                 };
 

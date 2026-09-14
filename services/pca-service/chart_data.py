@@ -324,6 +324,9 @@ class PresetMember(BaseModel):
     feature_id: str
     sort_order: int = 0
     style_override: dict = {}
+    # Ziel-Pane: 'main' = Chartfenster, beliebiger Name = eigene Subpane,
+    # 'none' = nur Topbar-Metrik. None = aus pca_features.plot_type ableiten.
+    pane: Optional[str] = None
 
 class PresetCreate(BaseModel):
     id: str
@@ -374,7 +377,8 @@ async def create_preset(preset: PresetCreate):
             "set_id": preset.id,
             "feature_id": m.feature_id,
             "sort_order": m.sort_order,
-            "style_override": m.style_override
+            "style_override": m.style_override,
+            "pane": m.pane
         }
         _supabase_post("pca_feature_set_members", member_payload)
     return {"status": "success", "id": preset.id}
@@ -404,7 +408,8 @@ async def update_preset(preset_name: str, preset: PresetCreate):
             "set_id": preset_name, # use URL parameter as safe fallback
             "feature_id": m.feature_id,
             "sort_order": m.sort_order,
-            "style_override": m.style_override
+            "style_override": m.style_override,
+            "pane": m.pane
         }
         _supabase_post("pca_feature_set_members", member_payload)
     return {"status": "success", "id": preset_name}
@@ -413,6 +418,34 @@ async def update_preset(preset_name: str, preset: PresetCreate):
 async def delete_preset(preset_name: str):
     _supabase_delete("pca_feature_sets", f"id=eq.{preset_name}")
     return {"status": "success"}
+
+def resolve_member_pane(
+    explicit_pane: Optional[str],
+    plot_type: Optional[str],
+    canonical_id: Optional[str],
+) -> str:
+    """Ziel-Pane eines Preset-Members bestimmen.
+
+    Vorrang hat der explizit am Member gespeicherte Wert. Fehlt er, wird die
+    Pane aus dem deklarierten plot_type des Features abgeleitet:
+
+        overlay_line / overlay_band -> 'main'        (Chartfenster)
+        sub_line / subchart         -> canonical_id  (eigene Subpane)
+        topbar_metric               -> 'none'        (kein Overlay)
+
+    'none' bedeutet: das Feature wird nicht gezeichnet, sondern nur als
+    Topbar-Metrik verwendet.
+    """
+    if explicit_pane is not None and str(explicit_pane).strip():
+        return str(explicit_pane).strip().lower()
+    if plot_type in ("overlay_line", "overlay_band"):
+        return "main"
+    if plot_type in ("sub_line", "subchart"):
+        return (canonical_id or "main").strip().lower()
+    if plot_type == "topbar_metric":
+        return "none"
+    return "main"
+
 
 @router.get("/presets/{preset_name}")
 async def get_preset(preset_name: str):
@@ -425,7 +458,7 @@ async def get_preset(preset_name: str):
     # Fetch members with join to pca_features
     members = _supabase_get(
         "pca_feature_set_members",
-        f"set_id=eq.{preset_name}&select=feature_id,sort_order,style_override,pca_features(canonical_id,calc_type,calc_params,plot_type,default_style,mode)&order=sort_order"
+        f"set_id=eq.{preset_name}&select=feature_id,sort_order,style_override,pane,pca_features(canonical_id,calc_type,calc_params,plot_type,default_style,mode)&order=sort_order"
     )
 
     indicators = []
@@ -441,6 +474,7 @@ async def get_preset(preset_name: str):
 
         # Use canonical_id as column reference (will match Parquet column after Phase 5)
         canonical_id = feature.get("canonical_id", m.get("feature_id", ""))
+        plot_type = feature.get("plot_type")
 
         # For Bollinger bands, the column in Parquet is bb_XX_upper
         if feature.get("calc_type") == "BOLLINGER":
@@ -454,6 +488,8 @@ async def get_preset(preset_name: str):
             "canonical_id": canonical_id,
             "calc_type": feature.get("calc_type"),
             "mode": feature.get("mode"),
+            "plot_type": plot_type,
+            "pane": resolve_member_pane(m.get("pane"), plot_type, canonical_id),
             "style": merged_style,
         })
 

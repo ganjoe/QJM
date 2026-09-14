@@ -4,6 +4,166 @@ import { STOCK_DATA_NODE_URL, log, supabase } from "./shared.ts";
 
 declare const Deno: any;
 
+// Bekannte Ticker-Mappings für Yahoo Finance
+const STATIC_YF_MAPPINGS: Record<string, string> = {
+  "LPK": "LPK.DE",
+  "HPS.A": "HPS-A.TO",
+  "SOI": "SOI.PA",
+  "XFAB": "XFAB.PA",
+  "SIVE": "SIVE.ST",
+  "4GLD": "4GLD.DE",
+  "SYSTEM": "SKIP",
+  "NOD": "NOD.OL",
+  "KCLI.CN": "KCLI.CN",
+  "VLX.L": "VLX.L",
+  "VLXGF": "VLXGF",
+  "AMD": "AMD",
+  "BRK.A": "BRK-A",
+  "BRK.B": "BRK-B",
+  "BF.B": "BF-B",
+};
+
+const SKIP_PREFIXES = ["$", "=", "^"];
+
+function normalizeTickerForYf(ticker: string): string | null {
+  const t = ticker.trim().toUpperCase();
+  if (!t || SKIP_PREFIXES.some(p => t.startsWith(p))) return null;
+  if (STATIC_YF_MAPPINGS[t]) {
+    const m = STATIC_YF_MAPPINGS[t];
+    return m === "SKIP" ? null : m;
+  }
+  const parts = t.split(".");
+  if (parts.length === 2 && ["A", "B", "C", "WS", "U"].includes(parts[1])) {
+    return `${parts[0]}-${parts[1]}`;
+  }
+  return t;
+}
+
+export async function fetchTickerMetadata(ticker: string, timeoutMs?: number): Promise<Record<string, any> | null> {
+  const symbol = normalizeTickerForYf(ticker);
+  if (!symbol) return null;
+  const timeout = timeoutMs || Number(Deno.env.get("METADATA_TIMEOUT_MS") || 8000);
+
+  try {
+    const headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json"
+    };
+
+    let shares: number | null = null;
+    let currency: string | null = null;
+    let eps: number | null = null;
+    let revenue: number | null = null;
+    let earningsIso: string | null = null;
+
+    // 1. QuoteSummary v10 abrufen
+    try {
+      const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=defaultKeyStatistics,financialData,calendarEvents`;
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeout) });
+      if (res.ok) {
+        const data = await res.json();
+        const result = data?.quoteSummary?.result?.[0];
+        if (result) {
+          const keyStats = result.defaultKeyStatistics || {};
+          const finData = result.financialData || {};
+          const calEvents = result.calendarEvents || {};
+
+          const sRaw = keyStats.sharesOutstanding?.raw ?? keyStats.impliedSharesOutstanding?.raw;
+          if (typeof sRaw === "number") shares = sRaw;
+
+          const cRaw = finData.financialCurrency || keyStats.currency;
+          if (typeof cRaw === "string" && cRaw.trim()) currency = cRaw.trim().toUpperCase();
+
+          const epsRaw = keyStats.trailingEps?.raw ?? keyStats.forwardEps?.raw;
+          if (typeof epsRaw === "number") eps = epsRaw;
+
+          const revRaw = finData.totalRevenue?.raw;
+          if (typeof revRaw === "number") revenue = revRaw;
+
+          const earnTs = calEvents.earnings?.earningsDate?.[0]?.raw;
+          if (typeof earnTs === "number") earningsIso = new Date(earnTs * 1000).toISOString();
+        }
+      }
+    } catch (_err) {
+      // Weiter zum Fallback
+    }
+
+    // 2. Chart v8 Fallback für Basisdaten (Currency / Quote)
+    if (shares === null || currency === null) {
+      try {
+        const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+        const chartRes = await fetch(chartUrl, { headers, signal: AbortSignal.timeout(timeout) });
+        if (chartRes.ok) {
+          const chartData = await chartRes.json();
+          const meta = chartData?.chart?.result?.[0]?.meta;
+          if (meta?.currency && !currency) {
+            currency = String(meta.currency).trim().toUpperCase();
+          }
+        }
+      } catch (_err) {
+        // Ignorieren
+      }
+    }
+
+    if (shares === null && currency === null && eps === null && revenue === null) {
+      return null;
+    }
+
+    return {
+      ticker,
+      shares_outstanding: shares,
+      currency,
+      eps,
+      revenue,
+      earnings: earningsIso,
+      has_parquet: true,
+      last_updated: new Date().toISOString()
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+export async function reconcileMissingMetadata(limit = 50): Promise<number> {
+  try {
+    const { data, error } = await supabase
+      .from("cda_master_universe")
+      .select("ticker")
+      .is("shares_outstanding", null)
+      .eq("has_parquet", true)
+      .order("ticker", { ascending: true })
+      .limit(limit);
+
+    if (error || !data || data.length === 0) return 0;
+
+    const missing = data
+      .map((r: any) => r.ticker)
+      .filter((t: string) => t && !SKIP_PREFIXES.some(p => t.startsWith(p)));
+
+    if (missing.length === 0) return 0;
+    log.info(`[reconcileMissingMetadata] ${missing.length} unbefüllte Ticker gefunden. Starte Anreicherung...`);
+
+    const batch = [];
+    for (const t of missing) {
+      const meta = await fetchTickerMetadata(t);
+      if (meta) {
+        batch.push(meta);
+      }
+      // Sanfte Pause zwischen Abfragen (0.35s)
+      await new Promise(r => setTimeout(r, 350));
+    }
+
+    if (batch.length > 0) {
+      await supabase.from("cda_master_universe").upsert(batch, { onConflict: "ticker" });
+      log.info(`[reconcileMissingMetadata] ${batch.length} Ticker erfolgreich angereichert.`);
+    }
+    return batch.length;
+  } catch (err: any) {
+    log.warn(`[reconcileMissingMetadata] Fehler beim Reconcile: ${err.message}`);
+    return 0;
+  }
+}
+
 export function registerCdaTools(server: McpServer) {
   server.registerTool(
     "manage_chart_downloads",
@@ -371,13 +531,29 @@ export function registerCdaTools(server: McpServer) {
 
         if (successfulTickers.length > 0) {
           try {
-            const rows = successfulTickers.map((t: string) => ({
-              ticker: t,
-              has_parquet: true,
-              last_updated: new Date().toISOString(),
-            }));
+            const rows: any[] = [];
+            for (const t of successfulTickers) {
+              const meta = await fetchTickerMetadata(t);
+              if (meta) {
+                rows.push(meta);
+                const sStr = meta.shares_outstanding ? meta.shares_outstanding.toLocaleString("de-DE") : "N/A";
+                lines.push(`📊 ${t}: Metadaten automatisch ergänzt (Shares: ${sStr}, Währung: ${meta.currency || "N/A"})`);
+              } else {
+                rows.push({
+                  ticker: t,
+                  shares_outstanding: null,
+                  currency: null,
+                  eps: null,
+                  revenue: null,
+                  earnings: null,
+                  has_parquet: true,
+                  last_updated: new Date().toISOString(),
+                });
+                lines.push(`ℹ️ ${t}: In Master Universe registriert (Fundamentaldaten stehen noch aus).`);
+              }
+            }
             await supabase.from("cda_master_universe").upsert(rows, { onConflict: "ticker", ignoreDuplicates: false });
-            log.info(`[add_ticker] Synced ${successfulTickers.join(", ")} into cda_master_universe.`);
+            log.info(`[add_ticker] Synced and enriched ${successfulTickers.join(", ")} into cda_master_universe.`);
           } catch (upsertErr: any) {
             log.warn(`[add_ticker] Warning: could not upsert into cda_master_universe: ${upsertErr.message}`);
           }
@@ -451,7 +627,7 @@ export function registerCdaTools(server: McpServer) {
         "- COUNT: Liefert Gesamtstatistik des Master Universe (Gesamtanzahl Ticker, mit Parquet, mit Marktkapitalisierung, mit EPS/Umsatz).\n" +
         "- SYNC: Synchronisiert eine Liste von Tickern (oder alle lokalen Ticker) als 'has_parquet=true' in die cda_master_universe Tabelle.",
       inputSchema: {
-        action: z.enum(["GET", "UPDATE", "COUNT", "SYNC"]).describe("Die auszuführende Aktion: 'GET', 'UPDATE', 'COUNT', oder 'SYNC'"),
+        action: z.enum(["GET", "UPDATE", "COUNT", "SYNC", "RECONCILE"]).describe("Die auszuführende Aktion: 'GET', 'UPDATE', 'COUNT', 'SYNC', oder 'RECONCILE'"),
         ticker: z.string().optional().describe("Einzelner Ticker (z.B. AAPL) oder kommaseparierte Liste (AAPL,MSFT) bei GET/UPDATE."),
         tickers: z.array(z.string()).optional().describe("Array von Tickersymbolen für SYNC (Bulk-Upsert)."),
         utime: z.string().optional().describe("ISO-8601 Zeitstempel. Gültigkeitsbeginn der Daten. Bei Leer wird now() genutzt."),
@@ -461,11 +637,23 @@ export function registerCdaTools(server: McpServer) {
         revenue: z.number().optional().describe("Umsatz"),
         earnings: z.string().optional().describe("Datum der nächsten/letzten Earnings (UTC Zeitstempel)"),
         has_parquet: z.boolean().optional().describe("Gibt an, ob lokale Chartdaten vorliegen."),
-        chunk_size: z.number().optional().describe("Batch-Größe für Bulk-Sync (Standard: 500 oder UNIVERSE_SYNC_CHUNK_SIZE)"),
+        chunk_size: z.number().optional().describe("Batch-Größe für Bulk-Sync / Reconcile (Standard: 50 oder UNIVERSE_SYNC_CHUNK_SIZE)"),
       },
     },
     async ({ action, ticker, tickers, utime, currency, shares_outstanding, eps, revenue, earnings, has_parquet, chunk_size }: any) => {
       try {
+        if (action === "RECONCILE") {
+          const limitCount = chunk_size && chunk_size > 0 ? chunk_size : 50;
+          log.info(`[manage_ticker_metadata] RECONCILE requested (limit: ${limitCount})`);
+          const count = await reconcileMissingMetadata(limitCount);
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Reconciler abgeschlossen: ${count} Ticker ohne Metadaten erfolgreich geprüft und angereichert.`,
+            }],
+          };
+        }
+
         if (action === "COUNT") {
           log.info("[manage_ticker_metadata] COUNT requested");
           const [totalRes, parquetRes, sharesRes, epsRes, revRes] = await Promise.all([
@@ -542,11 +730,25 @@ export function registerCdaTools(server: McpServer) {
 
           log.info(`[manage_ticker_metadata] SYNC: Synchronisiere ${syncList.length} Ticker in Batches von ${effectiveChunk}...`);
           for (let i = 0; i < syncList.length; i += effectiveChunk) {
-            const batch = syncList.slice(i, i + effectiveChunk).map((t: string) => ({
-              ticker: t,
-              has_parquet: has_parquet !== undefined ? has_parquet : true,
-              last_updated: new Date().toISOString(),
-            }));
+            const currentSlice = syncList.slice(i, i + effectiveChunk);
+            const batch: any[] = [];
+            for (const t of currentSlice) {
+              const meta = await fetchTickerMetadata(t);
+              if (meta) {
+                batch.push(meta);
+              } else {
+                batch.push({
+                  ticker: t,
+                  shares_outstanding: null,
+                  currency: null,
+                  eps: null,
+                  revenue: null,
+                  earnings: null,
+                  has_parquet: has_parquet !== undefined ? has_parquet : true,
+                  last_updated: new Date().toISOString(),
+                });
+              }
+            }
 
             const { error } = await supabase
               .from("cda_master_universe")
@@ -576,7 +778,7 @@ export function registerCdaTools(server: McpServer) {
           log.info(`[manage_ticker_metadata] GET for tickers: ${tickersList.join(", ")}`);
           const { data, error } = await supabase
             .from("cda_master_universe")
-            .select("*")
+            .select("*, stock_documents(id, doc_type, title, fiscal_year, fiscal_quarter, report_date, relative_path, distillate_relative_path)")
             .in("ticker", tickersList);
           
           if (error) throw new Error(error.message);
@@ -616,4 +818,380 @@ export function registerCdaTools(server: McpServer) {
       }
     }
   );
+
+  // ── 5. manage_stock_documents ─────────────────────────────────────────
+  server.registerTool(
+    "manage_stock_documents",
+    {
+      title: "Manage Stock Documents & Distillates",
+      description:
+        "Verwaltet Finanzdokumente (Earnings Reports, SEC Filings 10-K/10-Q/8-K, Präsentationen, Transkripte) und deren strukturierte Markdown-Destillate (.distillate.md) im Ticker-Ordner von stock-data-node.\n\n" +
+        "DAS DOKUMENTEN- & DESTILLAT-SYSTEM:\n" +
+        "- Ticker-basierte Ablage: Jedes Dokument liegt unter stock-data-node/data/documents/{TICKER}/.\n" +
+        "- 'Destillat-First': Ein hochverdichtetes Markdown-Dokument fasst Schlüsselzahlen, Segmentdaten, Management-Aussagen und Guidance in sauberen Tabellen zusammen. Passt vollständig in das LLM-Context-Window ohne RAG-Chunking-Verluste.\n" +
+        "- Postgres GIN-Volltextsuche: Schnelle Volltextsuche über Titel, Dokumenttyp und den gesamten Inhalt aller Destillate.\n" +
+        "- Speicherortunabhängig: In der DB werden nur relative Pfade gespeichert; der Basisordner ist über DOCUMENTS_BASE_PATH konfigurierbar.\n\n" +
+        "AKTIONEN:\n" +
+        "- GET: Ruft Dokument-Metadaten, aufgelösten Dateipfad und das vollständige Markdown-Destillat ab (z.B. ticker: 'DELL' oder document_id: '...').\n" +
+        "- SEARCH: Durchsucht alle Dokumente und Destillate per Volltextsuche (z.B. query: 'AI server shipments backlog' oder 'cloud margin guidance'). Unterstützt Filter nach ticker, doc_type und fiscal_year.\n" +
+        "- LIST: Listet alle vorhandenen Dokumente eines Tickers chronologisch mit Typ, Datum, Dateigröße und Destillat-Status auf.\n" +
+        "- SCAN_FOLDER: Durchsucht den Ticker-Ordner nach neuen, noch nicht in der Datenbank registrierten Dateien (halbautomatischer Abgleich).\n" +
+        "- ADD: Registriert ein Dokument im Ticker-Ordner, berechnet die SHA-256 Checksumme und hinterlegt optional das Destillat.\n" +
+        "- CREATE_DISTILLATE: Erzeugt oder aktualisiert das Markdown-Destillat für ein registriertes Dokument.\n" +
+        "- DELETE: Löscht die Dokumentverknüpfung aus der Datenbank.\n\n" +
+        "WANN ZU NUTZEN: Immer wenn nach Unternehmensberichten, Quartalszahlen, Jahresabschlüssen, SEC Filings oder detaillierten Management-Aussagen/Guidance gefragt wird.",
+      inputSchema: {
+        action: z.enum(["ADD", "SCAN_FOLDER", "CREATE_DISTILLATE", "SEARCH", "GET", "LIST", "DELETE"]).describe("Die auszuführende Aktion: 'GET' (Abruf), 'SEARCH' (Volltextsuche), 'LIST' (Übersicht), 'SCAN_FOLDER' (Ordner-Scan), 'ADD' (Registrieren), 'CREATE_DISTILLATE' (Destillat anlegen), 'DELETE' (Löschen)."),
+        ticker: z.string().optional().describe("Aktien-Ticker (z.B. 'DELL', 'AAPL', 'NVDA'). Pflichtfeld bei ADD und SCAN_FOLDER, optionaler Filter bei SEARCH, GET und LIST."),
+        document_id: z.string().optional().describe("UUID des Dokuments in der Tabelle stock_documents (für GET, DELETE, CREATE_DISTILLATE)."),
+        file_path: z.string().optional().describe("Dateiname im Ticker-Ordner (z.B. 'DELL_2025_Q4_Earnings_Review.pdf') oder relativer/absoluter Quellpfad für ADD."),
+        doc_type: z.string().optional().describe("Dokumenttyp: '10-K', '10-Q', '8-K', 'earnings_release', 'presentation', 'transcript', 'other'."),
+        title: z.string().optional().describe("Titel des Berichts (z.B. '4Q FY25 Performance Review & Full Year Results')."),
+        fiscal_year: z.number().optional().describe("Geschäftsjahr des Berichts (z.B. 2025)."),
+        fiscal_quarter: z.string().optional().describe("Quartal des Berichts ('Q1', 'Q2', 'Q3', 'Q4', 'FY')."),
+        report_date: z.string().optional().describe("Veröffentlichungsdatum im Format YYYY-MM-DD."),
+        query: z.string().optional().describe("Suchbegriff für PostgreSQL GIN-Volltextsuche im Destillat und Titel (z.B. 'AI backlog', 'cloud margin')."),
+        distillate_content: z.string().optional().describe("Vollständiger Markdown-Text für das Destillat (.distillate.md) mit Kennzahlen-Tabellen und Zusammenfassung."),
+        create_distillate: z.boolean().optional().describe("Gibt an, ob bei ADD automatisch ein Destillat erzeugt/angelegt werden soll."),
+        limit: z.number().optional().describe("Maximale Anzahl an Rückgabe-Ergebnissen (Standard: 20 oder DOCUMENTS_SEARCH_LIMIT)."),
+      },
+    },
+    async (args: any) => {
+      const {
+        action,
+        ticker,
+        document_id,
+        file_path,
+        doc_type,
+        title,
+        fiscal_year,
+        fiscal_quarter,
+        report_date,
+        query,
+        distillate_content,
+        create_distillate,
+        limit
+      } = args || {};
+      try {
+        const getBasePath = (): string => {
+          const envPath = Deno.env.get("DOCUMENTS_BASE_PATH");
+          if (envPath && envPath.trim()) return envPath.trim();
+          try {
+            Deno.statSync("/data/documents");
+            return "/data/documents";
+          } catch (_e) {
+            return "/home/daniel/stock-data-node/data/documents";
+          }
+        };
+        const resolveAbsPath = (relPath: string): string => {
+          const base = getBasePath().replace(/\/+$/, "");
+          const cleanRel = relPath.replace(/^\/+/, "");
+          return `${base}/${cleanRel}`;
+        };
+        const computeSha256 = async (bytes: Uint8Array): Promise<string> => {
+          const hashBuf = await crypto.subtle.digest("SHA-256", bytes as any);
+          return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+        };
+
+        const defaultSearchLimit = Number(Deno.env.get("DOCUMENTS_SEARCH_LIMIT") || 20);
+        const effectiveLimit = limit && limit > 0 ? limit : defaultSearchLimit;
+
+        // ── AKTION: ADD ──
+        if (action === "ADD") {
+          if (!ticker || !ticker.trim()) throw new Error("Parameter 'ticker' ist für ADD erforderlich.");
+          if (!file_path || !file_path.trim()) throw new Error("Parameter 'file_path' ist für ADD erforderlich.");
+
+          const t = ticker.trim().toUpperCase();
+          const basePath = getBasePath();
+          const tickerDir = `${basePath}/${t}`;
+          try {
+            await Deno.mkdir(tickerDir, { recursive: true });
+          } catch (_e) {
+            // Ignorieren falls bereits existiert
+          }
+
+          const srcPath = file_path.trim();
+          const fileName = srcPath.split("/").pop() || `${t}_doc`;
+          const extParts = fileName.split(".");
+          const fileExt = extParts.length > 1 ? extParts.pop()!.toLowerCase() : "";
+          const baseName = extParts.join(".");
+          const destPath = `${tickerDir}/${fileName}`;
+
+          let fileBytes: Uint8Array;
+          try {
+            fileBytes = await Deno.readFile(destPath);
+          } catch (_e) {
+            try {
+              fileBytes = await Deno.readFile(srcPath);
+              if (srcPath !== destPath) {
+                try { await Deno.writeFile(destPath, fileBytes); } catch (_w) {}
+              }
+            } catch (readErr: any) {
+              throw new Error(`Datei '${fileName}' konnte nicht eingelesen werden: ${readErr.message}`);
+            }
+          }
+
+          const sha256 = await computeSha256(fileBytes);
+
+          const relativePath = `${t}/${fileName}`;
+          let distRelPath: string | null = null;
+          let distContent: string | null = distillate_content || null;
+
+          // Falls Destillat übergeben oder generiert werden soll
+          if (distContent) {
+            const distFileName = `${baseName}.distillate.md`;
+            const distDestPath = `${tickerDir}/${distFileName}`;
+            await Deno.writeTextFile(distDestPath, distContent);
+            distRelPath = `${t}/${distFileName}`;
+          }
+
+          const payload: any = {
+            ticker: t,
+            doc_type: doc_type || "other",
+            title: title || fileName.replace(/_/g, " "),
+            fiscal_year: fiscal_year || null,
+            fiscal_quarter: fiscal_quarter || null,
+            report_date: report_date || null,
+            relative_path: relativePath,
+            file_name: fileName,
+            file_extension: fileExt,
+            file_size_bytes: fileBytes.length,
+            sha256_hash: sha256,
+            distillate_relative_path: distRelPath,
+            distillate_content: distContent,
+            distillate_generated_at: distContent ? new Date().toISOString() : null,
+          };
+
+          const { data, error } = await supabase
+            .from("stock_documents")
+            .insert(payload)
+            .select("*")
+            .single();
+
+          if (error) throw new Error(error.message);
+
+          const result = {
+            ...data,
+            resolved_absolute_path: resolveAbsPath(data.relative_path),
+            resolved_distillate_path: data.distillate_relative_path ? resolveAbsPath(data.distillate_relative_path) : null,
+          };
+
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Dokument erfolgreich für ${t} registriert!\nID: ${data.id}\nPfad: ${result.resolved_absolute_path}\nDestillat: ${result.resolved_distillate_path || "Keines"}\nDetails: ${JSON.stringify(result, null, 2)}`
+            }]
+          };
+        }
+
+        // ── AKTION: SCAN_FOLDER ──
+        if (action === "SCAN_FOLDER") {
+          if (!ticker || !ticker.trim()) throw new Error("Parameter 'ticker' ist für SCAN_FOLDER erforderlich.");
+          const t = ticker.trim().toUpperCase();
+          const basePath = getBasePath();
+          const tickerDir = `${basePath}/${t}`;
+
+          let filesOnDisk: string[] = [];
+          try {
+            for await (const entry of Deno.readDir(tickerDir)) {
+              if (entry.isFile && !entry.name.endsWith(".distillate.md")) {
+                filesOnDisk.push(entry.name);
+              }
+            }
+          } catch (_e) {
+            filesOnDisk = [];
+          }
+
+          const { data: registeredDocs } = await supabase
+            .from("stock_documents")
+            .select("file_name, id, doc_type, report_date")
+            .eq("ticker", t);
+
+          const registeredSet = new Set((registeredDocs || []).map((d: any) => d.file_name));
+          const unregisteredFiles = filesOnDisk.filter(f => !registeredSet.has(f));
+
+          return {
+            content: [{
+              type: "text",
+              text: `Ordner-Scan für ${t} (${tickerDir}):\n` +
+                    `• Dateien im Dateisystem: ${filesOnDisk.length}\n` +
+                    `• Registrierte Dokumente in DB: ${(registeredDocs || []).length}\n` +
+                    `• Nicht registrierte Dateien: ${unregisteredFiles.length}\n\n` +
+                    JSON.stringify({
+                      ticker: t,
+                      folder: tickerDir,
+                      unregistered_files: unregisteredFiles,
+                      registered_documents: registeredDocs
+                    }, null, 2)
+            }]
+          };
+        }
+
+        // ── AKTION: CREATE_DISTILLATE ──
+        if (action === "CREATE_DISTILLATE") {
+          if (!document_id && (!ticker || !file_path)) {
+            throw new Error("Für CREATE_DISTILLATE ist entweder 'document_id' oder 'ticker' + 'file_path' erforderlich.");
+          }
+
+          let docRecord: any = null;
+          if (document_id) {
+            const { data, error } = await supabase.from("stock_documents").select("*").eq("id", document_id).single();
+            if (error) throw new Error(`Dokument nicht gefunden: ${error.message}`);
+            docRecord = data;
+          } else {
+            const t = ticker!.trim().toUpperCase();
+            const fileName = file_path!.split("/").pop();
+            const { data, error } = await supabase.from("stock_documents").select("*").eq("ticker", t).eq("file_name", fileName).single();
+            if (error) throw new Error(`Dokument nicht gefunden: ${error.message}`);
+            docRecord = data;
+          }
+
+          const t = docRecord.ticker;
+          const absPath = resolveAbsPath(docRecord.relative_path);
+          const basePath = getBasePath();
+          const tickerDir = `${basePath}/${t}`;
+
+          let distContent = distillate_content;
+          if (!distContent) {
+            try {
+              distContent = await Deno.readTextFile(absPath);
+            } catch (_e) {
+              distContent = `# ${t} Destillat: ${docRecord.title}\n\nAutomatisches Destillat erstellt am ${new Date().toISOString()}.\nOriginal-Datei: ${docRecord.file_name}`;
+            }
+          }
+
+          const baseName = docRecord.file_name.replace(/\.[^/.]+$/, "");
+          const distFileName = `${baseName}.distillate.md`;
+          const distDestPath = `${tickerDir}/${distFileName}`;
+          await Deno.writeTextFile(distDestPath, distContent);
+
+          const distRelPath = `${t}/${distFileName}`;
+          const { data: updated, error: updateErr } = await supabase
+            .from("stock_documents")
+            .update({
+              distillate_relative_path: distRelPath,
+              distillate_content: distContent,
+              distillate_generated_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", docRecord.id)
+            .select("*")
+            .single();
+
+          if (updateErr) throw new Error(updateErr.message);
+
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Destillat für Dokument ${docRecord.id} (${t}) erstellt!\nPfad: ${distDestPath}\nZeichen: ${distContent.length}`
+            }]
+          };
+        }
+
+        // ── AKTION: GET ──
+        if (action === "GET") {
+          if (!document_id && !ticker) {
+            throw new Error("Für GET ist mindestens 'document_id' oder 'ticker' erforderlich.");
+          }
+
+          let queryBuilder = supabase.from("stock_documents").select("*");
+          if (document_id) {
+            queryBuilder = queryBuilder.eq("id", document_id);
+          } else if (ticker) {
+            queryBuilder = queryBuilder.eq("ticker", ticker.trim().toUpperCase());
+          }
+
+          const { data, error } = await queryBuilder.limit(effectiveLimit);
+          if (error) throw new Error(error.message);
+
+          const enriched = (data || []).map((doc: any) => ({
+            ...doc,
+            resolved_absolute_path: resolveAbsPath(doc.relative_path),
+            resolved_distillate_path: doc.distillate_relative_path ? resolveAbsPath(doc.distillate_relative_path) : null,
+          }));
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(enriched, null, 2) }]
+          };
+        }
+
+        // ── AKTION: SEARCH ──
+        if (action === "SEARCH") {
+          let qb = supabase.from("stock_documents").select("*");
+
+          if (ticker) qb = qb.eq("ticker", ticker.trim().toUpperCase());
+          if (doc_type) qb = qb.eq("doc_type", doc_type.trim());
+          if (fiscal_year) qb = qb.eq("fiscal_year", fiscal_year);
+
+          if (query && query.trim()) {
+            qb = qb.textSearch("fts_vector", query.trim(), { type: "websearch" });
+          }
+
+          const { data, error } = await qb.limit(effectiveLimit);
+          if (error) throw new Error(error.message);
+
+          const results = (data || []).map((doc: any) => ({
+            id: doc.id,
+            ticker: doc.ticker,
+            title: doc.title,
+            doc_type: doc.doc_type,
+            fiscal_year: doc.fiscal_year,
+            fiscal_quarter: doc.fiscal_quarter,
+            report_date: doc.report_date,
+            resolved_absolute_path: resolveAbsPath(doc.relative_path),
+            resolved_distillate_path: doc.distillate_relative_path ? resolveAbsPath(doc.distillate_relative_path) : null,
+            distillate_snippet: doc.distillate_content ? doc.distillate_content.slice(0, 300) + "..." : null,
+          }));
+
+          return {
+            content: [{
+              type: "text",
+              text: `Gefundene Dokumente (${results.length}):\n` + JSON.stringify(results, null, 2)
+            }]
+          };
+        }
+
+        // ── AKTION: LIST ──
+        if (action === "LIST") {
+          let qb = supabase.from("stock_documents").select("id, ticker, doc_type, title, fiscal_year, fiscal_quarter, report_date, file_name, file_size_bytes, distillate_relative_path, created_at");
+          if (ticker) qb = qb.eq("ticker", ticker.trim().toUpperCase());
+          if (doc_type) qb = qb.eq("doc_type", doc_type.trim());
+          if (fiscal_year) qb = qb.eq("fiscal_year", fiscal_year);
+
+          const { data, error } = await qb.order("report_date", { ascending: false }).limit(effectiveLimit);
+          if (error) throw new Error(error.message);
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(data || [], null, 2) }]
+          };
+        }
+
+        // ── AKTION: DELETE ──
+        if (action === "DELETE") {
+          if (!document_id) throw new Error("Für DELETE ist 'document_id' erforderlich.");
+          const { error } = await supabase.from("stock_documents").delete().eq("id", document_id);
+          if (error) throw new Error(error.message);
+
+          return {
+            content: [{ type: "text", text: `✅ Dokument ${document_id} erfolgreich aus der Datenbank gelöscht.` }]
+          };
+        }
+
+        return { content: [{ type: "text", text: "Unbekannte Aktion für manage_stock_documents" }], isError: true };
+      } catch (err: any) {
+        log.error(`manage_stock_documents failed: ${err.message}`);
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Autonomer Reconciler-Loop (Self-Healing Safety Net) ──────────────
+  const reconcileIntervalSec = Number(Deno.env.get("METADATA_RECONCILE_INTERVAL_SEC") || 900);
+  if (reconcileIntervalSec > 0) {
+    setInterval(() => {
+      reconcileMissingMetadata(50).catch(err => log.error(`[cda.ts] Background metadata reconcile failed: ${err.message}`));
+    }, reconcileIntervalSec * 1000);
+    log.info(`[registerCdaTools] Background metadata reconciler aktiv (Intervall: ${reconcileIntervalSec}s).`);
+  }
 }
+

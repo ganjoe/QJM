@@ -104,6 +104,51 @@ def _column_to_indicator_spec(column: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _de_num(value: float, decimals: int = 2) -> str:
+    """Zahl mit deutschem Format: Komma als Dezimal-, Punkt als Tausendertrenner."""
+    text = f"{value:,.{decimals}f}"
+    # Separatoren ueber einen Platzhalter tauschen, damit sie sich nicht ueberschreiben
+    return text.replace(",", "\u00a0").replace(".", ",").replace("\u00a0", ".")
+
+
+def _compact_number(value: float, currency: bool = False) -> str:
+    """Grosse Zahlen kompakt darstellen: 1080860352.96 -> '1,08 Mrd. $'."""
+    sign = "-" if value < 0 else ""
+    amount = abs(value)
+    for limit, suffix in ((1e12, "Bio."), (1e9, "Mrd."), (1e6, "Mio."), (1e3, "Tsd.")):
+        if amount >= limit:
+            scaled = f"{amount / limit:.2f}".rstrip("0").rstrip(".")
+            scaled = scaled.replace(".", ",")
+            return f"{sign}{scaled} {suffix}{' $' if currency else ''}"
+    return f"{sign}{_de_num(amount, 0)}{' $' if currency else ''}"
+
+
+def _format_metric_value(col_name: str, calc_type: Optional[str], value: Any) -> str:
+    """Topbar-Wert typabhaengig formatieren.
+
+    Die Registry kennt kein Einheiten-Feld, daher wird aus calc_type und
+    Spaltenname abgeleitet: Volumen als kompakte Waehrung, ADR/_pct als Prozent,
+    Ratings/Scores/Zaehler ganzzahlig, alles andere mit zwei Nachkommastellen.
+    """
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    name = (col_name or "").lower()
+    ctype = (calc_type or "").upper()
+
+    if "dollar_volume" in name or "volume" in name:
+        return _compact_number(num, currency=True)
+    if ctype.startswith("ADR") or name.endswith("_pct"):
+        return f"{_de_num(num)} %"
+    # Ratings, Scores und Stueckzahlen (z. B. breadth_minervini ist eine Anzahl)
+    if ctype in ("IBD_RS", "MINERVINI_TREND", "BREADTH_MINERVINI", "DAYS_BACK") \
+            or name in ("ibd_rs", "minervini"):
+        return str(int(round(num)))
+    return _de_num(num)
+
+
 def build_display_stock(
     symbol: str,
     indicators: Optional[List[Dict[str, Any]]] = None,
@@ -152,6 +197,7 @@ def build_display_stock(
 
     # Build alias lookup: canonical_id → old Parquet column name (for transition period)
     alias_map = {}
+    label_map: Dict[str, tuple] = {}   # canonical_id/alias -> (display_name, calc_type)
     try:
         registry = _pca_get("/api/features/registry")
         for f in registry.get("features", []):
@@ -159,6 +205,11 @@ def build_display_stock(
             alias = f.get("alias", "")
             if cid and alias and cid != alias:
                 alias_map[cid] = alias
+            # Label + calc_type je Feature, adressierbar ueber canonical_id UND alias
+            if cid:
+                label_map[cid] = (f.get("display_name") or cid, f.get("calc_type"))
+            if alias:
+                label_map[alias] = (f.get("display_name") or alias, f.get("calc_type"))
     except Exception:
         pass  # Registry unavailable, proceed without alias resolution
 
@@ -217,10 +268,18 @@ def build_display_stock(
     otf_ema_styles = {}
     otf_bb_styles = {}
     otf_adr_pct_styles = {}
+    otf_panes = {}   # result_col -> pane (nur wenn vom Preset vorgegeben)
 
     for ind in indicators:
         col = ind.get("column", "")
         style = ind.get("style", {})
+
+        # Ziel-Pane: 'main' = Chartfenster-Overlay, sonst eigene Subpane.
+        # 'none' = reine Topbar-Metrik -> kein Overlay zeichnen.
+        pane_target = ind.get("pane") or "main"
+        if str(pane_target).strip().lower() == "none":
+            continue
+        pane_target = str(pane_target).strip().lower()
 
         # Resolve column name (canonical_id → alias fallback for old Parquet names)
         resolved = resolve_column(col)
@@ -248,7 +307,7 @@ def build_display_stock(
                         "type": "band",
                         "style": {"color": style.get("color", "#26A69A"), "alpha": style.get("alpha", 30)},
                         "values": band_values,
-                        "pane": ind.get("pane", "main"),
+                        "pane": pane_target,
                     })
                 continue
 
@@ -270,7 +329,7 @@ def build_display_stock(
                 "type": style.get("type", "line"),
                 "style": style,
                 "values": line_values,
-                "pane": ind.get("pane", "main"),
+                "pane": pane_target,
                 "origin": ind.get("origin", "bottom"),
             })
         else:
@@ -280,15 +339,18 @@ def build_display_stock(
                 if spec["indicator_type"] == "SMA":
                     otf_sma_periods.append(spec["period"])
                     otf_sma_styles[spec["result_col"]] = style
+                    otf_panes[spec["result_col"]] = pane_target
                 elif spec["indicator_type"] == "EMA":
                     otf_ema_periods.append(spec["period"])
                     otf_ema_styles[spec["result_col"]] = style
+                    otf_panes[spec["result_col"]] = pane_target
                 elif spec["indicator_type"] == "BOLLINGER":
                     otf_bb_periods.append(spec["period"])
                     otf_bb_styles[spec["period"]] = style
                 elif spec["indicator_type"] == "ADR_PCT":
                     otf_adr_pct_periods.append(spec["period"])
                     otf_adr_pct_styles[spec["result_col"]] = style
+                    otf_panes[spec["result_col"]] = pane_target
             else:
                 logger.warning("Indicator column '%s' not in Parquet and not calculable on-the-fly, skipping.", col)
 
@@ -305,7 +367,7 @@ def build_display_stock(
                     "type": style.get("type", "line"),
                     "style": style,
                     "values": line_values,
-                    "pane": "adr",
+                    "pane": otf_panes.get(col_name, "adr"),
                     "origin": "bottom",
                 })
         except Exception as e:
@@ -374,11 +436,14 @@ def build_display_stock(
         if resolved_metric:
             val = last_row[col_idx[resolved_metric]]
             if val is not None:
-                display_name = metric_col.replace("_", " ").title()
-                if isinstance(val, float):
-                    topbar_parts.append(f"{display_name}: {val:.2f}")
-                else:
-                    topbar_parts.append(f"{display_name}: {val}")
+                # Label aus der Feature-Registry (display_name), sonst Fallback
+                label, ctype = label_map.get(
+                    metric_col,
+                    label_map.get(resolved_metric, (metric_col.replace("_", " ").title(), None)),
+                )
+                topbar_parts.append(
+                    f"{label}: {_format_metric_value(resolved_metric, ctype, val)}"
+                )
         elif metric_col == "days_back":
             try:
                 source_col = "breadth_40_pct" if "breadth_40_pct" in col_idx else "close"
@@ -391,7 +456,8 @@ def build_display_stock(
                 latest_db = db_res.get("latest_values", {}).get("days_back")
                 if latest_db is not None:
                     sign = "+" if latest_db > 0 else ""
-                    topbar_parts.append(f"Days Back: {sign}{int(latest_db)}")
+                    label = label_map.get("days_back", ("Days Back", None))[0]
+                    topbar_parts.append(f"{label}: {sign}{int(latest_db)}")
             except Exception as e:
                 logger.warning("Could not calculate live days_back for topbar: %s", e)
 

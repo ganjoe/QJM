@@ -15,7 +15,6 @@ from chart_viewer.core.state_manager import StateManager
 from chart_viewer.core.backpressure import TickCoalescer
 from chart_viewer.ui.window import ChartWindow
 from chart_viewer.ui.watchlist_window import WatchlistWindow
-from chart_viewer.models.entities import WindowState, Timeframe
 
 logger = logging.getLogger(__name__)
 
@@ -220,15 +219,6 @@ class ViewerApp(QObject):
             self.windows[win_id] = win
 
 
-            # Register in EventHub
-            ws = WindowState(
-                window_id=win_id,
-                symbol=payload.get("symbol", ""),
-                timeframe=Timeframe(unit="D", multiplier=1),
-                sync_group_id=payload.get("sync_group_id"),
-            )
-            self.event_hub.register_window(ws)
-
             # Connect window signals
             win.window_closed_signal.connect(self._on_window_closed)
             win.geometry_changed_signal.connect(self._on_window_geometry_changed)
@@ -239,7 +229,7 @@ class ViewerApp(QObject):
             self.event_hub.register_for_flag(win.color_flag, win.request_symbol_change)
 
             win.canvas.crosshair_moved.connect(
-                lambda ts, idx, w_id=win_id: self.event_hub.broadcast_crosshair(w_id, ts, idx)
+                lambda ts, idx, w_id=win_id: self._on_crosshair_moved(w_id, ts, idx)
             )
             win.canvas.annotation_moved.connect(
                 lambda ann_id, updated, w_id=win_id: self._send_annotation_moved(w_id, ann_id, updated)
@@ -415,8 +405,16 @@ class ViewerApp(QObject):
                 last_bar.low = min(last_bar.low, price)
                 self.windows[win_id].canvas.mark_layers_dirty()
 
+    def _on_crosshair_moved(self, window_id: str, timestamp: int, bar_index: int) -> None:
+        """Local mouse move: broadcast with the authoritative sync_group_id."""
+        win_data = self.state_manager.get_window_data(window_id)
+        source_group = win_data.sync_group_id if win_data else None
+        self.event_hub.broadcast_crosshair(
+            window_id, timestamp, source_sync_group_id=source_group
+        )
+
     def _on_crosshair_broadcast_received(self, payload: dict) -> None:
-        """Crosshair sync routing through EventHub with downtime clamping (Section 4)."""
+        """Crosshair sync routing: explicit group match + index-based clamping."""
         source_id = payload["source_window_id"]
         source_group = payload.get("sync_group_id")
         timestamp = payload["timestamp"]
@@ -425,31 +423,28 @@ class ViewerApp(QObject):
             if win_id == source_id:
                 continue
 
-            target_ws = self.event_hub.get_window(win_id)
-            if not target_ws or target_ws.sync_group_id != source_group:
-                # Different sync group -> ignore
+            target_data = self.state_manager.get_window_data(win_id)
+            if not target_data:
                 continue
 
-            target_data = self.state_manager.get_window_data(win_id)
-            if not target_data or not target_data.bars:
-                win.canvas._apply_crosshair("main", -1.0, -1.0)
+            target_group = target_data.sync_group_id
+            # Explicit match only: both sides must carry the same non-None group.
+            if not source_group or not target_group or target_group != source_group:
+                continue
+
+            if not target_data.bars:
+                win.canvas._apply_crosshair_remote(None)
                 win.canvas.update()
                 continue
 
-            available_ts = target_data.get_bar_timestamps()
-            clamped_ts = EventHub.clamp_timestamp_to_available_bars(timestamp, available_ts)
-
-            if clamped_ts is None:
+            nearest = EventHub.nearest_bar(target_data.get_bar_timestamps(), timestamp)
+            if nearest is None:
                 # Out of loaded range -> crosshair disappears (Section 4)
-                win.canvas._apply_crosshair("main", -1.0, -1.0)
+                win.canvas._apply_crosshair_remote(None)
             else:
-                # Calculate pixel X for clamped timestamp
-                duration = target_data.timeframe.to_seconds() if target_data.timeframe else 86400
-                bar_idx = (clamped_ts - target_data.bars[0].t_open) / duration
-                px_x = win.canvas.x_trans.bar_to_x(bar_idx)
-                # Keep target Y at center
-                curr_y = win.canvas.height() / 2.0
-                win.canvas._apply_crosshair("main", px_x, curr_y)
+                _, idx = nearest
+                px_x = win.canvas.x_trans.bar_to_x(float(idx))
+                win.canvas._apply_crosshair_remote(px_x)
 
             win.canvas.update()
 
@@ -461,7 +456,6 @@ class ViewerApp(QObject):
                 self.event_hub.unregister_for_flag(flag, win.request_symbol_change)
             self.windows.pop(window_id)
             
-        self.event_hub.unregister_window(window_id)
         self.state_manager.remove_window(window_id)
 
         self._send_window_closed(window_id)

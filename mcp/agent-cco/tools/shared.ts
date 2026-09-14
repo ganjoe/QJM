@@ -34,6 +34,18 @@ export const EMBEDDING_BATCH_SIZE = parseInt(Deno.env.get("EMBEDDING_BATCH_SIZE"
 export const AUTO_START_WORKERS = Deno.env.get("AUTO_START_WORKERS") !== "false";
 export const X_INITIAL_BACKFILL_LIMIT = parseInt(Deno.env.get("X_INITIAL_BACKFILL_LIMIT") || "200");
 export const X_INITIAL_SYNC_CONCURRENCY = parseInt(Deno.env.get("X_INITIAL_SYNC_CONCURRENCY") || "2");
+// Günstiger Liveness-Check vor jedem Timeline-Fetch (spart ~95% der TwitterAPI.io-Kosten)
+export const X_LIVENESS_CHECK = Deno.env.get("X_LIVENESS_CHECK") !== "false";
+
+// --- X-Ingestion Modus ---
+// "search"   = advanced_search mit since_time (Abrechnung pro geliefertem Tweet, ~$0.05/Tag)
+// "timeline" = user/tweet_timeline + Liveness-Check (Abrechnung pro 20er-Page)
+export const X_INGESTION_MODE = (Deno.env.get("X_INGESTION_MODE") || "search").toLowerCase();
+export const X_SEARCH_INTERVAL_SEC = parseInt(Deno.env.get("X_SEARCH_INTERVAL_SEC") || "3600");
+export const X_SEARCH_OVERLAP_SEC = parseInt(Deno.env.get("X_SEARCH_OVERLAP_SEC") || "900");
+export const X_SEARCH_MAX_CATCHUP_SEC = parseInt(Deno.env.get("X_SEARCH_MAX_CATCHUP_SEC") || "86400");
+export const X_RECONCILE_INTERVAL_SEC = parseInt(Deno.env.get("X_RECONCILE_INTERVAL_SEC") || "604800");
+export const X_RECONCILE_LIMIT = parseInt(Deno.env.get("X_RECONCILE_LIMIT") || "2000");
 
 // --- Database Client ---
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);

@@ -311,9 +311,9 @@ export async function runCompanyExtractionLoop() {
       // Find videos with transcripts where companies has not been extracted yet
       const { data: candidates, error } = await supabase
         .from("yt_videos")
-        .select("video_id, title, channel, published_at, transcript, companies")
+        .select("video_id, title, channel, upload_date, transcript, companies")
         .not("transcript", "is", null)
-        .order("published_at", { ascending: false, nullsFirst: false })
+        .order("upload_date", { ascending: false, nullsFirst: false })
         .limit(batchLimit * 10);
 
       if (error) throw error;

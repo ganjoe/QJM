@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { WorkerManager } from "../workers/worker_manager.ts";
-import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY } from "./shared.ts";
+import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY, X_DISCOVERY_INTERVAL_SEC, X_LIVENESS_CHECK, X_INGESTION_MODE, X_SEARCH_INTERVAL_SEC, X_RECONCILE_INTERVAL_SEC } from "./shared.ts";
 
 export function registerPipelineTools(server: McpServer) {
   const manager = WorkerManager.getInstance();
@@ -53,6 +53,13 @@ export function registerPipelineTools(server: McpServer) {
             ``,
             `⚙️ Worker Durchsatz & Status:`,
             `  • X Ingestion: ${status.pipeline.x_ingestion.running ? 'LÄUFT 🟢' : 'GESTOPPT 🔴'} (Zyklen: ${status.pipeline.x_ingestion.cycle_count}, Ingested: ${status.pipeline.x_ingestion.total_ingested})`,
+            `    └ Modus: ${X_INGESTION_MODE === 'timeline' ? `Timeline (${X_DISCOVERY_INTERVAL_SEC}s, Liveness ${X_LIVENESS_CHECK ? 'an' : 'aus'})` : `Suche (${X_SEARCH_INTERVAL_SEC}s) + Timeline-Abgleich alle ${Math.round(X_RECONCILE_INTERVAL_SEC / 3600)}h`}`,
+            `    └ Letzter Zyklus: ${status.pipeline.x_ingestion.cost?.last_search_saved ?? status.pipeline.x_ingestion.cost?.last_cycle_users_synced ?? 0} neue Posts, ${status.pipeline.x_ingestion.cost?.last_cycle_tweets_fetched ?? 0} Tweets geladen, ~${status.pipeline.x_ingestion.cost?.last_cycle_credits ?? 0} Credits (~$${(((status.pipeline.x_ingestion.cost?.last_cycle_credits ?? 0) / 100000)).toFixed(4)})`,
+            `    └ Suchfenster ab: ${status.pipeline.x_ingestion.persisted_state?.search_since_iso || status.pipeline.x_ingestion.cost?.last_search_since || 'n/a'} | Suche-Fehler: ${status.pipeline.x_ingestion.cost?.last_search_failed ?? 0}`,
+            `    └ Letzter Timeline-Abgleich: ${status.pipeline.x_ingestion.persisted_state?.last_reconcile_iso || 'noch keiner'}`,
+            `    └ Nächster Abgleich fällig: ${status.pipeline.x_ingestion.persisted_state?.last_reconcile ? new Date(status.pipeline.x_ingestion.persisted_state.last_reconcile + X_RECONCILE_INTERVAL_SEC * 1000).toLocaleString('de-DE') : 'sofort (Erstlauf)'}`,
+            `    └ Kumuliert seit Container-Start: ${status.pipeline.x_ingestion.cost?.total_tweets_fetched ?? 0} Tweets, ~${status.pipeline.x_ingestion.cost?.total_credits ?? 0} Credits (~$${(((status.pipeline.x_ingestion.cost?.total_credits ?? 0) / 100000)).toFixed(4)})`,
+            `    └ Hochrechnung: ~$${(((status.pipeline.x_ingestion.cost?.last_cycle_credits ?? 0) / 100000) * (86400 / (X_INGESTION_MODE === 'timeline' ? X_DISCOVERY_INTERVAL_SEC : X_SEARCH_INTERVAL_SEC))).toFixed(2)}/Tag (letzter Zyklus) | ~$${((status.pipeline.x_ingestion.uptime_ms ?? 0) > 600000 ? ((status.pipeline.x_ingestion.cost?.total_credits ?? 0) / 100000) / ((status.pipeline.x_ingestion.uptime_ms ?? 1) / 86400000) : 0).toFixed(2)}/Tag (Schnitt seit Start)`,
             `  • YouTube Worker: ${status.pipeline.youtube_worker.running ? 'LÄUFT 🟢' : 'GESTOPPT 🔴'} (Discovered: ${status.pipeline.youtube_worker.videos_discovered}, Downloaded: ${status.pipeline.youtube_worker.transcripts_downloaded || 0}, Processed: ${status.pipeline.youtube_worker.videos_processed}, Chunks: ${status.pipeline.youtube_worker.chunks_processed || 0})`,
             `  • Company & Ticker Extractor: ${status.pipeline.company_extraction?.running ? 'LÄUFT 🟢' : 'GESTOPPT 🔴'} (Videos: ${status.pipeline.company_extraction?.videos_scanned || 0}, Firmen: ${status.pipeline.company_extraction?.companies_extracted || 0}, Ticker gelöst: ${status.pipeline.company_extraction?.tickers_resolved || 0}, Failed: ${status.pipeline.company_extraction?.tickers_failed || 0})`,
             ``,

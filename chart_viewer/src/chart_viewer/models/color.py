@@ -27,7 +27,7 @@ def resolve_bar_color(
        - Up: Blue hollow (1px border)
        - Down: Magenta filled (1px border)
     """
-    cfg = config
+    cfg = config or ViewerConfig()
     is_up = bar.close >= bar.open
 
     # Tier 3: Global Defaults

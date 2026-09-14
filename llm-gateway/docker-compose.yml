@@ -72,7 +72,22 @@ services:
       TWITTER_API_IO_KEY: ${TWITTER_API_IO_KEY}
       X_CLIENT_ID: ${X_CLIENT_ID}
       X_CLIENT_SECRET: ${X_CLIENT_SECRET}
-      X_DISCOVERY_INTERVAL_SEC: "900"
+      # --- X-Ingestion Kostensteuerung ---
+      # Modus "search": advanced_search mit since_time -> Abrechnung nur pro
+      # geliefertem Tweet (~$0.05/Tag statt ~$18/Tag im alten 15-min-Timeline-Betrieb).
+      # Modus "timeline": alter Pfad (20er-Page pro Influencer, Liveness-optimiert).
+      X_INGESTION_MODE: "search"
+      # Suchlauf-Intervall = maximale Aktualität (Kosten sind volumen-, nicht abfrageabhängig)
+      X_SEARCH_INTERVAL_SEC: "3600"
+      # Überlappung gegen Grenz-/Index-Lücken
+      X_SEARCH_OVERLAP_SEC: "900"
+      # Sicherheitsnetz: vollständiger Timeline-Abgleich (holt Suchindex-Lücken nach)
+      X_RECONCILE_INTERVAL_SEC: "604800"
+      # Ab diesem Rückstand übernimmt der Abgleich, die Suche holt nur das letzte Fenster
+      X_SEARCH_MAX_CATCHUP_SEC: "86400"
+      # Nur für X_INGESTION_MODE=timeline relevant:
+      X_DISCOVERY_INTERVAL_SEC: "21600"
+      X_LIVENESS_CHECK: "true"
       X_MIN_REQUEST_DELAY_MS: "2500"
       MAX_CONCURRENT_METADATA_WORKERS: "4"
       MAX_CONCURRENT_YT_CHANNELS: "3"
@@ -240,11 +255,13 @@ services:
       - ../mcp/agent-cda/deno.json:/app/deno.json:ro
       - ../mcp/agent-cda/index.ts:/app/index.ts:ro
       - ../mcp/agent-cda/tools:/app/tools:ro
+      - /home/daniel/stock-data-node/data/documents:/data/documents:rw
     environment:
       SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
       MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
       STOCK_DATA_NODE_URL: http://stock-data-node:8002
+      DOCUMENTS_BASE_PATH: ${DOCUMENTS_BASE_PATH:-/data/documents}
       PORT: "8795"
       AGENT_ID: "cda"
     ports:

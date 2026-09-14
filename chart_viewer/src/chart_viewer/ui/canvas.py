@@ -28,7 +28,7 @@ Y_AXIS_WIDTH = 70.0
 class ChartCanvas(QWidget):
     """Multi-pane chart canvas with shared X-axis and per-pane Y-axes."""
 
-    crosshair_moved = Signal(int, float)  # (timestamp, bar_index_fraction)
+    crosshair_moved = Signal(int, int)  # (timestamp, bar_index)
     annotation_moved = Signal(str, dict)  # (annotation_id, updated_anchors)
     data_request_more = Signal()
     axis_mode_forced = Signal(str)
@@ -276,13 +276,21 @@ class ChartCanvas(QWidget):
         self._apply_crosshair(source_pane_id, x_px, y_px)
         if x_px < 0:
             return
+        self._broadcast_crosshair_from_x(x_px)
 
-        # Emit crosshair_moved for inter-window sync
-        if self.window_data and self.window_data.bars:
-            bar_idx = self.x_trans.x_to_bar(x_px)
-            duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
-            ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
-            self.crosshair_moved.emit(ts, bar_idx)
+    def _broadcast_crosshair_from_x(self, x_px: float) -> None:
+        """Snap the cursor to the nearest real bar and emit its timestamp + index.
+
+        Uses the actual bar t_open (never a nominal duration), so the emitted timestamp
+        is a real bar timestamp regardless of downtime/weekend gaps or unit scale.
+        """
+        if not self.window_data or not self.window_data.bars:
+            return
+        bar_idx = self.x_trans.x_to_bar(x_px)
+        snapped = int(round(bar_idx))
+        snapped = max(0, min(len(self.window_data.bars) - 1, snapped))
+        ts = self.window_data.bars[snapped].t_open
+        self.crosshair_moved.emit(ts, snapped)
 
     def _apply_crosshair(self, source_pane_id: str, x_px: float, y_px: float) -> None:
         """Render crosshair locally WITHOUT re-broadcasting (for incoming inter-window sync)."""
@@ -296,6 +304,11 @@ class ChartCanvas(QWidget):
         for pane_id, pane in self._panes.items():
             is_active = (pane_id == source_pane_id)
             pane.set_crosshair(x_px, y_px if is_active else None, is_active)
+
+    def _apply_crosshair_remote(self, x_px: Optional[float]) -> None:
+        """Apply an inter-window sync: vertical line only, no active pane, no Y."""
+        for pane in self._panes.values():
+            pane.set_crosshair(x_px, None, False)
 
     def mark_layers_dirty(self) -> None:
         """Mark all panes dirty for repaint."""
@@ -313,9 +326,30 @@ class ChartCanvas(QWidget):
         self.mark_layers_dirty()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             # Shift+Wheel → delegate to the pane under cursor for Y-zoom
             super().wheelEvent(event)
+            return
+
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+Wheel → horizontal scroll (pan along X-axis)
+            angle = event.angleDelta().y()
+            if angle == 0:
+                angle = event.angleDelta().x()
+            if angle != 0:
+                notches = angle / 120.0
+                bars_per_notch = getattr(self.config, "wheel_scroll_step_bars", 5.0)
+                # Rolling wheel UP (angle > 0) -> scroll to the left (history / back in time): delta < 0
+                # Rolling wheel DOWN (angle < 0) -> scroll to the right (future / latest bar): delta > 0
+                delta = -notches * bars_per_notch
+                changed = self.x_trans.pan_bars(delta)
+                if changed:
+                    self._update_all_y_ranges()
+                    self.mark_layers_dirty()
+                    if self.window_data and self.window_data.bars:
+                        if self.x_trans.should_request_more_data(0.0):
+                            self.data_request_more.emit()
+            event.accept()
             return
 
         # Regular wheel → X-axis zoom (shared)
@@ -365,13 +399,8 @@ class ChartCanvas(QWidget):
             if self.x_trans.should_request_more_data(0.0):
                 self.data_request_more.emit()
 
-        # Crosshair broadcast
-        pos = event.position()
-        bar_idx = self.x_trans.x_to_bar(pos.x())
-        if self.window_data and self.window_data.bars:
-            duration = self.window_data.timeframe.to_seconds() if self.window_data.timeframe else 86400
-            ts = int(self.window_data.bars[0].t_open + bar_idx * duration)
-            self.crosshair_moved.emit(ts, bar_idx)
+        # Crosshair broadcast (single path, index-based)
+        self._broadcast_crosshair_from_x(event.position().x())
 
         super().mouseMoveEvent(event)
 

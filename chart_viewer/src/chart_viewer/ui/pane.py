@@ -652,9 +652,12 @@ class ChartPane(QWidget):
 
         painter.save()
         painter.setClipRect(0, 0, int(chart_w), int(chart_h))
+        if getattr(self.config, "enable_antialiasing", True):
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         min_vis_idx = max(0.0, self.x_trans.x_to_bar(0.0) - 2.0)
         max_vis_idx = self.x_trans.x_to_bar(chart_w) + 2.0
+        min_width_cfg = getattr(self.config, "min_indicator_line_width_px", 4)
 
         for item in indexed_ovs.values():
             ov = item["overlay"]
@@ -675,18 +678,33 @@ class ChartPane(QWidget):
 
             if ov_type == "line":
                 pen = QPen(color)
-                pen.setWidth(style.get("width", 2))
+                raw_width = style.get("width", min_width_cfg)
+                line_width = max(min_width_cfg, int(raw_width))
+                pen.setWidth(line_width)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                 painter.setPen(pen)
 
-                points = []
+                # Segment points to respect gaps (None values) cleanly
+                segments: List[List[QPointF]] = []
+                current_seg: List[QPointF] = []
                 for idx, val, _ in vis_pts:
                     if val is not None:
                         x = self.x_trans.bar_to_x(idx)
                         y = self.y_trans.price_to_y(val)
-                        points.append(QPointF(x, y))
+                        current_seg.append(QPointF(x, y))
+                    else:
+                        if current_seg:
+                            segments.append(current_seg)
+                            current_seg = []
+                if current_seg:
+                    segments.append(current_seg)
 
-                for j in range(len(points) - 1):
-                    painter.drawLine(points[j], points[j + 1])
+                for seg in segments:
+                    if len(seg) > 1:
+                        painter.drawPolyline(seg)
+                    elif len(seg) == 1:
+                        painter.drawPoint(seg[0])
 
             elif ov_type == "band":
                 band_color = QColor(color)
@@ -880,7 +898,7 @@ class ChartPane(QWidget):
         self.mark_dirty()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             angle = event.angleDelta().y()
             # Wheel UP (angle > 0) zooms in (candles grow taller, headroom decreases)
             # Wheel DOWN (angle < 0) zooms out (candles compress down, headroom increases)
@@ -890,5 +908,5 @@ class ChartPane(QWidget):
             self.mark_dirty()
             self.y_scale_changed.emit()
         else:
-            # Forward to parent for X-axis zoom
+            # Forward to parent for X-axis zoom or Ctrl+wheel scroll
             super().wheelEvent(event)

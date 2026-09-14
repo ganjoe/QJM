@@ -52,6 +52,7 @@ export class WorkerManager {
       { count: ytEmbeddedVideos },
       { count: ytEmbeddedChunks },
       { count: ytFailedVideos },
+      { data: ingestionStateRow },
     ] = await Promise.all([
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("status", "pending_metadata"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).or("status.eq.pending_embedding,status.eq.pending"),
@@ -64,6 +65,7 @@ export class WorkerManager {
       supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "embedded"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "yt_chunk"),
       supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "failed"),
+      supabase.from("system_settings").select("value").eq("key", "x_ingestion_state").single(),
     ]);
 
     return {
@@ -74,6 +76,36 @@ export class WorkerManager {
           total_ingested: xIngestionStats.totalPostsIngested,
           last_run: xIngestionStats.lastRunTime ? new Date(xIngestionStats.lastRunTime).toISOString() : null,
           last_error: xIngestionStats.lastError,
+          uptime_ms: xIngestionStats.startTime ? Date.now() - xIngestionStats.startTime : 0,
+          cost: {
+            last_cycle_tweets_fetched: xIngestionStats.lastCycleTweetsFetched,
+            last_cycle_users_checked: xIngestionStats.lastCycleUsersChecked,
+            last_cycle_users_synced: xIngestionStats.lastCycleUsersSynced,
+            last_cycle_credits: xIngestionStats.lastCycleCredits,
+            total_tweets_fetched: xIngestionStats.totalTweetsFetched,
+            total_credits: xIngestionStats.totalCredits,
+            last_search_saved: xIngestionStats.lastSearchSaved,
+            last_search_failed: xIngestionStats.lastSearchFailed,
+            last_search_since: xIngestionStats.lastSearchSince
+              ? new Date(xIngestionStats.lastSearchSince * 1000).toISOString()
+              : null,
+            last_reconcile_saved: xIngestionStats.lastReconcileSaved,
+            last_reconcile_at: xIngestionStats.lastReconcileAt
+              ? new Date(xIngestionStats.lastReconcileAt).toISOString()
+              : null,
+          },
+          persisted_state: ingestionStateRow?.value
+            ? {
+              search_since: Number((ingestionStateRow.value as any).search_since) || 0,
+              search_since_iso: Number((ingestionStateRow.value as any).search_since)
+                ? new Date(Number((ingestionStateRow.value as any).search_since) * 1000).toISOString()
+                : null,
+              last_reconcile: Number((ingestionStateRow.value as any).last_reconcile) || 0,
+              last_reconcile_iso: Number((ingestionStateRow.value as any).last_reconcile)
+                ? new Date(Number((ingestionStateRow.value as any).last_reconcile)).toISOString()
+                : null,
+            }
+            : null,
         },
         metadata_worker: {
           running: metadataWorkerStats.isRunning,
