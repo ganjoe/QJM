@@ -1,10 +1,13 @@
 import os
+import argparse
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
 import json
 from datetime import datetime
 from collections import defaultdict
+
+DRY_RUN = False
 
 # Configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -74,6 +77,59 @@ def get_existing_ids():
         print(f"Error fetching existing trade_ids: {e}")
         return set()
 
+def fill_fingerprint(ticker, action, quantity, price, created_at):
+    """Content fingerprint of a fill: ticker + side + qty + price + calendar day.
+
+    Used to recognise a fill that is ALREADY in the database from the broker
+    (sync-captured or one-time repair) so a later CSV import does not book the same
+    execution a second time. Prices are rounded to 4 decimals and only the date is
+    compared, because the broker's execution time and the imported time can differ.
+    """
+    day = (created_at or "")[:10]
+    q = round(float(quantity), 4) if quantity is not None else None
+    p = round(float(price), 4) if price is not None else None
+    return (ticker, action, q, p, day)
+
+
+def get_existing_fill_fingerprints(mode="live"):
+    """Fingerprints of fills that already came from the broker (broker_exec_id set).
+
+    Only broker-sourced rows act as skip anchors. Rows written by earlier CSV imports
+    carry no broker_exec_id, so they can never suppress a legitimate new import.
+    """
+    try:
+        rows = postgrest_request(
+            f"/pta_execution_log?select=ticker,action,quantity,price,created_at,broker_exec_id"
+            f"&event_type=eq.FILL&mode=eq.{mode}&broker_exec_id=not.is.null")
+        return {fill_fingerprint(r["ticker"], r["action"], r.get("quantity"), r.get("price"), r.get("created_at"))
+                for r in rows if r.get("broker_exec_id")}
+    except Exception as e:
+        print(f"Error fetching existing fill fingerprints: {e}")
+        return set()
+
+
+def get_open_positions_by_ticker(mode="live"):
+    """Currently open positions, oldest first, to seed the FIFO matcher.
+
+    Without this seed the matcher only sees the current insert batch: a fill whose
+    counterpart was imported in an EARLIER run can never match, so a closing SELL
+    would be booked as a brand-new short instead of closing the existing long
+    (and vice versa). Returns (longs, shorts) as {ticker: [queue entries]}.
+    """
+    longs, shorts = defaultdict(list), defaultdict(list)
+    try:
+        rows = postgrest_request(
+            f"/pta_active_positions?select=trade_id,ticker,net_quantity,open_time"
+            f"&mode=eq.{mode}&order=open_time.asc")
+        for r in rows:
+            qty = float(r["net_quantity"])
+            entry = {"trade_id": r["trade_id"], "remaining": abs(qty), "fill": None}
+            (longs if qty > 0 else shorts)[r["ticker"]].append(entry)
+    except Exception as e:
+        print(f"Error fetching open positions for FIFO seeding: {e}")
+    return longs, shorts
+
+
 def parse_number(val):
     if not val:
         return 0.0
@@ -97,92 +153,98 @@ def parse_datetime(date_str, time_str=None):
             return None
 
 
-def fifo_match_trades(events):
+def fifo_match_trades(events, seed_longs=None, seed_shorts=None):
     """
     FIFO-Matching: Assigns matching trade_ids so that BUY and SELL of the same
     ticker share a trade_id (= a complete round-trip trade).
-    
+
     When a SELL spans multiple BUYs (scaling-in), ALL consumed BUY fills get
     reassigned to the first BUY's trade_id. This ensures the SQL view sees
     qty_bought == qty_sold for the complete round-trip.
+
+    `seed_longs` / `seed_shorts` carry OPEN positions that are already in the
+    database from earlier imports (see get_open_positions_by_ticker). They are put
+    in front of the queues, so a fill that closes a position opened in an earlier
+    batch matches it instead of creating an orphan opposite position. Seeded entries
+    have no fill object: their trade_id is already correct in the database and is
+    therefore never rewritten.
     """
     # Only match FILL events; pass through everything else unchanged
     fills = [e for e in events if e.get("event_type") == "FILL"]
     non_fills = [e for e in events if e.get("event_type") != "FILL"]
-    
+
     # Sort fills chronologically
     fills.sort(key=lambda e: e.get("created_at") or "")
-    
+
     # Group by ticker
     by_ticker = defaultdict(list)
     for f in fills:
         by_ticker[f["ticker"]].append(f)
-    
+
     matched_fills = []
-    stats = {"matched": 0, "unmatched": 0}
-    
+    stats = {"matched": 0, "unmatched": 0, "seeded": 0}
+
     for ticker, ticker_fills in by_ticker.items():
-        # Queues: list of [fill_object, remaining_qty]
-        # We store the fill object so we can retroactively update its trade_id
-        buy_queue = []   # [[fill, remaining_qty], ...]
-        sell_queue = []   # [[fill, remaining_qty], ...]
-        
+        # Queue entries: {"trade_id", "remaining", "fill"} — fill is None for seeded
+        # (already persisted) positions, which must not be mutated.
+        buy_queue = [dict(e) for e in (seed_longs or {}).get(ticker, [])]
+        sell_queue = [dict(e) for e in (seed_shorts or {}).get(ticker, [])]
+
+        def consume(queue, master_id, qty):
+            """Consume qty FIFO from queue, unifying batch fills onto master_id.
+            Returns the leftover quantity that found no counterpart."""
+            remaining = qty
+            while remaining > 0 and queue:
+                head = queue[0]
+                if head["fill"] is not None:
+                    head["fill"]["trade_id"] = master_id  # unify trade_id
+                else:
+                    stats["seeded"] += 1
+                if remaining >= head["remaining"]:
+                    queue.pop(0)
+                    remaining -= head["remaining"]
+                else:
+                    head["remaining"] -= remaining
+                    remaining = 0
+            return remaining
+
         for fill in ticker_fills:
             action = fill["action"]
             qty = fill["quantity"]
-            
+
             if action == "BUY":
                 if sell_queue:
                     # Short cover: match against oldest open short
-                    master_id = sell_queue[0][0]["trade_id"]
+                    master_id = sell_queue[0]["trade_id"]
                     fill["trade_id"] = master_id
                     stats["matched"] += 1
-                    
-                    remaining = qty
-                    while remaining > 0 and sell_queue:
-                        sq_fill, sq_rem = sell_queue[0]
-                        sq_fill["trade_id"] = master_id  # unify trade_id
-                        if remaining >= sq_rem:
-                            sell_queue.pop(0)
-                            remaining -= sq_rem
-                        else:
-                            sell_queue[0][1] = sq_rem - remaining
-                            remaining = 0
-                    if remaining > 0:
-                        buy_queue.append([fill, remaining])
+                    leftover = consume(sell_queue, master_id, qty)
+                    if leftover > 0:
+                        buy_queue.append({"trade_id": fill["trade_id"], "remaining": leftover, "fill": fill})
                 else:
                     # New long position
-                    buy_queue.append([fill, qty])
+                    buy_queue.append({"trade_id": fill["trade_id"], "remaining": qty, "fill": fill})
                     stats["unmatched"] += 1
-                    
+
             elif action == "SELL":
                 if buy_queue:
-                    # Close long: match against oldest open buy(s)
-                    # The master trade_id is the first BUY's trade_id
-                    master_id = buy_queue[0][0]["trade_id"]
+                    # Close long: match against oldest open buy(s).
+                    # The master trade_id is the first BUY's trade_id.
+                    master_id = buy_queue[0]["trade_id"]
                     fill["trade_id"] = master_id
                     stats["matched"] += 1
-                    
-                    remaining = qty
-                    while remaining > 0 and buy_queue:
-                        bq_fill, bq_rem = buy_queue[0]
-                        bq_fill["trade_id"] = master_id  # unify trade_id
-                        if remaining >= bq_rem:
-                            buy_queue.pop(0)
-                            remaining -= bq_rem
-                        else:
-                            buy_queue[0][1] = bq_rem - remaining
-                            remaining = 0
-                    if remaining > 0:
-                        sell_queue.append([fill, remaining])
+                    leftover = consume(buy_queue, master_id, qty)
+                    if leftover > 0:
+                        sell_queue.append({"trade_id": fill["trade_id"], "remaining": leftover, "fill": fill})
                 else:
                     # New short position
-                    sell_queue.append([fill, qty])
+                    sell_queue.append({"trade_id": fill["trade_id"], "remaining": qty, "fill": fill})
                     stats["unmatched"] += 1
-            
+
             matched_fills.append(fill)
-    
-    print(f"-> FIFO Matching: {stats['matched']} fills matched, {stats['unmatched']} new positions", flush=True)
+
+    print(f"-> FIFO Matching: {stats['matched']} fills matched, {stats['unmatched']} new positions, "
+          f"{stats['seeded']} matched against positions from earlier imports", flush=True)
     return matched_fills + non_fills
 
 
@@ -194,6 +256,13 @@ def main():
     print("Fetching existing IDs from database...", flush=True)
     existing_ids = get_existing_ids()
     print(f"Found {len(existing_ids)} existing trade/event IDs in the database.", flush=True)
+
+    # Cross-batch matching + protection against re-booking broker-sourced fills.
+    seed_longs, seed_shorts = get_open_positions_by_ticker()
+    existing_fps = get_existing_fill_fingerprints()
+    print(f"Found {sum(len(v) for v in seed_longs.values())} open long / "
+          f"{sum(len(v) for v in seed_shorts.values())} open short position(s) to seed FIFO matching, "
+          f"and {len(existing_fps)} broker-sourced fill(s) already recorded.", flush=True)
 
     print(f"Parsing XML file: {XML_FILE}", flush=True)
     tree = ET.parse(XML_FILE)
@@ -315,13 +384,39 @@ def main():
                 "created_at": created_at
             })
 
+    # Do not book a fill that is already in the database from the broker (sync or a
+    # one-time repair). Only broker-sourced rows act as anchors, so a repeated CSV
+    # import of a genuinely new fill is never suppressed by an older CSV row.
+    deduped, skipped = [], []
+    for e in events_to_insert:
+        if e.get("event_type") == "FILL":
+            fp = fill_fingerprint(e["ticker"], e["action"], e.get("quantity"), e.get("price"), e.get("created_at"))
+            if fp in existing_fps:
+                skipped.append(e)
+                continue
+        deduped.append(e)
+    for e in skipped:
+        print(f"  SKIP already recorded from broker: {e['ticker']} {e['action']} "
+              f"{e.get('quantity')} @ {e.get('price')} on {(e.get('created_at') or '')[:10]}", flush=True)
+    if skipped:
+        print(f"-> {len(skipped)} fill(s) skipped (already in the database from the broker).", flush=True)
+    events_to_insert = deduped
+
     total_events = len(events_to_insert)
     if total_events == 0:
         print("No new events to migrate (all exist already or file is empty).")
         return
 
-    # FIFO-Match trade_ids before inserting
-    events_to_insert = fifo_match_trades(events_to_insert)
+    # FIFO-Match trade_ids before inserting (seeded with positions from earlier imports)
+    events_to_insert = fifo_match_trades(events_to_insert, seed_longs, seed_shorts)
+
+    if DRY_RUN:
+        print(f"DRY RUN: nothing written. {total_events} event(s) would be inserted:", flush=True)
+        for e in events_to_insert:
+            print(f"  {e['event_type']:15} {e.get('ticker',''):6} {e.get('action',''):8} "
+                  f"qty={e.get('quantity')} price={e.get('price')} "
+                  f"trade_id={e['trade_id']}", flush=True)
+        return
 
     print(f"Prepared {total_events} events for migration. Pushing to database...", flush=True)
 
@@ -340,4 +435,9 @@ def main():
     print("Migration completed successfully!", flush=True)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Push ibkr_csv_importer/trades.xml into Supabase/PostgreSQL")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report what would be imported without writing anything to the database")
+    _args = parser.parse_args()
+    DRY_RUN = _args.dry_run
     main()
