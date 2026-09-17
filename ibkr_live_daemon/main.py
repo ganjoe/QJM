@@ -94,7 +94,9 @@ def on_exec_details(trade, fill):
         "broker_exec_id": fill.execution.execId,
         "currency": trade.contract.currency or "USD",
         "exchange": trade.contract.exchange or "SMART",
-        "order_ref": fill.execution.orderRef or "UNKNOWN"
+        "order_ref": fill.execution.orderRef or "UNKNOWN",
+        # Capture the mode at fill time: a later mode switch must not relabel this fill.
+        "mode": active_trading_mode
     })
 
 def on_order_status(trade):
@@ -104,13 +106,14 @@ def on_order_status(trade):
         "status": trade.orderStatus.status,
         "trade_id": f"ORDER-{trade.order.orderId}",
         "ticker": trade.contract.symbol or "UNKNOWN",
-        "why_held": trade.orderStatus.whyHeld or 'N/A'
+        "why_held": trade.orderStatus.whyHeld or 'N/A',
+        "mode": active_trading_mode
     })
 
 def on_commission_report(trade, fill, report):
     logger.info(f"Commission Report received: ExecId {report.execId} | Commission: {report.commission} {report.currency}")
     commission_events.append({
-        "broker_order_id": report.execId,
+        "exec_id": report.execId,
         "commission": float(report.commission),
         "currency": report.currency
     })
@@ -191,7 +194,8 @@ async def process_queued_events():
                         "p_broker_exec_id": f["broker_exec_id"],
                         "p_currency": f["currency"],
                         "p_exchange": f["exchange"],
-                        "p_order_ref": f["order_ref"]
+                        "p_order_ref": f["order_ref"],
+                        "p_mode": f["mode"]
                     }).execute()
                 )
                 logger.info(f"Processed FILL event for {f['broker_exec_id']} to DB.")
@@ -210,6 +214,10 @@ async def process_queued_events():
                     }).eq("order_id", s["order_id"]).execute()
                 )
                 if s["status"] in ["Inactive", "Cancelled"]:
+                    # p_take_profit + p_mode pin this call to exactly one overload: the
+                    # one carrying p_take_profit + p_mode. With common args alone
+                    # PostgREST cannot choose between the three pta_log_event overloads
+                    # and fails with PGRST203 ("Could not choose the best candidate").
                     await asyncio.to_thread(
                         lambda s=s: supabase.rpc("pta_log_event", {
                             "p_trade_id": s["trade_id"],
@@ -217,7 +225,9 @@ async def process_queued_events():
                             "p_event_type": "ORDER_STATUS_UPDATE",
                             "p_action": "INFO",
                             "p_broker_order_id": str(s["order_id"]),
-                            "p_notes": f"Order changed status to {s['status']}. WhyHeld: {s['why_held']}"
+                            "p_notes": f"Order changed status to {s['status']}. WhyHeld: {s['why_held']}",
+                            "p_take_profit": None,
+                            "p_mode": s["mode"]
                         }).execute()
                     )
             except Exception as e:
@@ -233,7 +243,7 @@ async def process_queued_events():
                         "commission": c["commission"],
                         "currency": c["currency"],
                         "updated_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("broker_order_id", c["broker_order_id"]).execute()
+                    }).eq("broker_exec_id", c["exec_id"]).execute()
                 )
             except Exception as e:
                 logger.error(f"Error processing commission event: {e}")
@@ -252,7 +262,11 @@ async def handle_refresh_requests():
         ids = [r["id"] for r in reqs]
         await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).in_("id", ids).execute())
 
-        ib.reqAccountUpdates()
+        # NOTE: no ib.reqAccountUpdates() here. That ib_insync call is BLOCKING (it
+        # waits for the accountValues download to end) and has no timeout; calling it
+        # from this loop freezes order placement, cancels and fill processing forever.
+        # ib.connect() already subscribes via reqAccountUpdatesMultiAsync, so the
+        # streaming cache that ib.portfolio()/ib.accountValues() read is kept fresh.
         await asyncio.sleep(1)
 
         positions = ib.portfolio()
@@ -387,7 +401,10 @@ async def handle_refresh_requests():
 
 async def handle_orders():
     try:
-        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "ORDER_SUBMITTED").is_("broker_order_id", "null").execute())
+        # Mode isolation (CRITICAL): only pick up orders belonging to the active mode.
+        # Without this filter an unconfirmed LIVE order would be sent to the paper
+        # gateway (and, worse, a stale PAPER order to the live gateway = real money).
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "ORDER_SUBMITTED").eq("mode", active_trading_mode).is_("broker_order_id", "null").execute())
         orders = resp.data
         if not orders:
             return
@@ -500,7 +517,8 @@ async def handle_orders():
 
 async def handle_cancels():
     try:
-        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "CANCEL_REQUESTED").is_("broker_order_id", "null").execute())
+        # Mode isolation (CRITICAL): never cancel orders of the other mode's book.
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "CANCEL_REQUESTED").eq("mode", active_trading_mode).is_("broker_order_id", "null").execute())
         reqs = resp.data
         if not reqs:
             return
@@ -628,8 +646,12 @@ async def sync_loop():
             if not ib.isConnected():
                 logger.info(f"Connecting to IB Gateway at {current_host}:{current_port} (Mode: {active_trading_mode})...")
                 try:
+                    # ib.connect() is blocking but bounded, and it already performs the
+                    # account/portfolio/executions sync (reqAccountUpdatesMultiAsync).
+                    # Do NOT add ib.reqAccountUpdates() here: that call is unbounded-
+                    # blocking and would freeze this loop permanently (see the note in
+                    # handle_refresh_requests).
                     ib.connect(current_host, current_port, clientId=10002)
-                    ib.reqAccountUpdates()
                 except Exception as e:
                     logger.error(f"Connection failed: {e}")
                     await asyncio.sleep(5)

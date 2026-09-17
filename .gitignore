@@ -48,3 +48,6 @@ cookies.txt
 # IBKR Exports & Altdaten
 ibkr_csv_importer/oldcsv/
 ibkr_csv_importer/trades.xml
+
+# Local pre-change DB backups (safety, never versioned)
+backups/

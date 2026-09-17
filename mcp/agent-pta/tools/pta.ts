@@ -40,6 +40,12 @@ export function registerPtaTools(server: McpServer) {
     },
     async (params: any) => {
       try {
+        // Resolve the active mode once, up front: the EXIT branch below creates its
+        // auto-cancel row and must tag it with the same mode the order is written in.
+        // Without this the row fell back to the 'live' column default, so a paper EXIT
+        // produced a LIVE cancel request that the mode-scoped daemon then ignored.
+        const activeMode = await getActiveTradingMode();
+
         let eventType = "ORDER_SUBMITTED";
         let action = params.action;
 
@@ -85,7 +91,8 @@ export function registerPtaTools(server: McpServer) {
                     ticker: params.ticker,
                     event_type: "CANCEL_REQUESTED",
                     action: "CANCEL",
-                    notes: "Auto-cancelling open orders due to EXIT action"
+                    notes: "Auto-cancelling open orders due to EXIT action",
+                    mode: activeMode
                 });
                 if (cancelLogErr) console.error("Failed to auto-cancel orders on EXIT", cancelLogErr);
             } else {
@@ -113,7 +120,6 @@ export function registerPtaTools(server: McpServer) {
             p_notes = JSON.stringify(comboParams);
         }
 
-        const activeMode = await getActiveTradingMode();
         const { data, error } = await supabase.rpc("pta_log_event", {
           p_trade_id: params.trade_id,
           p_ticker: params.ticker,
