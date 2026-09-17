@@ -46,3 +46,11 @@ SELECT count(*) AS duplicate_cash_trade_ids FROM (
 ) x;
 
 COMMIT;
+
+-- Addendum: the same double-booking hit eight 2026-09-08 fills that the sync daemon
+-- had already captured. The importer's de-duplication compared prices exactly, but the
+-- statement rounds to two decimals (261.79) while the execution stream reports full
+-- precision (261.785), so no match was found and the fills were booked again (BMY,
+-- MSFT, UBER, NFLX sells + ARM, GLW, WULF, INTC buys). They were removed separately;
+-- backup: backups/double_booked_sync_fills_20260917.csv. The importer now compares
+-- prices with a 0.011 tolerance and only the calendar day, never the time.

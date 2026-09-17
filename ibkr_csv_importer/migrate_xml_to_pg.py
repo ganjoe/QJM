@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 import json
 from datetime import datetime
-from collections import defaultdict, Counter
+from collections import defaultdict
 
 DRY_RUN = False
 
@@ -80,35 +80,68 @@ def get_existing_ids():
         print(f"Error fetching existing trade_ids: {e}")
         return set()
 
-def fill_fingerprint(ticker, action, quantity, price, created_at):
-    """Content fingerprint of a fill: ticker + side + qty + price + calendar day.
+# One cent plus a hair: the broker statement rounds fills to two decimals while the
+# execution stream reports full precision (CSV 261.79 vs stream 261.785).
+PRICE_TOLERANCE = 0.011
 
-    Used to recognise a fill that is ALREADY in the database from the broker
-    (sync-captured or one-time repair) so a later CSV import does not book the same
-    execution a second time. Prices are rounded to 4 decimals and only the date is
-    compared, because the broker's execution time and the imported time can differ.
+
+def fill_match_key(ticker, action, quantity, created_at):
+    """Identity of a fill apart from its price: ticker + side + quantity + calendar day.
+
+    Only the date is used, never the time: the broker's statement reports local
+    exchange time while the execution stream reports UTC, so they differ by hours for
+    the very same fill.
     """
     day = (created_at or "")[:10]
     q = round(float(quantity), 4) if quantity is not None else None
-    p = round(float(price), 4) if price is not None else None
-    return (ticker, action, q, p, day)
+    return (ticker, action, q, day)
 
 
-def get_existing_fill_fingerprints(mode="live"):
-    """Multiset of fill fingerprints already in the database.
+def get_existing_fill_index(mode="live"):
+    """{match key: [price, ...]} for every fill already in the database.
 
-    A Counter, not a set: two identical partial fills on the same day must be matched
-    two-for-two. A set would let a second, genuinely new identical fill be skipped.
+    Prices stay a list and are compared with PRICE_TOLERANCE by take_existing_fill():
+    an exact comparison never matched a statement's rounded price, which caused eight
+    already sync-captured fills to be imported a second time.
     """
+    index = defaultdict(list)
     try:
         rows = postgrest_request(
             f"/pta_execution_log?select=ticker,action,quantity,price,created_at"
             f"&event_type=eq.FILL&mode=eq.{mode}")
-        return Counter(fill_fingerprint(r["ticker"], r["action"], r.get("quantity"),
-                                        r.get("price"), r.get("created_at")) for r in rows)
+        for r in rows:
+            index[fill_match_key(r["ticker"], r["action"], r.get("quantity"),
+                                 r.get("created_at"))].append(r.get("price"))
     except Exception as e:
-        print(f"Error fetching existing fill fingerprints: {e}")
-        return Counter()
+        print(f"Error fetching existing fills: {e}")
+    return index
+
+
+def take_existing_fill(index, event):
+    """Consume one already-recorded fill matching `event`, if any.
+
+    Item-for-item (not a set): N identical partial fills in the statement require N
+    existing rows, so a genuinely new identical fill is still imported. Returns True
+    when a match was consumed.
+    """
+    key = fill_match_key(event["ticker"], event["action"], event.get("quantity"), event.get("created_at"))
+    bucket = index.get(key)
+    if not bucket:
+        return False
+    price = event.get("price")
+    for i, existing in enumerate(bucket):
+        if price is None or existing is None:
+            if price is None and existing is None:
+                bucket.pop(i)
+                return True
+            continue
+        try:
+            if abs(float(price) - float(existing)) <= PRICE_TOLERANCE:
+                bucket.pop(i)
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def get_open_positions_by_ticker(mode="live"):
@@ -262,10 +295,10 @@ def main():
 
     # Cross-batch matching + protection against re-booking broker-sourced fills.
     seed_longs, seed_shorts = get_open_positions_by_ticker()
-    existing_fps = get_existing_fill_fingerprints()
+    existing_fills = get_existing_fill_index()
     print(f"Found {sum(len(v) for v in seed_longs.values())} open long / "
           f"{sum(len(v) for v in seed_shorts.values())} open short position(s) to seed FIFO matching, "
-          f"and {sum(existing_fps.values())} fill(s) already recorded.", flush=True)
+          f"and {sum(len(v) for v in existing_fills.values())} fill(s) already recorded.", flush=True)
 
     print(f"Parsing XML file: {XML_FILE}", flush=True)
     tree = ET.parse(XML_FILE)
@@ -387,18 +420,15 @@ def main():
                 "created_at": created_at
             })
 
-    # Do not book a fill that is already in the database. Count-based: an incoming fill
-    # is skipped only while an unused matching row exists, so N identical partial fills
-    # are matched N-for-N while genuinely new ones still get inserted.
+    # Do not book a fill that is already in the database. Matched item-for-item with a
+    # price tolerance: N identical partial fills in the statement need N existing rows,
+    # so genuinely new identical fills are still inserted, while a fill the sync daemon
+    # already captured is recognised even though the statement rounds its price.
     deduped, skipped = [], []
-    remaining_fps = Counter(existing_fps)
     for e in events_to_insert:
-        if e.get("event_type") == "FILL":
-            fp = fill_fingerprint(e["ticker"], e["action"], e.get("quantity"), e.get("price"), e.get("created_at"))
-            if remaining_fps[fp] > 0:
-                remaining_fps[fp] -= 1
-                skipped.append(e)
-                continue
+        if e.get("event_type") == "FILL" and take_existing_fill(existing_fills, e):
+            skipped.append(e)
+            continue
         deduped.append(e)
     for e in skipped:
         print(f"  SKIP already recorded: {e['ticker']} {e['action']} "
