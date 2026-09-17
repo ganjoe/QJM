@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 import json
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 DRY_RUN = False
 
@@ -70,8 +70,11 @@ def postgrest_request(path, method="GET", data=None):
 
 def get_existing_ids():
     try:
-        # Only check existing FILLs for deduplication (not ORDER_SUBMITTED etc.)
-        rows = postgrest_request("/pta_execution_log?select=trade_id&event_type=eq.FILL")
+        # ALL event types, not just FILLs: the XML id is stored verbatim as trade_id for
+        # cash transfers and dividends, so restricting this to FILLs made every import
+        # insert each deposit/withdrawal/dividend again (observed: every cash row booked
+        # exactly twice, which inflated the injected-cash figure by ~13,000 EUR).
+        rows = postgrest_request("/pta_execution_log?select=trade_id")
         return {r["trade_id"] for r in rows if r.get("trade_id")}
     except Exception as e:
         print(f"Error fetching existing trade_ids: {e}")
@@ -92,20 +95,20 @@ def fill_fingerprint(ticker, action, quantity, price, created_at):
 
 
 def get_existing_fill_fingerprints(mode="live"):
-    """Fingerprints of fills that already came from the broker (broker_exec_id set).
+    """Multiset of fill fingerprints already in the database.
 
-    Only broker-sourced rows act as skip anchors. Rows written by earlier CSV imports
-    carry no broker_exec_id, so they can never suppress a legitimate new import.
+    A Counter, not a set: two identical partial fills on the same day must be matched
+    two-for-two. A set would let a second, genuinely new identical fill be skipped.
     """
     try:
         rows = postgrest_request(
-            f"/pta_execution_log?select=ticker,action,quantity,price,created_at,broker_exec_id"
-            f"&event_type=eq.FILL&mode=eq.{mode}&broker_exec_id=not.is.null")
-        return {fill_fingerprint(r["ticker"], r["action"], r.get("quantity"), r.get("price"), r.get("created_at"))
-                for r in rows if r.get("broker_exec_id")}
+            f"/pta_execution_log?select=ticker,action,quantity,price,created_at"
+            f"&event_type=eq.FILL&mode=eq.{mode}")
+        return Counter(fill_fingerprint(r["ticker"], r["action"], r.get("quantity"),
+                                        r.get("price"), r.get("created_at")) for r in rows)
     except Exception as e:
         print(f"Error fetching existing fill fingerprints: {e}")
-        return set()
+        return Counter()
 
 
 def get_open_positions_by_ticker(mode="live"):
@@ -262,7 +265,7 @@ def main():
     existing_fps = get_existing_fill_fingerprints()
     print(f"Found {sum(len(v) for v in seed_longs.values())} open long / "
           f"{sum(len(v) for v in seed_shorts.values())} open short position(s) to seed FIFO matching, "
-          f"and {len(existing_fps)} broker-sourced fill(s) already recorded.", flush=True)
+          f"and {sum(existing_fps.values())} fill(s) already recorded.", flush=True)
 
     print(f"Parsing XML file: {XML_FILE}", flush=True)
     tree = ET.parse(XML_FILE)
@@ -384,22 +387,24 @@ def main():
                 "created_at": created_at
             })
 
-    # Do not book a fill that is already in the database from the broker (sync or a
-    # one-time repair). Only broker-sourced rows act as anchors, so a repeated CSV
-    # import of a genuinely new fill is never suppressed by an older CSV row.
+    # Do not book a fill that is already in the database. Count-based: an incoming fill
+    # is skipped only while an unused matching row exists, so N identical partial fills
+    # are matched N-for-N while genuinely new ones still get inserted.
     deduped, skipped = [], []
+    remaining_fps = Counter(existing_fps)
     for e in events_to_insert:
         if e.get("event_type") == "FILL":
             fp = fill_fingerprint(e["ticker"], e["action"], e.get("quantity"), e.get("price"), e.get("created_at"))
-            if fp in existing_fps:
+            if remaining_fps[fp] > 0:
+                remaining_fps[fp] -= 1
                 skipped.append(e)
                 continue
         deduped.append(e)
     for e in skipped:
-        print(f"  SKIP already recorded from broker: {e['ticker']} {e['action']} "
+        print(f"  SKIP already recorded: {e['ticker']} {e['action']} "
               f"{e.get('quantity')} @ {e.get('price')} on {(e.get('created_at') or '')[:10]}", flush=True)
     if skipped:
-        print(f"-> {len(skipped)} fill(s) skipped (already in the database from the broker).", flush=True)
+        print(f"-> {len(skipped)} fill(s) skipped (already in the database).", flush=True)
     events_to_insert = deduped
 
     total_events = len(events_to_insert)
