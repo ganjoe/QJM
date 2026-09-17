@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { WorkerManager } from "../workers/worker_manager.ts";
 import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY, X_DISCOVERY_INTERVAL_SEC, X_LIVENESS_CHECK, X_INGESTION_MODE, X_SEARCH_INTERVAL_SEC, X_RECONCILE_INTERVAL_SEC } from "./shared.ts";
+import { processSinglePost } from "../workers/metadata_worker.ts";
 
 export function registerPipelineTools(server: McpServer) {
   const manager = WorkerManager.getInstance();
@@ -12,10 +13,14 @@ export function registerPipelineTools(server: McpServer) {
       title: "Manage Sync Pipeline",
       description: "Controls the background sync workers (Stage 1 Ingestion, Stage 2 Metadata, Stage 3 Embeddings, YouTube) or checks backlog and throughput metrics.",
       inputSchema: {
-        action: z.enum(["START", "STOP", "STATUS"]).describe("START = start all workers, STOP = stop all workers, STATUS = show pipeline and backlog stats"),
+        action: z.enum(["START", "STOP", "STATUS", "REENRICH_X", "RETRY_METADATA_FAILED"]).describe("START/STOP = worker control, STATUS = stats, REENRICH_X = idempotenter Metadaten-Backfill für X-Posts (Datumsbereich), RETRY_METADATA_FAILED = fehlgeschlagene X-Posts erneut einreihen"),
+        start_date: z.string().optional().describe("REENRICH_X: nur Posts ab diesem created_at (ISO, z.B. 2026-09-01)"),
+        end_date: z.string().optional().describe("REENRICH_X: nur Posts bis zu diesem created_at (ISO)"),
+        only_with_cashtags: z.boolean().optional().default(true).describe("REENRICH_X: nur Posts mit '$' im Text (Default: true)"),
+        limit: z.number().optional().default(100).describe("REENRICH_X: max. Posts pro Aufruf (1-1000)"),
       },
     },
-    async ({ action }: any) => {
+    async ({ action, start_date, end_date, only_with_cashtags, limit }: any) => {
       try {
         if (action === "START") {
           manager.startAll();
@@ -39,7 +44,8 @@ export function registerPipelineTools(server: McpServer) {
             `📊 X-Posts (agent_workspace):`,
             `  • In Bearbeitung (Metadaten): ${status.backlog.x_posts.stage_1_pending_metadata} Posts`,
             `  • Warteschlange Vektorisierung: ${status.backlog.x_posts.stage_2_pending_embedding} Posts`,
-            `  • Fertig gevektort (embedded): ${status.backlog.x_posts.stage_3_embedded} Posts`,
+            `  • Vektor vorhanden (embedding IS NOT NULL): ${status.backlog.x_posts.stage_3_embedded} Posts`,
+            `  •  davon Legacy-Status 'categorized': ${status.backlog.x_posts.stage_legacy_categorized ?? 0} Posts`,
             `  • Gesamtanzahl X Posts: ${status.backlog.x_posts.total}`,
             `  • Aktive Influencer: ${status.backlog.x_posts.active_influencers}`,
             ``,
@@ -122,6 +128,55 @@ export function registerPipelineTools(server: McpServer) {
           }, { count: "exact" }).eq("status", "failed");
 
           return { content: [{ type: "text", text: `🔄 ${count || 0} fehlgeschlagene YouTube-Videos wurden auf 'pending' zurückgesetzt.` }] };
+        }
+
+        if (action === "RETRY_METADATA_FAILED") {
+          const { count } = await supabase
+            .from("agent_workspace")
+            .update({ status: "pending_metadata" }, { count: "exact" })
+            .eq("artifact_type", "x_post")
+            .eq("status", "metadata_failed");
+          return { content: [{ type: "text", text: `🔄 ${count || 0} X-Posts (status='metadata_failed') wurden auf 'pending_metadata' zurückgesetzt.` }] };
+        }
+
+        if (action === "REENRICH_X") {
+          const batchLimit = Math.max(1, Math.min(Number(limit) || 100, 1000));
+          const fetchLimit = Math.min(batchLimit * 20, 4000);
+          let q = supabase
+            .from("agent_workspace")
+            .select("id, content, created_at, metadata")
+            .eq("artifact_type", "x_post")
+            .order("created_at", { ascending: false })
+            .limit(fetchLimit);
+          if (start_date) q = q.gte("created_at", start_date);
+          if (end_date) q = q.lte("created_at", end_date);
+          if (only_with_cashtags !== false) q = q.like("content", "%$%");
+
+          const { data, error } = await q;
+          if (error) throw error;
+
+          const candidates = (data || [])
+            .filter((p: any) => {
+              const t = p.metadata?.tickers;
+              return !Array.isArray(t) || t.length === 0;
+            })
+            .slice(0, batchLimit);
+
+          if (candidates.length === 0) {
+            return { content: [{ type: "text", text: `ℹ️ Keine Kandidaten mit leeren Tickern im Bereich ${start_date || "∞"}..${end_date || "∞"} (cashtag-only=${only_with_cashtags !== false}).` }] };
+          }
+
+          const concurrency = 4;
+          let ok = 0;
+          let fail = 0;
+          for (let i = 0; i < candidates.length; i += concurrency) {
+            const slice = candidates.slice(i, i + concurrency);
+            const results = await Promise.all(slice.map((p: any) => processSinglePost(p)));
+            ok += results.filter(Boolean).length;
+            fail += results.filter((r) => !r).length;
+          }
+
+          return { content: [{ type: "text", text: `♻️ X-Metadaten-Backfill: ${ok} erfolgreich, ${fail} fehlgeschlagen (Kandidaten: ${candidates.length}, Bereich ${start_date || "∞"}..${end_date || "∞"}, cashtag-only=${only_with_cashtags !== false}). Idempotent — erneuter Aufruf verarbeitet nur noch leere Ticker.` }] };
         }
 
         return { content: [{ type: "text", text: `Unbekannte Aktion: ${action}` }], isError: true };

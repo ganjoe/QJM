@@ -23,11 +23,22 @@ Always select the most specific tool for the task. Follow these strict disambigu
   * *Full Database Universe*: Pass `watchlists: ["all"]` to screen all 5,500+ stocks currently available in the system's Parquet storage (dynamically queried from `cda_master_universe`).
   * *Output modes*: **without** `from`/`to` only the last available bar per ticker is evaluated (plain true/false map); **with** `from` and/or `to` (inclusive, `YYYY-MM-DD` or Unix seconds) every bar inside the window is evaluated causally and the result is a hit list (ticker, scanner, hit date, score, matched bars).
   * Available scanners:
+    * `'dcr'`: Day Close Range (DCR) in %: evaluates where the daily candle closed within its high-low range ((Close - Low) / (High - Low) * 100). Used to identify leading groups and strong intraday accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term market breadth indicator. Supports `direction` ('long'/'short'), `cutoff` in %, `count` (top N). Needs 1 bar.
+    * `'wcr'`: Week Close Range (WCR) in %: evaluates where the latest candle closed within the week-to-date candle's range ((Close - WeekLow) / (WeekHigh - WeekLow) * 100). Used to identify leading groups and weekly accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term market breadth indicator. Supports `direction` ('long'/'short'), `cutoff` in %, `count` (top N). Needs 1 bar.
     * `'madbo'`: MADBO — Moving Average Dollar Volume Breakout: the five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close × volume) exceeds 2× its 50-bar average (needs 200 bars; score = dollar-volume multiple).
     * `'minervini_trend'`: Evaluates Mark Minervini's Trend Template (Score 0–6, matched at ≥ 5, needs 252 bars: 200 SMA trending up, Price > 150 & 200 SMA, 50 SMA > 150 & 200 SMA, ≥ 25% above the 52-week low, within 25% of the 52-week high).
     * `'sma_cross'`: Evaluates 50/200 SMA Golden Cross & Death Cross status and spread percentage (needs 200 bars).
   * *Robustness*: tickers without parquet data, without enough history or without bars inside the window are reported in `skipped` with a reason — never as a silent false; consecutive matching bars collapse into one hit unless `hit_mode: "all_bars"`; `limit_hits` (default 200) truncates the hit list and sets `summary.truncated`.
   * *Constraint*: call `list_scanners` first when unsure about scanner names or history requirements.
+* **`list_scanner_fields`**: Call this to discover all available filterable field names (technical from Parquet, fundamental from Supabase, and computed multi-factor metrics) with their compact descriptions.
+* **`run_universal_scanner`**: Use to **screen and rank the stock universe across both technical and fundamental criteria** with zero hardcoded limits.
+  * *Capabilities*: Combines Parquet time-series indicators (IBD RS, DCR, WCR, ADR20, Moving Averages, Dollar Volume) and Supabase metadata (`cda_master_universe`: Market Cap, EPS, Revenue, Earnings Date) into a single query.
+  * *Help Mode*: Call with `help: true` or invoke `list_scanner_fields` to inspect all fields.
+  * *Structured Filters*: `filters: [{ field: "ibd_rs", op: ">=", value: 90 }, { field: "market_cap", op: ">=", value: 1e9 }, { field: "close", op: ">", field_compare: "ma_sma_50" }]`.
+  * *Operators*: `>=`, `<=`, `>`, `<`, `==`, `=`, `!=`, `in`, `not_in`, `between` (numeric, string or ISO date bounds), `is_null`, `is_not_null`. Values may be numbers, strings, booleans or arrays; cross-column comparisons use `field_compare`.
+  * *Expression Filter*: `expression: "ibd_rs >= 90 AND market_cap >= 1e9 AND close > ma_sma_50"`.
+  * *Sorting & Limits*: `sort_by` (e.g. `"ibd_rs"`, `"dcr"`, `"market_cap"`), `sort_direction` ('desc'/'asc'), `limit` (default 50).
+  * *Universe*: Optional `tickers` or `watchlists`. If omitted, screens the entire universe.
 * **`list_available_features`**: Call this to discover the exact column names of all 21+ precalculated indicator columns in Parquet before querying or filtering.
 * **`manage_watchlist`**: Use for **CRUD watchlist operations** on user lists in Supabase (`pca_watchlists`).
   * To get tickers in a watchlist: `action: "LOAD"`, `list_name: "current_positions"`.
@@ -40,6 +51,10 @@ Always select the most specific tool for the task. Follow these strict disambigu
 * **`manage_chart_viewer`**: Controls the native TC2000-style desktop chart viewer running on the user's screen.
   * Actions:
     * `'DISPLAY_STOCK'`: Loads historical candles, indicators, and topbar metrics into the desktop viewer (e.g. `ticker: "NVDA"`, optional `preset`: `'default'` [SMA 50/200 + BB 20], `'trend_template'` [6 Minervini SMAs + Topbar RS/Minervini/ADR], `'momentum'` [EMA 8/21], `'clean'` [candles only] OR any dynamically created user preset like `'qmaggi'`).
+    * `'DISPLAY_WATCHLIST'`: Opens a watchlist **table** window: `list_name` (Supabase `pca_watchlists`, e.g. `'current_positions'`, `'scan_latest'`, `'etf_leaderboard'`, or `'all'` for the master universe) or `ticker` as a comma-separated list. Rows are read fresh from Supabase on every call (re-calling refreshes the window).
+    * `'DISPLAY_SERIES'`: Computes **long/short pair spreads on the fly in RAM** (no Parquet, no persistence) and pushes them as tiled chart windows. Legs: `ticker` + `ticker_b` (single pair), `pairs: ["XOP/SOXX", …]` (explicit list, order = long/short), or `list_name`/`ticker` (all C(n,2) pairs, filtered by `min_spread_pct`, ranked by `rank_by`, top `top_n` windows). `mode`: `pct` (normalised difference in percentage points, default) | `ratio` | `abs`; `limit_bars` sets the window length. `preset: "qmaggi"` recomputes that preset's members **on the spread series** (SMA/EMA/Bollinger on the spread closes, ADR members as the daily spread range in pp); `overlay: none|sma|bb` works as fallback. `dry_run: true` returns only the ranking. Layout via `grid_cols`, `cell_w/h`, `origin_x/y`; `topbar: false` suppresses the metric block.
+      * *Constraint — horizon*: Long is always the stronger leg *within the chosen window*, so `limit_bars` must match the horizon you are analysing. Pairs pinned from a different horizon (`pairs: […]`) will show the inverted direction (e.g. XOP/SOXX = +37.7 pp over 66 bars, −24.2 pp over 200 bars).
+      * *Constraint — no persistence*: Spreads exist only as long as the agent process lives. After a viewer restart they are restored from the agent's ledger; after an MCP-server restart they must be pushed again by re-running `DISPLAY_SERIES` with the same `pairs`.
     * `'OPEN_WINDOW'`: Registers a custom window.
     * `'ADD_ANNOTATION'`: Draws support/resistance lines (`hline`), trendlines, rectangles, or buy/sell trade markers (`trade_marker`).
     * `'REMOVE_ANNOTATION'`: Removes a drawing object by ID.
@@ -126,28 +141,36 @@ Always select the most specific tool for the task. Follow these strict disambigu
    → Call `run_technical_scanner(scanners: ["madbo"], watchlists: ["current_positions"], from: "2026-01-01", to: "2026-12-31")` — with a time range the answer is a hit list with hit dates.
 9. **"Did anything in the AI stocks watchlist trigger in the last 3 months?"**
    → Call `run_technical_scanner(scanners: ["madbo", "minervini_trend"], watchlists: ["ai_stocks"], from: "<3 months ago>", to: "<today>")`.
-10. **"Calculate a 21 EMA and 10 SMA for TSLA."**
+10. **"Find the top 20 stocks with highest Day Close Range (DCR) / Week Close Range (WCR) today."**
+   → Call `run_technical_scanner(scanners: ["dcr"], watchlists: ["all"], count: 20, direction: "long")` or with cutoff: `run_technical_scanner(scanners: ["dcr", "wcr"], watchlists: ["current_positions"], cutoff: 90)`.
+11. **"Calculate a 21 EMA and 10 SMA for TSLA."**
    → Call `calculate_indicator(ticker: "TSLA", indicator_type: "EMA", period: 21)`.
-11. **"What is my current cash balance and open risk?"**
+12. **"What is my current cash balance and open risk?"**
    → Call `list_active_positions()` or `portfolio_analytics()`.
-12. **"Show me the chart of NVDA on my screen / in the chart viewer."**
+13. **"Show me the chart of NVDA on my screen / in the chart viewer."**
    → Call `manage_chart_viewer(action: "DISPLAY_STOCK", ticker: "NVDA")`.
-13. **"Draw a support line at 120.50 on NVDA."**
+14. **"Draw a support line at 120.50 on NVDA."**
    → Call `manage_chart_viewer(action: "ADD_ANNOTATION", ticker: "NVDA", annotation: {type: "hline", price: 120.50, color: "#00E676", label: "Support"})`.
-14. **"Close the NVDA chart window."**
+15. **"Close the NVDA chart window."**
    → Call `manage_chart_viewer(action: "CLOSE_WINDOW", ticker: "NVDA")`.
-15. **"Save my current chart viewer layout as a setup named 'main'."**
+16. **"Save my current chart viewer layout as a setup named 'main'."**
    → Call `manage_chart_viewer(action: "SAVE_SETUP", setup_name: "main")` — saves window positions/sizes/color flags of the live `layout_ledger`. Related: `LIST_SETUPS` (show saved setups), `LOAD_SETUP` (`setup_name: "main"`), `DELETE_SETUP`, `RENAME_SETUP`.
-16. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
+17. **"What is the current market breadth / how many stocks are above their 50 SMA / how are broad market conditions?"**
    → Call `get_timeseries(ticker: "$STATS.MARKET_BREADTH", limit: 30)` to inspect percentage, count, and signed `days_back` (remember: breadth lows have high predictive weight for market rebounds, whereas highs confirm bull trends but are not reliable top indicators).
-17. **"Show me the latest earnings report / 10-K / presentation of DELL."**
+18. **"Show me the latest earnings report / 10-K / presentation of DELL."**
    → Call `manage_stock_documents(action: "GET", ticker: "DELL")` to receive document metadata, file paths, and the full high-density Markdown distillate (key metrics, segment breakdowns, guidance).
-18. **"Search our financial filings for AI server backlog or cloud margin expansion."**
+19. **"Search our financial filings for AI server backlog or cloud margin expansion."**
    → Call `manage_stock_documents(action: "SEARCH", query: "AI server backlog")` — searches across all stored document distillates using PostgreSQL GIN full-text search.
-19. **"What filings / reports do we have on file for AAPL?"**
+20. **"What filings / reports do we have on file for AAPL?"**
    → Call `manage_stock_documents(action: "LIST", ticker: "AAPL")`.
-20. **"Check if there are any new uncataloged PDF reports in the DELL folder."**
+21. **"Check if there are any new uncataloged PDF reports in the DELL folder."**
    → Call `manage_stock_documents(action: "SCAN_FOLDER", ticker: "DELL")`.
+22. **"Show me all long/short pairs of watchlist X as charts / which pair spread performs best?"**
+   → Call `manage_chart_viewer(action: "DISPLAY_SERIES", list_name: "etf_leaderboard", min_spread_pct: 30, top_n: 9, preset: "qmaggi")` — computes every C(n,2) spread in RAM and opens the top pairs as tiled windows.
+23. **"Which pair has the best spread performance over N bars?"**
+   → Call `manage_chart_viewer(action: "DISPLAY_SERIES", list_name: "etf_leaderboard", limit_bars: N, dry_run: true, rank_by: "total")` — `rank_by: "quality"` ranks by spread/max-drawdown instead. Always set `limit_bars` to the horizon asked for.
+24. **"Load preset P on the existing spread windows / show more history per spread chart."**
+   → Call `manage_chart_viewer(action: "DISPLAY_SERIES", pairs: ["XOP/SOXX", "IBB/SOXX"], limit_bars: 200, preset: "qmaggi")` — `pairs` reuses the same `window_id`s, so this refreshes the open spread charts instead of opening new ones.
 
 ---
 

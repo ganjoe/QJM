@@ -285,32 +285,40 @@ export function registerAnalysisTools(server: McpServer) {
         "- WITH `from` and/or `to` ('range' mode, inclusive bounds): every bar inside the window is evaluated causally (warm-up bars are loaded before 'from', no look-ahead) and the answer is a list of hits with ticker, scanner, hit date, score and matched bars.\n\n" +
         "Tickers without parquet data, without enough history or without bars in the window are reported in `skipped` with a machine readable reason — they are never silently reported as false.\n\n" +
         "AVAILABLE SCANNERS (run `list_scanners` for live metadata and history requirements):\n" +
+        "- 'dcr': Day Close Range (DCR) in %: evaluates the position of the close within the daily candle's range ((Close - Low) / (High - Low) * 100). Used to identify leading groups and strong intraday accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term market breadth indicator. Supports 'direction' ('long' or 'short'), 'cutoff' in %, 'count' (top N). Needs 1 bar.\n" +
+        "- 'wcr': Week Close Range (WCR) in %: evaluates the position of the close within the week-to-date candle's range ((Close - WeekLow) / (WeekHigh - WeekLow) * 100). Used to identify leading groups and weekly accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term market breadth indicator. Supports 'direction' ('long' or 'short'), 'cutoff' in %, 'count' (top N). Needs 1 bar.\n" +
         "- 'madbo': MADBO — Moving Average Dollar Volume Breakout. The five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close x volume) exceeds 2x its 50-bar average. Score = dollar-volume multiple. Needs 200 bars.\n" +
         "- 'minervini_trend': Minervini Trend Template (score 0-6, matched at >= 5: 200 SMA trending up, price above the 150 & 200 SMA, 50 SMA above the 150 & 200 SMA, >= 25% above the 52-week low, within 25% of the 52-week high). Needs 252 bars.\n" +
         "- 'sma_cross': 50/200 SMA golden cross active; score is the spread in percent. Needs 200 bars.\n\n" +
         "WHEN TO USE: whenever asked to screen or scan a watchlist/ticker list for a pattern, or to find out WHEN a setup triggered inside a period.\n" +
         "WHEN NOT TO USE: for raw candle history use `get_timeseries`; for the live price use `get_quote`.",
       inputSchema: {
-        scanners: z.array(z.string()).describe("Scanner names to run, e.g. ['madbo'] or ['minervini_trend', 'sma_cross']"),
-        tickers: z.array(z.string()).optional().describe("Explicit tickers to scan, e.g. ['AAPL', 'NVDA', 'MSFT']"),
-        watchlists: z.array(z.string()).optional().describe("Supabase watchlist references: bare list name, PCA service link, PostgREST link with 'list_name=eq.<name>', or '<name>.txt'"),
+        scanners: z.array(z.string()).describe("Scanner names to run, e.g. ['dcr'], ['wcr'] or ['madbo', 'minervini_trend']"),
+        tickers: z.array(z.string()).optional().describe("Explicit tickers to scan, e.g. ['AAPL', 'NVDA', 'MSFT']. If omitted and watchlists omitted, scans the entire database universe ('all') and returns matching tickers."),
+        watchlists: z.array(z.string()).optional().describe("Supabase watchlist references: 'all' (entire 5,500+ universe), 'current_positions', etc. If omitted and tickers omitted, defaults to 'all'."),
         from: z.union([z.string(), z.number()]).optional().describe("Inclusive range start ('YYYY-MM-DD' or Unix seconds). Supplying from/to switches the output to a hit list"),
         to: z.union([z.string(), z.number()]).optional().describe("Inclusive range end ('YYYY-MM-DD' means end of that day; or Unix seconds)"),
         timeframe: z.string().optional().default("1D").describe("Candle timeframe (only '1D' is populated)"),
         hit_mode: z.enum(["first_of_episode", "all_bars"]).optional().default("first_of_episode").describe("Collapse consecutive matching bars into one hit (default) or return every matching bar"),
         limit_hits: z.number().optional().default(200).describe("Maximum hits returned (default 200, max 1000)"),
-        max_tickers: z.number().optional().default(2000).describe("Universe cap (default 2000)"),
+        max_tickers: z.number().optional().default(6000).describe("Universe cap (default 6000, covers full 5,500+ database)"),
+        direction: z.enum(["long", "short"]).optional().default("long").describe("Direction for directional scanners like DCR/WCR: 'long' (closing near highs) or 'short' (closing near lows). Default: 'long'"),
+        cutoff: z.number().optional().describe("Cutoff threshold in % for DCR/WCR (e.g. 90 for DCR >= 90% long, 10 for DCR <= 10% short)"),
+        count: z.number().optional().describe("Maximum number of top matches to return, ranked by score among tickers that already matched (e.g. 10 or 20)"),
       },
     },
-    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, max_tickers }: any) => {
+    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, max_tickers, direction, cutoff, count }: any) => {
       try {
         const body: Record<string, any> = {
           scanners,
           timeframe: timeframe || "1D",
           hit_mode: hit_mode || "first_of_episode",
           limit_hits: limit_hits ?? 200,
-          max_tickers: max_tickers ?? 2000,
+          max_tickers: max_tickers ?? 6000,
+          direction: direction || "long",
         };
+        if (cutoff !== undefined && cutoff !== null) body.cutoff = cutoff;
+        if (count !== undefined && count !== null) body.count = count;
         if (Array.isArray(tickers) && tickers.length > 0) {
           body.tickers = tickers.map((t: string) => String(t).trim().toUpperCase()).filter(Boolean);
         }
@@ -320,8 +328,9 @@ export function registerAnalysisTools(server: McpServer) {
         if (from !== undefined && from !== null && from !== "") body.from = from;
         if (to !== undefined && to !== null && to !== "") body.to = to;
 
+        // If neither tickers nor watchlists specified, default to entire master universe "all"
         if (!body.tickers && !body.watchlists) {
-          throw new Error("Provide at least one universe source: 'tickers' and/or 'watchlists' (e.g. watchlists: ['current_positions']).");
+          body.watchlists = ["all"];
         }
 
         const res = await fetch(`${PCA_SERVICE_URL}/api/scanner/run`, {
@@ -341,18 +350,35 @@ export function registerAnalysisTools(server: McpServer) {
 
         if (data.mode === "latest") {
           const scanned: string[] = Object.keys(data.matches || {});
-          const matchedTickers = scanned.filter((t: string) => scannerNames.some((s: string) => data.matches[t]?.[s] === true));
+          let matchedTickers = scanned.filter((t: string) => scannerNames.some((s: string) => data.matches[t]?.[s] === true));
+          if (data.scores) {
+            const primaryScanner = scannerNames[0];
+            matchedTickers.sort((a: string, b: string) => {
+              const sa = data.scores[a]?.[primaryScanner] ?? -9999;
+              const sb = data.scores[b]?.[primaryScanner] ?? -9999;
+              return body.direction === "short" ? (sa - sb) : (sb - sa);
+            });
+          }
           const matchSummary = scannerNames.map((s: string) => `${s}: ${data.true_count?.[s] ?? 0}`).join(" | ");
           lines.push(`🔍 **Scanner — latest bar** (${scannerNames.join(", ")}) | timeframe ${data.timeframe} | as of ${data.as_of ?? "n/a"} | ${scanned.length} tickers`);
           if (matchedTickers.length > 0) {
             const header = `| Ticker | ${scannerNames.join(" | ")} |`;
             const sep = `| :--- |${scannerNames.map(() => " :---: |").join("")}`;
             const rows = matchedTickers.slice(0, 300).map((t: string) => {
-              const cells = scannerNames.map((s: string) => (data.matches[t]?.[s] ? "✅" : "❌")).join(" | ");
+              const cells = scannerNames.map((s: string) => {
+                const isMatched = Boolean(data.matches[t]?.[s]);
+                const score = data.scores?.[t]?.[s];
+                if (isMatched) {
+                  return score !== undefined && score !== null ? `✅ ${score}%` : "✅";
+                } else {
+                  return score !== undefined && score !== null ? `❌ ${score}%` : "❌";
+                }
+              }).join(" | ");
               return `| ${t} | ${cells} |`;
             });
             lines.push([header, sep, ...rows].join("\n"));
             if (matchedTickers.length > 300) lines.push(`_… ${matchedTickers.length - 300} further matches omitted._`);
+            lines.push(`📋 **Matching Tickers (${matchedTickers.length}):** \`${matchedTickers.join("`, `")}\``);
           } else {
             lines.push("_No matches found._");
           }
@@ -372,8 +398,10 @@ export function registerAnalysisTools(server: McpServer) {
             lines.push("_No hits in this window._");
           }
           if (summary.by_ticker && Object.keys(summary.by_ticker).length > 0) {
+            const hitTickers = Object.keys(summary.by_ticker);
             const perTicker = Object.entries(summary.by_ticker).map(([t, c]) => `${t} (${c})`).join(", ");
             lines.push(`**By ticker:** ${perTicker}`);
+            lines.push(`📋 **Matching Tickers (${hitTickers.length}):** \`${hitTickers.join("`, `")}\``);
           }
           if (summary.truncated) {
             lines.push(`⚠️ Output truncated: ${summary.hits_total} hits found, ${summary.hits_returned} returned — narrow the range or raise 'limit_hits'.`);
@@ -486,6 +514,205 @@ export function registerAnalysisTools(server: McpServer) {
         };
       } catch (err: any) {
         log.error(`get_market_breadth error: ${err.message}`);
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 6. list_scanner_fields — Dynamic Schema Introspection & Help
+  // ─────────────────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_scanner_fields",
+    {
+      title: "List Universal Scanner Fields & Schema",
+      description:
+        "Returns the live dynamic catalog of all available technical, fundamental, and computed fields for `run_universal_scanner`.\n\n" +
+        "Minimalist output: Field name and expanded abbreviation or single word.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const res = await fetch(`${PCA_SERVICE_URL}/api/scanner/universal/fields`);
+        if (!res.ok) {
+          const errText = (await res.text()).slice(0, 300);
+          throw new Error(`HTTP ${res.status}: ${errText}`);
+        }
+        const data = await res.json();
+        const fields: Array<{ name: string; description: string; type: string; source: string }> = data.fields || [];
+
+        const lines = fields.map(f => `• \`${f.name}\`${f.description ? `: ${f.description}` : ""}`);
+        const text = `📋 **Verfügbare Scanner-Felder (${fields.length}):**\n\n${lines.join("\n")}\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+
+        return { content: [{ type: "text", text }] };
+      } catch (err: any) {
+        log.error(`list_scanner_fields error: ${err.message}`);
+        return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 7. run_universal_scanner — Dynamic Multi-Factor Stock Screener
+  // ─────────────────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "run_universal_scanner",
+    {
+      title: "Run Universal Multi-Factor Stock Scanner",
+      description:
+        "Universal multi-factor stock scanner combining Parquet OHLCV/indicators and Supabase fundamentals (`cda_master_universe`).\n\n" +
+        "ZERO HARDCODED FILTERS: Fully dynamic filtering across ANY field (price, IBD RS, DCR, WCR, ADR20, moving averages, market cap, EPS, revenue, volume).\n\n" +
+        "HOW TO USE:\n" +
+        "- To see all available fields: call `list_scanner_fields` or pass `{ help: true }`.\n" +
+        "- Pass structured `filters: [{ field: 'ibd_rs', op: '>=', value: 90 }, { field: 'market_cap', op: '>=', value: 1e9 }]`.\n" +
+        "- Or pass raw `expression: 'ibd_rs >= 90 AND market_cap >= 1e9 AND close > ma_sma_50'`.\n" +
+        "- Cross-column comparisons: `{ field: 'close', op: '>', field_compare: 'ma_sma_50' }`.\n" +
+        "- Omit tickers/watchlists to screen the entire database universe.\n\n" +
+        "AUTO-WATCHLIST: Jeder Scan-Lauf schreibt ALLE Treffer (ohne Cap) in die rollierende Supabase-Watchlist `scan_latest` (Replace-Semantik: der vorherige Stand wird ersetzt). Die Response selbst bleibt auf `limit` gekappt – die vollständige Trefferzahl steht in `watchlist.matched_total`, `watchlist.truncated` zeigt an, ob gekappt wurde.\n" +
+        "- Inhalt lesen: `manage_watchlist` (LOAD, list_name='scan_latest').\n" +
+        "- Im Chart Viewer öffnen/aktualisieren: `manage_chart_viewer` (DISPLAY_WATCHLIST, list_name='scan_latest') – jeder Aufruf liest frisch aus Supabase.\n" +
+        "- Bei `watchlist.count = 0` ist die Liste leer (Scan ohne Treffer); dann kein Öffnen anbieten.",
+      inputSchema: {
+        filters: z
+          .array(
+            z.object({
+              field: z.string().describe("Field name to filter on (e.g. 'ibd_rs', 'market_cap', 'dcr', 'close')"),
+              op: z.string().describe("Operator: '>=', '<=', '>', '<', '==', '=', '!=', 'in', 'not_in', 'between', 'is_null', 'is_not_null'"),
+              value: z.any().optional().describe("Comparison value or array of values for 'in' / 'between'"),
+              field_compare: z.string().optional().describe("Optional other field name to compare against (e.g. 'ma_sma_50')"),
+            })
+          )
+          .optional()
+          .describe("Array of structured filter conditions"),
+        expression: z
+          .string()
+          .optional()
+          .describe("DuckDB SQL filter expression string (e.g. 'ibd_rs >= 90 AND market_cap >= 1e9 AND close > ma_sma_50')"),
+        sort_by: z.string().optional().default("dcr").describe("Field name to sort results by (Default: 'dcr')"),
+        sort_direction: z.enum(["desc", "asc"]).optional().default("desc").describe("Sort direction: 'desc' or 'asc' (Default: 'desc')"),
+        limit: z.number().optional().describe("Max matching results to return (Default: 50, Max: 1000)"),
+        tickers: z.array(z.string()).optional().describe("Optional list of tickers to scan. If omitted, scans entire universe."),
+        watchlists: z.array(z.string()).optional().describe("Optional watchlist names or URLs to scan."),
+        help: z.boolean().optional().default(false).describe("If true, returns the dynamic field catalog without scanning."),
+      },
+    },
+    async ({ filters, expression, sort_by, sort_direction, limit, tickers, watchlists, help }: any) => {
+      try {
+        const payload: Record<string, any> = {
+          sort_by: sort_by || "dcr",
+          sort_direction: sort_direction || "desc",
+          help: Boolean(help),
+        };
+        if (limit !== undefined && limit !== null) payload.limit = limit;
+        if (filters && Array.isArray(filters) && filters.length > 0) payload.filters = filters;
+        if (expression && typeof expression === "string" && expression.trim()) payload.expression = expression.trim();
+        if (tickers && Array.isArray(tickers) && tickers.length > 0) payload.tickers = tickers;
+        if (watchlists && Array.isArray(watchlists) && watchlists.length > 0) payload.watchlists = watchlists;
+
+        const res = await fetch(`${PCA_SERVICE_URL}/api/scanner/universal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const errText = (await res.text()).slice(0, 400);
+          throw new Error(`HTTP ${res.status}: ${errText}`);
+        }
+
+        const data = await res.json();
+        if (data.status === "help" && data.fields) {
+          const fields: Array<{ name: string; description: string }> = data.fields;
+          const lines = fields.map(f => `• \`${f.name}\`${f.description ? `: ${f.description}` : ""}`);
+          return {
+            content: [{
+              type: "text",
+              text: `📋 **Verfügbare Scanner-Felder (${fields.length}):**\n\n${lines.join("\n")}\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``
+            }]
+          };
+        }
+
+        const records: any[] = data.records || [];
+        const matchedTickers: string[] = data.matched_tickers || [];
+        const applied: string[] = data.applied_filters || [];
+
+        // Format numbers cleanly, honoring the instrument currency where available.
+        const currencySymbol = (c: any) => {
+          const cur = String(c || "USD").trim().toUpperCase();
+          if (cur === "USD") return "$";
+          if (cur === "EUR") return "€";
+          if (cur === "GBP") return "£";
+          if (cur === "JPY") return "¥";
+          return cur ? `${cur} ` : "$";
+        };
+        const fmtCap = (val: any, currency: any) => {
+          if (val === null || val === undefined) return "-";
+          const num = Number(val);
+          const s = currencySymbol(currency);
+          if (num >= 1e12) return `${s}${(num / 1e12).toFixed(2)}T`;
+          if (num >= 1e9) return `${s}${(num / 1e9).toFixed(2)}B`;
+          if (num >= 1e6) return `${s}${(num / 1e6).toFixed(1)}M`;
+          return `${s}${num.toLocaleString()}`;
+        };
+
+        const fmtPct = (val: any) => (val !== null && val !== undefined ? `${Number(val).toFixed(1)}%` : "-");
+        const fmtMoney = (val: any, currency: any) => (val !== null && val !== undefined ? `${currencySymbol(currency)}${Number(val).toFixed(2)}` : "-");
+
+        const tableHeader = "| Ticker | Kurs | Market Cap | 50d Vol | IBD RS | DCR % | WCR % | ADR20 % | EPS | Earnings |\n" +
+                            "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |";
+
+        const tableRows = records.map(r => {
+          const t = r.ticker || "-";
+          const cur = r.currency;
+          const px = fmtMoney(r.close, cur);
+          const cap = fmtCap(r.market_cap, cur);
+          const dvol = fmtCap(r.ma_sma_50_dollar_volume, cur);
+          const rs = r.ibd_rs !== null && r.ibd_rs !== undefined ? `**${r.ibd_rs}**` : "-";
+          const dcr = fmtPct(r.dcr);
+          const wcr = fmtPct(r.wcr);
+          const adr = fmtPct(r.adr_20);
+          const eps = fmtMoney(r.eps, cur);
+          const dte = r.days_to_earnings;
+          const earn = dte !== null && dte !== undefined
+            ? (dte > 0 ? `in ${dte}d` : (dte < 0 ? `vor ${-dte}d` : "heute"))
+            : (r.earnings ? String(r.earnings).slice(0, 10) : "-");
+
+          return `| **${t}** | ${px} | ${cap} | ${dvol} | ${rs} | ${dcr} | ${wcr} | ${adr} | ${eps} | ${earn} |`;
+        }).join("\n");
+
+        const appliedText = applied.length > 0 ? `\n**Filter:** ${applied.join("  •  ")}` : "\n**Filter:** _Keine (ungefiltertes Universum)_";
+        const perf = data.performance;
+        const perfText = perf ? `\n⏱️ **Performance:** ${perf.summary}` : "";
+
+        // Auto-watchlist state: every scan run replaces `scan_latest` with the COMPLETE result set.
+        const wl = data.watchlist || null;
+        let wlText = "";
+        if (wl) {
+          const stamp = wl.updated_at ? `${String(wl.updated_at).slice(11, 19)} UTC` : "n/a";
+          if (wl.status === "updated") {
+            wlText = `\n📌 **Auto-Watchlist \`${wl.list_name}\`:** ${wl.count} Ticker (alle Treffer, aktualisiert ${stamp})` +
+              ` — öffnen/aktualisieren mit \`manage_chart_viewer\` (DISPLAY_WATCHLIST, list_name='${wl.list_name}')`;
+          } else if (wl.status === "cleared") {
+            wlText = `\n⚠️ **Auto-Watchlist \`${wl.list_name}\` ist jetzt LEER** (0 Treffer)${wl.message ? ` — ${wl.message}` : ""}`;
+          } else {
+            wlText = `\n⚠️ **Auto-Watchlist \`${wl.list_name}\`:** Status \`${wl.status}\`${wl.message ? ` — ${wl.message}` : ""}`;
+          }
+          if (wl.truncated) {
+            wlText += `\n↳ Response zeigt nur die Top-${wl.response_count} von ${wl.matched_total} Treffern – die vollständige Liste steht in \`${wl.list_name}\`.`;
+          }
+        }
+
+        const summaryText =
+          `🔍 **Universal Stock Scanner** | ${data.count} Matches (von ${data.total_evaluated} evaluiert) | Sort: \`${payload.sort_by}\` (${payload.sort_direction})${appliedText}${perfText}${wlText}\n\n` +
+          `${tableHeader}\n${tableRows}\n\n` +
+          (matchedTickers.length > 0
+            ? `📋 **Matching Tickers (${matchedTickers.length}):** ${matchedTickers.map(t => `\`${t}\``).join(", ")}\n\n`
+            : "*(Keine Ticker haben die Kriterien erfüllt)*\n\n") +
+          `\`\`\`json\n${JSON.stringify({ count: data.count, total_evaluated: data.total_evaluated, matched_tickers: matchedTickers, applied_filters: applied, performance: data.performance, watchlist: wl }, null, 2)}\n\`\`\``;
+
+        return { content: [{ type: "text", text: summaryText }] };
+      } catch (err: any) {
+        log.error(`run_universal_scanner error: ${err.message}`);
         return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
       }
     }

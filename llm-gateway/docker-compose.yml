@@ -56,6 +56,7 @@ services:
       - ../mcp/agent-cco/index.ts:/app/index.ts:ro
       - ../mcp/agent-cco/tools:/app/tools:ro
       - ../mcp/agent-cco/workers:/app/workers:ro
+      - ../mcp/agent-cco/scripts:/app/scripts:ro
       - ../dsh_playground:/dsh_playground:ro
       - yt-media:/data/yt
     environment:
@@ -156,6 +157,12 @@ services:
       - MAX_CANDLE_LIMIT=10000
       - POSTGREST_UNIVERSE_LIMIT=${POSTGREST_UNIVERSE_LIMIT:-20000}
       - UNIVERSE_CACHE_TTL_SEC=${UNIVERSE_CACHE_TTL_SEC:-30}
+      # Auto-Watchlist des Universal Scanners: jeder Lauf schreibt ALLE Treffer nach 'scan_latest'
+      - SCAN_WATCHLIST_ENABLED=${SCAN_WATCHLIST_ENABLED:-1}
+      - SCAN_WATCHLIST_NAME=${SCAN_WATCHLIST_NAME:-scan_latest}
+      - SCAN_WATCHLIST_CHUNK_SIZE=${SCAN_WATCHLIST_CHUNK_SIZE:-500}
+      - SCAN_WATCHLIST_READ_PAGE=${SCAN_WATCHLIST_READ_PAGE:-1000}
+      - SCAN_WATCHLIST_META_ENABLED=${SCAN_WATCHLIST_META_ENABLED:-1}
     volumes:
       - ../services/pca-service:/app
       - /home/daniel/stock-data-node/data/parquet:/parquet:ro
@@ -351,15 +358,11 @@ services:
       - LMSTUDIO_URL=http://host.docker.internal:1234
       - LMSTUDIO_WEB_PORT=3002
       - VLLM_URL=http://host.docker.internal:8100
-      - OLLAMA_URL=http://host.docker.internal:11435
       - OLLAMA_CPU_URL=http://host.docker.internal:11434
-      - OLLAMA_GPU_URL=http://host.docker.internal:11435
       - DOCKER_SWITCHYARD_CONTAINER=llm-gw-switchyard
       - DOCKER_LMSTUDIO_CONTAINER=llm-gw-lmstudio
       - DOCKER_VLLM_CONTAINER=llm-gw-vllm
-      - DOCKER_OLLAMA_CONTAINER=llm-gw-ollama-gpu
       - DOCKER_OLLAMA_CPU_CONTAINER=llm-gw-ollama-cpu
-      - DOCKER_OLLAMA_GPU_CONTAINER=llm-gw-ollama-gpu
       - LMSTUDIO_MODELS_PATH=/lmstudio-models
     depends_on:
       - switchyard
@@ -374,37 +377,15 @@ services:
     restart: unless-stopped
     ports:
       - "11434:11434"
-    volumes:
-      - openbrain_ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 10s
-
-  # ============================================
-  # Ollama — Embeddings (GPU Backend - AMD ROCm)
-  # ============================================
-  ollama-gpu:
-    image: ollama/ollama:rocm
-    container_name: llm-gw-ollama-gpu
-    restart: unless-stopped
-    ports:
-      - "11435:11434"
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    group_add:
-      - "44"
-      - "991"
     environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-      - HIP_VISIBLE_DEVICES=0
-      - ROCR_VISIBLE_DEVICES=0
+      # -1 = Modell wird niemals entladen. Das Embedding-Modell muss immer bereitstehen;
+      # ein Kaltstart kostet das Neuladen der ~6 GB und war die Hauptursache für Latenzspitzen.
+      - OLLAMA_KEEP_ALIVE=-1
+      # Parallelität per Benchmark bestimmt: 1, 2 und 4 Slots lieferten identischen Durchsatz
+      # (~6,3 Inputs/s) und identische Latenz, weil die CPU der Flaschenhals ist. 1 Slot
+      # vermeidet zusätzlich Kontext-Aufteilung (4096 / NUM_PARALLEL).
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
       - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-4096}
-      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
-      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
     volumes:
       - openbrain_ollama:/root/.ollama
     healthcheck:

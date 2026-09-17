@@ -1,8 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log } from "./shared.ts";
-
-const SWITCHYARD_URL = Deno.env.get("SWITCHYARD_URL") || "http://switchyard:4000/v1";
+import { supabase, log, SWITCHYARD_URL, getActiveProvider, resolveSwitchyardRoute } from "./shared.ts";
 
 interface ResolveCandidate {
   symbol: string;
@@ -84,6 +82,7 @@ async function searchYahooFinance(companyName: string): Promise<ResolveCandidate
 async function validateWithLLM(companyName: string, candidate: ResolveCandidate): Promise<{ isMatch: boolean; reason: string }> {
   try {
     const baseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
+    const route = await resolveSwitchyardRoute(await getActiveProvider(), { logFallback: true });
     const prompt = `Determine whether the stock candidate represents the mentioned company.
 Mentioned Company Name: "${companyName}"
 Candidate Stock: Symbol="${candidate.symbol}", Name="${candidate.name}", Exchange="${candidate.exchange}"
@@ -98,7 +97,7 @@ Answer with ONLY valid JSON:
         "Authorization": "Bearer switchyard",
       },
       body: JSON.stringify({
-        model: "local",
+        model: route,
         messages: [
           { role: "system", content: "You are a financial entity verification specialist. Return ONLY valid JSON." },
           { role: "user", content: prompt },
@@ -108,7 +107,7 @@ Answer with ONLY valid JSON:
     });
 
     if (!res.ok) {
-      log.warn(`[validateWithLLM] Switchyard error ${res.status}, accepting candidate with soft-check`);
+      log.warn(`[validateWithLLM] Switchyard error ${res.status} (route=${route}), accepting candidate with soft-check`);
       return { isMatch: true, reason: "LLM offline, accepted via provider ranking" };
     }
 

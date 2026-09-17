@@ -11,11 +11,25 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF, QPix
 from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.coords.y_axis import YAxisTransform
-from chart_viewer.models.entities import Bar, Overlay, OverlayPoint
+from chart_viewer.models.entities import Bar, Overlay, OverlayPoint, Annotation
 from chart_viewer.models.color import resolve_bar_color
 
 Y_AXIS_WIDTH = 70.0
 X_AXIS_HEIGHT = 22.0
+
+
+def resolve_line_width(style: dict, default_width: int = 1) -> int:
+    """Effective pen width (in pixels) for an indicator line.
+
+    An explicit ``style["width"]`` IS the pixel count and is used verbatim — a
+    width of 1 stays 1 and is never rounded up. Without an explicit width the
+    configured default applies. The result is only floored at 1, because Qt
+    treats a pen width of 0 as a cosmetic hairline, which is a different concept.
+    """
+    raw = (style or {}).get("width")
+    if raw is None:
+        return max(1, int(default_width))
+    return max(1, int(raw))
 
 
 class ChartPane(QWidget):
@@ -51,6 +65,7 @@ class ChartPane(QWidget):
         # Data
         self.bars: List[Bar] = []
         self.overlays: Dict[str, Overlay] = {}
+        self.annotations: Dict[str, Annotation] = {}
         self.series_style: dict = {}
         self.y_axis_mode: str = "auto"
         self.watermark_text: str = ""
@@ -125,6 +140,25 @@ class ChartPane(QWidget):
                     "pts": indexed_pts,
                 }
         self.mark_dirty()
+
+    def set_annotations(self, annotations) -> None:
+        """Replace this pane's annotation set and repaint.
+
+        Accepts the StateManager's ``{id: Annotation}`` mapping or a plain list.
+        """
+        if annotations is None:
+            self.annotations = {}
+        elif isinstance(annotations, dict):
+            self.annotations = dict(annotations)
+        else:
+            self.annotations = {a.id: a for a in annotations}
+        self.mark_dirty()
+        # Annotations arrive out-of-band from the agent while the window is idle.
+        # A merely scheduled update() can sit in the event queue until the next
+        # natural repaint (e.g. the user moving the mouse), so the drawing would
+        # appear only after an unrelated interaction. Paint synchronously instead
+        # — annotation changes are low-frequency, so the cost is irrelevant.
+        self.repaint()
 
     def mark_dirty(self) -> None:
         self._dirty = True
@@ -222,6 +256,7 @@ class ChartPane(QWidget):
                     self._render_candlesticks(pp, chart_w, content_h)
 
                 self._render_overlays(pp, chart_w, content_h)
+                self._render_annotations(pp, chart_w, content_h)
                 self._render_y_axis(pp, chart_w, content_h)
 
                 if self.draw_x_axis:
@@ -652,12 +687,16 @@ class ChartPane(QWidget):
 
         painter.save()
         painter.setClipRect(0, 0, int(chart_w), int(chart_h))
-        if getattr(self.config, "enable_antialiasing", True):
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_enabled = getattr(self.config, "enable_antialiasing", True)
+        # Antialiasing spreads a 1px diagonal stroke over ~1.86 rows per column
+        # (measured) versus 1.00 crisp, so a thin indicator line looked almost
+        # twice as heavy as the crisp 1px candle borders. Thin lines are therefore
+        # drawn crisp like the candles; wider lines keep AA for smoothness.
+        crisp_thin = getattr(self.config, "crisp_thin_indicator_lines", True)
 
         min_vis_idx = max(0.0, self.x_trans.x_to_bar(0.0) - 2.0)
         max_vis_idx = self.x_trans.x_to_bar(chart_w) + 2.0
-        min_width_cfg = getattr(self.config, "min_indicator_line_width_px", 4)
+        default_line_width = max(1, int(getattr(self.config, "default_indicator_line_width_px", 1)))
 
         for item in indexed_ovs.values():
             ov = item["overlay"]
@@ -670,6 +709,15 @@ class ChartPane(QWidget):
             style = ov.style
             color = QColor(style.get("color", "#26A69A"))
 
+            # Thin indicator lines: AA off so a 1px stroke stays 1px wide, exactly
+            # like the candle borders. Everything else keeps antialiasing.
+            line_width = resolve_line_width(style, default_line_width) if ov_type == "line" else None
+            if aa_enabled:
+                painter.setRenderHint(
+                    QPainter.RenderHint.Antialiasing,
+                    not (crisp_thin and line_width is not None and line_width <= 1),
+                )
+
             i_start = bisect.bisect_left(indices, min_vis_idx)
             i_end = bisect.bisect_right(indices, max_vis_idx)
             vis_pts = pts[i_start : i_end + 1]
@@ -678,8 +726,7 @@ class ChartPane(QWidget):
 
             if ov_type == "line":
                 pen = QPen(color)
-                raw_width = style.get("width", min_width_cfg)
-                line_width = max(min_width_cfg, int(raw_width))
+                # Explicit width = pixel count; otherwise the 1px default applies.
                 pen.setWidth(line_width)
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -749,6 +796,188 @@ class ChartPane(QWidget):
                         bar_rect = QRectF(x - candle_w / 2.0, bar_top, candle_w, max(1.0, bar_h))
                         painter.drawRect(bar_rect)
 
+        painter.restore()
+
+    # ── Annotations ────────────────────────────────────────────────────
+
+    def _anchor_to_xy(self, anchor) -> tuple[Optional[float], Optional[float]]:
+        """Resolve an Anchor to pixel coordinates (data or pixel mode).
+
+        Data anchors use ``t`` (bar timestamp) for X and ``price`` for Y; either
+        component may legitimately be missing (e.g. a price-only horizontal line).
+        """
+        if anchor is None:
+            return None, None
+
+        if (getattr(anchor, "mode", "data") or "data") == "pixel":
+            x_px = getattr(anchor, "x_px", None)
+            y_px = getattr(anchor, "y_px", None)
+            return (
+                float(x_px) if x_px is not None else None,
+                float(y_px) if y_px is not None else None,
+            )
+
+        x: Optional[float] = None
+        y: Optional[float] = None
+        t = getattr(anchor, "t", None)
+        if t is not None:
+            x = self.x_trans.bar_to_x(self._timestamp_to_bar_idx(int(t)))
+        price = getattr(anchor, "price", None)
+        if price is not None:
+            y = self.y_trans.price_to_y(float(price))
+        return x, y
+
+    def _render_annotations(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
+        """Render persistent annotations (hline, trendline, rect, text, trade_marker).
+
+        Unresolvable annotations are skipped instead of raising, so one malformed
+        drawing object can never break the chart repaint.
+        """
+        if not self.annotations:
+            return
+
+        painter.save()
+        painter.setClipRect(0, 0, int(chart_w), int(chart_h))
+        if getattr(self.config, "enable_antialiasing", True):
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        label_font = QFont(painter.font())
+        label_font.setPointSize(9)
+
+        for ann in self.annotations.values():
+            self._render_annotation(painter, ann, chart_w, chart_h, label_font)
+
+        painter.restore()
+
+    def _render_annotation(self, painter: QPainter, ann, chart_w: float, chart_h: float, label_font: QFont) -> None:
+        """Render a single annotation according to its type."""
+        style = ann.style or {}
+        color = QColor(style.get("color") or "#00E676")
+        width = max(1, int(style.get("width") or 2))
+        label = style.get("text") or ""
+        coords = [self._anchor_to_xy(a) for a in (ann.anchors or [])]
+        first = coords[0] if coords else (None, None)
+
+        if ann.type == "hline":
+            y = next((c[1] for c in coords if c[1] is not None), None)
+            if y is None:
+                return
+            pen = QPen(color)
+            pen.setWidth(width)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(0, int(y), int(chart_w), int(y))
+            if label:
+                self._draw_annotation_label(painter, label, chart_h, y, color, label_font)
+            return
+
+        if ann.type == "trade_marker":
+            x, y = first
+            if y is None:
+                return
+            if x is None:
+                # Price-only marker: pin it to the most recent bar.
+                last_idx = float(max(0, len(self.bars) - 1))
+                x = self.x_trans.bar_to_x(last_idx)
+            is_buy = str(style.get("action", "BUY")).upper() != "SELL"
+            self._draw_trade_marker(painter, float(x), float(y), color, is_buy, label, label_font)
+            return
+
+        if ann.type == "trendline":
+            if len(coords) < 2:
+                return
+            x1, y1 = coords[0]
+            x2, y2 = coords[1]
+            if None in (x1, y1, x2, y2):
+                return
+            pen = QPen(color)
+            pen.setWidth(width)
+            painter.setPen(pen)
+            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+            return
+
+        if ann.type == "rect":
+            if len(coords) < 2:
+                return
+            x1, y1 = coords[0]
+            x2, y2 = coords[1]
+            if None in (x1, y1, x2, y2):
+                return
+            rect = QRectF(QPointF(min(x1, x2), min(y1, y2)), QPointF(max(x1, x2), max(y1, y2)))
+            fill = QColor(color)
+            fill.setAlpha(40)
+            pen = QPen(color)
+            pen.setWidth(width)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(fill))
+            painter.drawRect(rect)
+            return
+
+        if ann.type == "text":
+            x, y = first
+            if x is None or y is None:
+                return
+            painter.setFont(label_font)
+            painter.setPen(color)
+            painter.drawText(QPointF(x, y), label or ann.id)
+            return
+
+    def _draw_annotation_label(
+        self,
+        painter: QPainter,
+        text: str,
+        chart_h: float,
+        y: float,
+        color: QColor,
+        font: QFont,
+    ) -> None:
+        """Draw a small left-anchored label pill next to a horizontal line."""
+        painter.save()
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        text_w = float(metrics.horizontalAdvance(text) + 12)
+        text_h = float(metrics.height() + 4)
+        by = max(0.0, min(chart_h - text_h, y - text_h / 2.0))
+        rect = QRectF(6.0, by, text_w, text_h)
+        painter.fillRect(rect, QColor(0, 0, 0, 165))
+        painter.setPen(color)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+    def _draw_trade_marker(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        color: QColor,
+        is_buy: bool,
+        label: str,
+        font: QFont,
+    ) -> None:
+        """Draw a BUY/SELL arrow marker at the given pixel position."""
+        size = 8.0
+        if is_buy:
+            triangle = QPolygonF([
+                QPointF(x, y),
+                QPointF(x - size, y + size * 1.5),
+                QPointF(x + size, y + size * 1.5),
+            ])
+        else:
+            triangle = QPolygonF([
+                QPointF(x, y),
+                QPointF(x - size, y - size * 1.5),
+                QPointF(x + size, y - size * 1.5),
+            ])
+
+        painter.save()
+        painter.setPen(QPen(color, 1))
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(triangle)
+
+        if label:
+            painter.setFont(font)
+            painter.setPen(color)
+            painter.drawText(QPointF(x + size + 4.0, y + 4.0), label)
         painter.restore()
 
     # ── Mouse interaction for Y-axis scaling & measure tool ─────────────

@@ -166,14 +166,16 @@ class ViewerApp(QObject):
         elif msg_type == "annotation.set" and win_id:
             self.state_manager.set_annotation(win_id, payload.get("annotation", payload))
             if win_id in self.windows:
-                self.windows[win_id].canvas.mark_layers_dirty()
+                win_data = self.state_manager.get_window_data(win_id)
+                self.windows[win_id].canvas.set_annotations(win_data.annotations if win_data else {})
 
         elif msg_type == "annotation.remove" and win_id:
             ann_id = payload.get("id") or payload.get("annotation_id")
             if ann_id:
                 self.state_manager.remove_annotation(win_id, ann_id)
                 if win_id in self.windows:
-                    self.windows[win_id].canvas.mark_layers_dirty()
+                    win_data = self.state_manager.get_window_data(win_id)
+                    self.windows[win_id].canvas.set_annotations(win_data.annotations if win_data else {})
 
         elif msg_type == "topbar.set_block" and win_id:
             self.state_manager.set_topbar_block(win_id, payload)

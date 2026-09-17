@@ -25,6 +25,71 @@ const STATIC_YF_MAPPINGS: Record<string, string> = {
 
 const SKIP_PREFIXES = ["$", "=", "^"];
 
+// ── SEC EDGAR CIK Cache ────────────────────────────────────────────────
+let secCikMap: Record<string, number> | null = null;
+let secCikCacheTime = 0;
+const SEC_CIK_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function getSecUserAgent(): string {
+  return Deno.env.get("SEC_USER_AGENT") || "OpenBrain SEC_Bot@example.com";
+}
+
+function getSecRateLimitMs(): number {
+  return Number(Deno.env.get("SEC_RATE_LIMIT_MS") || 200);
+}
+
+function normalizeTickerForSec(ticker: string): string {
+  const t = ticker.trim().toUpperCase();
+  const parts = t.split(".");
+  if (parts.length === 2 && ["A", "B", "C", "WS", "U"].includes(parts[1])) {
+    return `${parts[0]}-${parts[1]}`;
+  }
+  return t;
+}
+
+async function loadSecCikMapping(): Promise<Record<string, number>> {
+  const now = Date.now();
+  if (secCikMap && (now - secCikCacheTime) < SEC_CIK_CACHE_TTL_MS) {
+    return secCikMap;
+  }
+  const ua = getSecUserAgent();
+  const res = await fetch("https://www.sec.gov/files/company_tickers.json", {
+    headers: { "User-Agent": ua },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`SEC company_tickers.json: HTTP ${res.status}`);
+  const data = await res.json();
+  const map: Record<string, number> = {};
+  for (const entry of Object.values(data) as any[]) {
+    map[entry.ticker] = entry.cik_str;
+  }
+  secCikMap = map;
+  secCikCacheTime = now;
+  log.info(`[SEC] CIK-Mapping geladen: ${Object.keys(map).length} Ticker`);
+  return map;
+}
+
+async function fetchSecSubmissions(cik: number): Promise<any> {
+  const ua = getSecUserAgent();
+  const paddedCik = String(cik).padStart(10, "0");
+  const res = await fetch(`https://data.sec.gov/submissions/CIK${paddedCik}.json`, {
+    headers: { "User-Agent": ua },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) throw new Error(`SEC submissions: HTTP ${res.status}`);
+  return res.json();
+}
+
+async function downloadSecDocument(url: string): Promise<Uint8Array> {
+  const ua = getSecUserAgent();
+  const res = await fetch(url, {
+    headers: { "User-Agent": ua },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`SEC download: HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 function normalizeTickerForYf(ticker: string): string | null {
   const t = ticker.trim().toUpperCase();
   if (!t || SKIP_PREFIXES.some(p => t.startsWith(p))) return null;
@@ -1181,6 +1246,272 @@ export function registerCdaTools(server: McpServer) {
       } catch (err: any) {
         log.error(`manage_stock_documents failed: ${err.message}`);
         return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ── 6. download_sec_reports ──────────────────────────────────────────
+  server.registerTool(
+    "download_sec_reports",
+    {
+      title: "Download SEC Reports (EDGAR)",
+      description:
+        "Lädt SEC-Berichte (10-Q, 10-K, 8-K) für eine Liste von US-Aktien-Tickern direkt von der SEC EDGAR API herunter.\n\n" +
+        "ABLAUF:\n" +
+        "1. Löst Ticker → CIK-Nummer über SEC company_tickers.json auf (cached).\n" +
+        "2. Sucht den neuesten Bericht des gewünschten Typs in den SEC-Submissions.\n" +
+        "3. Lädt das Dokument herunter und speichert es im Ticker-Ordner (DOCUMENTS_BASE_PATH/{TICKER}/).\n" +
+        "4. Optional: Registriert das Dokument automatisch in der stock_documents DB.\n\n" +
+        "EINSCHRÄNKUNGEN:\n" +
+        "- Nur US-gelistete Aktien (SEC-Filer). Nicht-US-Ticker (z.B. 4GLD, LPK.DE) werden übersprungen.\n" +
+        "- Sucht nur in den ~40 neuesten Filings (recent). Sehr alte Berichte ggf. nicht verfügbar.\n" +
+        "- Rate-limitiert: max 10 Requests/Sekunde zur SEC (konfigurierbar via SEC_RATE_LIMIT_MS).",
+      inputSchema: {
+        tickers: z.array(z.string()).min(1).describe(
+          "Liste von Ticker-Symbolen (z.B. ['HALO', 'AAPL', 'MSFT'])"
+        ),
+        report_type: z.enum(["10-Q", "10-K", "8-K"]).describe(
+          "SEC Filing-Typ: '10-Q' (Quartalsbericht), '10-K' (Jahresbericht), '8-K' (Sondermeldung)"
+        ),
+        auto_register: z.boolean().optional().default(true).describe(
+          "Automatisch in stock_documents DB registrieren (Default: true)"
+        ),
+      },
+    },
+    async ({ tickers, report_type, auto_register }: any) => {
+      const results: any[] = [];
+      const rateLimitMs = getSecRateLimitMs();
+
+      try {
+        // 1. CIK-Mapping laden (cached)
+        let cikMap: Record<string, number>;
+        try {
+          cikMap = await loadSecCikMapping();
+        } catch (mapErr: any) {
+          log.error(`[download_sec_reports] CIK-Mapping fehlgeschlagen: ${mapErr.message}`);
+          return {
+            content: [{ type: "text", text: `❌ Konnte SEC CIK-Mapping nicht laden: ${mapErr.message}` }],
+            isError: true,
+          };
+        }
+
+        // 2. BasePath für Dateispeicherung (konsistent mit manage_stock_documents)
+        const getBasePath = (): string => {
+          const envPath = Deno.env.get("DOCUMENTS_BASE_PATH");
+          if (envPath && envPath.trim()) return envPath.trim();
+          try {
+            Deno.statSync("/data/documents");
+            return "/data/documents";
+          } catch (_e) {
+            return "/home/daniel/stock-data-node/data/documents";
+          }
+        };
+        const computeSha256 = async (bytes: Uint8Array): Promise<string> => {
+          const hashBuf = await crypto.subtle.digest("SHA-256", bytes as any);
+          return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+        };
+
+        const basePath = getBasePath();
+
+        // 3. Ticker-Schleife
+        for (let idx = 0; idx < tickers.length; idx++) {
+          const rawTicker = tickers[idx].trim().toUpperCase();
+
+          // Skip ungültige Ticker
+          if (!rawTicker || SKIP_PREFIXES.some(p => rawTicker.startsWith(p))) {
+            results.push({ ticker: rawTicker, status: "skipped", reason: "Invalid ticker prefix" });
+            continue;
+          }
+
+          const secTicker = normalizeTickerForSec(rawTicker);
+          const cik = cikMap[secTicker] ?? cikMap[rawTicker];
+
+          if (!cik) {
+            results.push({ ticker: rawTicker, status: "skipped", reason: "Not a US-listed SEC filer" });
+            continue;
+          }
+
+          try {
+            // Rate Limiting (außer beim ersten Ticker)
+            if (idx > 0) {
+              await new Promise(r => setTimeout(r, rateLimitMs));
+            }
+
+            // Submissions abrufen
+            const submissions = await fetchSecSubmissions(cik);
+            const recent = submissions?.filings?.recent;
+            if (!recent || !recent.form) {
+              results.push({ ticker: rawTicker, status: "failed", reason: "No filings data from SEC" });
+              continue;
+            }
+
+            // Neuesten Bericht des passenden Typs finden
+            let accessionNumber: string | null = null;
+            let primaryDoc: string | null = null;
+            let filingDate: string | null = null;
+
+            for (let i = 0; i < recent.form.length; i++) {
+              if (recent.form[i] === report_type) {
+                accessionNumber = recent.accessionNumber[i];
+                primaryDoc = recent.primaryDocument[i];
+                filingDate = recent.filingDate?.[i] || null;
+                break;
+              }
+            }
+
+            if (!accessionNumber || !primaryDoc) {
+              results.push({ ticker: rawTicker, status: "failed", reason: `No recent ${report_type} filing found` });
+              continue;
+            }
+
+            // Duplikat-Check in DB
+            const fileName = primaryDoc;
+            const { data: existingDocs } = await supabase
+              .from("stock_documents")
+              .select("id, file_name")
+              .eq("ticker", rawTicker)
+              .eq("file_name", fileName)
+              .limit(1);
+
+            if (existingDocs && existingDocs.length > 0) {
+              results.push({ ticker: rawTicker, status: "already_exists", file: fileName, filing_date: filingDate });
+              continue;
+            }
+
+            // Rate Limiting vor Download
+            await new Promise(r => setTimeout(r, rateLimitMs));
+
+            // Download-URL generieren
+            const accNoDashes = accessionNumber.replace(/-/g, "");
+            const cikInt = String(cik);
+            const docUrl = `https://www.sec.gov/Archives/edgar/data/${cikInt}/${accNoDashes}/${primaryDoc}`;
+
+            log.info(`[download_sec_reports] Downloading ${rawTicker} ${report_type}: ${docUrl}`);
+            const fileBytes = await downloadSecDocument(docUrl);
+
+            // Ticker-Ordner anlegen und Datei speichern
+            const tickerDir = `${basePath}/${rawTicker}`;
+            try {
+              await Deno.mkdir(tickerDir, { recursive: true });
+            } catch (_e) {
+              // Bereits vorhanden
+            }
+
+            const destPath = `${tickerDir}/${fileName}`;
+            await Deno.writeFile(destPath, fileBytes);
+            log.info(`[download_sec_reports] Saved ${rawTicker} → ${destPath} (${fileBytes.length} bytes)`);
+
+            let registered = false;
+
+            // Optional: In stock_documents registrieren
+            if (auto_register) {
+              try {
+                const sha256 = await computeSha256(fileBytes);
+                const extParts = fileName.split(".");
+                const fileExt = extParts.length > 1 ? extParts.pop()!.toLowerCase() : "";
+                const relativePath = `${rawTicker}/${fileName}`;
+
+                // Fiscal year/quarter aus filingDate ableiten
+                let fiscalYear: number | null = null;
+                let fiscalQuarter: string | null = null;
+                if (filingDate) {
+                  const d = new Date(filingDate);
+                  fiscalYear = d.getFullYear();
+                  const month = d.getMonth() + 1;
+                  if (report_type === "10-Q") {
+                    if (month <= 3) fiscalQuarter = "Q4";
+                    else if (month <= 6) fiscalQuarter = "Q1";
+                    else if (month <= 9) fiscalQuarter = "Q2";
+                    else fiscalQuarter = "Q3";
+                  }
+                }
+
+                const docTypeMap: Record<string, string> = { "10-Q": "10-Q", "10-K": "10-K", "8-K": "8-K" };
+
+                const payload: any = {
+                  ticker: rawTicker,
+                  doc_type: docTypeMap[report_type] || "other",
+                  title: `${rawTicker} ${report_type} (Filed: ${filingDate || "unknown"})`,
+                  fiscal_year: fiscalYear,
+                  fiscal_quarter: fiscalQuarter,
+                  report_date: filingDate,
+                  relative_path: relativePath,
+                  file_name: fileName,
+                  file_extension: fileExt,
+                  file_size_bytes: fileBytes.length,
+                  sha256_hash: sha256,
+                  distillate_relative_path: null,
+                  distillate_content: null,
+                  distillate_generated_at: null,
+                };
+
+                const { error: insertErr } = await supabase
+                  .from("stock_documents")
+                  .insert(payload);
+
+                if (insertErr) {
+                  log.warn(`[download_sec_reports] DB-Insert für ${rawTicker} fehlgeschlagen: ${insertErr.message}`);
+                } else {
+                  registered = true;
+                }
+              } catch (regErr: any) {
+                log.warn(`[download_sec_reports] Auto-Register für ${rawTicker} fehlgeschlagen: ${regErr.message}`);
+              }
+            }
+
+            results.push({
+              ticker: rawTicker,
+              status: "success",
+              file: fileName,
+              filing_date: filingDate,
+              size_bytes: fileBytes.length,
+              registered,
+            });
+          } catch (tickerErr: any) {
+            log.error(`[download_sec_reports] ${rawTicker} fehlgeschlagen: ${tickerErr.message}`);
+            results.push({ ticker: rawTicker, status: "failed", reason: tickerErr.message });
+          }
+        }
+
+        // Ergebnis formatieren
+        const successCount = results.filter(r => r.status === "success").length;
+        const skippedCount = results.filter(r => r.status === "skipped").length;
+        const failedCount = results.filter(r => r.status === "failed").length;
+        const existsCount = results.filter(r => r.status === "already_exists").length;
+
+        const lines: string[] = [
+          `📄 **SEC ${report_type} Download — Ergebnis (${tickers.length} Ticker)**`,
+          `✅ Erfolgreich: ${successCount} | ⏭️ Übersprungen: ${skippedCount} | 📁 Bereits vorhanden: ${existsCount} | ❌ Fehlgeschlagen: ${failedCount}`,
+          "",
+        ];
+
+        for (const r of results) {
+          switch (r.status) {
+            case "success":
+              lines.push(`✅ **${r.ticker}**: ${r.file} (${(r.size_bytes / 1024).toFixed(0)} KB, Filed: ${r.filing_date})${r.registered ? " — In DB registriert" : ""}`);
+              break;
+            case "already_exists":
+              lines.push(`📁 **${r.ticker}**: ${r.file} bereits vorhanden`);
+              break;
+            case "skipped":
+              lines.push(`⏭️ **${r.ticker}**: ${r.reason}`);
+              break;
+            case "failed":
+              lines.push(`❌ **${r.ticker}**: ${r.reason}`);
+              break;
+          }
+        }
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          isError: failedCount > 0 && successCount === 0,
+        };
+      } catch (err: any) {
+        log.error(`download_sec_reports failed: ${err.message}`);
+        return {
+          content: [{ type: "text", text: `❌ Interner Fehler: ${err.message}` }],
+          isError: true,
+        };
       }
     }
   );

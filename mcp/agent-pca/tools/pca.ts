@@ -34,6 +34,11 @@ export function registerPcaTools(server: McpServer) {
         "- Für das gesamte Universum aller 5.500+ Aktien existiert das dynamische Master Universe 'all' bzw. 'all.txt' (gespeichert in `cda_master_universe`).\n" +
         "- 'all' kann direkt in Scannern wie `run_technical_scanner` über watchlists: ['all'] genutzt werden.\n" +
         "- Fundamentale Stammdaten (Marktkapitalisierung / Shares Outstanding, EPS, Umsatz) liegen im Master Universe (`cda_master_universe`) und werden über `manage_ticker_metadata` (CDA-Agent) abgerufen.\n\n" +
+        "AUTO-WATCHLIST DES UNIVERSAL SCANNERS:\n" +
+        "- `scan_latest` wird nach JEDEM Lauf von `run_universal_scanner` automatisch neu geschrieben und enthält dann das vollständige Treffer-Ergebnis dieses Laufs (Replace, ohne Cap; 0 Treffer = Liste wird geleert).\n" +
+        "- `LOAD` mit `list_name: 'scan_latest'` liefert also immer den letzten Scan-Stand (Reihenfolge = Scan-Sortierung).\n" +
+        "- Manuelle Änderungen an `scan_latest` werden beim nächsten Scan überschrieben.\n" +
+        "- Zum Öffnen/Aktualisieren im Chart Viewer: `manage_chart_viewer` (DISPLAY_WATCHLIST, list_name='scan_latest').\n\n" +
         "ACTIONS:\n" +
         "- LIST: List all existing watchlist names (if `list_name` is omitted) or show tickers in a specific list.\n" +
         "- LOAD: Load all tickers of a specific watchlist (returns formatted text + JSON ticker array).\n" +

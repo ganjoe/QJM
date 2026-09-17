@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log, getEmbedding, WEB_SCRAPER_URL, SWITCHYARD_URL, AGENT_ID } from "./shared.ts";
+import { supabase, log, getEmbedding, resolveVisionModel, WEB_SCRAPER_URL, SWITCHYARD_URL, AGENT_ID } from "./shared.ts";
 
 export function registerWebTools(server: McpServer) {
   // 1. Tool: web_scrape
@@ -161,7 +161,7 @@ export function registerWebTools(server: McpServer) {
         }
 
         const data = await res.json();
-        const embedding = await getEmbedding(`${company} ${report_type} report ${data.text_preview?.slice(0, 200) || ""}`);
+        const embedding = await getEmbedding(`${company} ${report_type} report ${data.text_preview?.slice(0, 200) || ""}`, "x_post");
 
         await supabase.from("agent_workspace").insert({
           agent_id: AGENT_ID,
@@ -221,7 +221,7 @@ export function registerWebTools(server: McpServer) {
         const screenshot = await screenshotRes.json();
 
         const visionPayload = {
-          model: "local",
+          model: await resolveVisionModel(),
           messages: [
             {
               role: "user",

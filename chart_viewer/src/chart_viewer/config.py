@@ -53,7 +53,8 @@ class ViewerConfig:
     default_crosshair_color: str = "#758696"
 
     # Plot rendering & Indicator styles
-    min_indicator_line_width_px: int = 4  # Minimum visual line width for indicator linecharts
+    default_indicator_line_width_px: int = 1  # Line width for indicator lines that set no explicit width
+    crisp_thin_indicator_lines: bool = True  # Draw 1px indicator lines without AA so they match the candle borders
     enable_antialiasing: bool = True  # Antialiasing for indicator plots and overlays
 
     # Mouse interaction
@@ -103,7 +104,8 @@ class ViewerConfig:
             right_margin_pct=float(os.getenv("CV_RIGHT_MARGIN_PCT", "0.10")),
             touch_left_border=os.getenv("CV_TOUCH_LEFT_BORDER", "true").lower() in ("true", "1", "yes"),
             y_handle_hit_radius_px=float(os.getenv("CV_Y_HANDLE_HIT_RADIUS_PX", "8.0")),
-            min_indicator_line_width_px=int(os.getenv("CV_MIN_INDICATOR_LINE_WIDTH_PX", "4")),
+            default_indicator_line_width_px=int(os.getenv("CV_DEFAULT_INDICATOR_LINE_WIDTH_PX", "1")),
+            crisp_thin_indicator_lines=os.getenv("CV_CRISP_THIN_INDICATOR_LINES", "true").lower() in ("true", "1", "yes"),
             enable_antialiasing=os.getenv("CV_ENABLE_ANTIALIASING", "true").lower() in ("true", "1", "yes"),
             wheel_scroll_step_bars=float(os.getenv("CV_WHEEL_SCROLL_STEP_BARS", "5.0")),
             screenshot_width=int(os.getenv("CV_SCREENSHOT_WIDTH", "640")),

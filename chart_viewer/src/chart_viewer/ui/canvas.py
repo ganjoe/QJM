@@ -135,6 +135,7 @@ class ChartCanvas(QWidget):
         if main_pane:
             main_overlays = {ov.overlay_id: ov for ov in pane_overlays.get("main", [])}
             main_pane.set_data(win_data.bars, main_overlays, win_data.style_defaults)
+            main_pane.set_annotations(win_data.annotations)
             main_pane.watermark_text = f"{win_data.symbol}"
             if win_data.timeframe:
                 main_pane.watermark_text += f" • {win_data.timeframe.to_string()}"
@@ -309,6 +310,17 @@ class ChartCanvas(QWidget):
         """Apply an inter-window sync: vertical line only, no active pane, no Y."""
         for pane in self._panes.values():
             pane.set_crosshair(x_px, None, False)
+
+    def set_annotations(self, annotations) -> None:
+        """Push the annotation set to the chart pane without touching zoom/pan state.
+
+        Live annotation.set / annotation.remove messages must not reinitialise the
+        viewport the way set_window_data() does (that pins the X-axis to the right
+        edge and would jerk the chart on every drawing update).
+        """
+        main_pane = self._panes.get("main")
+        if main_pane:
+            main_pane.set_annotations(annotations)
 
     def mark_layers_dirty(self) -> None:
         """Mark all panes dirty for repaint."""

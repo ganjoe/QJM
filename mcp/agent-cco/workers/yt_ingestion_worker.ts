@@ -435,7 +435,7 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
     const t0 = Date.now();
     let embeddings: number[][];
     try {
-      embeddings = await getEmbeddingsBatch(augmentedTexts);
+      embeddings = await getEmbeddingsBatch(augmentedTexts, "yt");
     } finally {
       ytIngestionStats.activeEmbeddingsRunning = Math.max(0, ytIngestionStats.activeEmbeddingsRunning - 1);
     }

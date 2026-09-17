@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import duckdb
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,12 +57,19 @@ PARQUET_BASE = _first_existing_dir(
 
 BASE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 _DEFAULT_MAX_WORKERS = int(os.environ.get("SCANNER_MAX_WORKERS", "16"))
-_DEFAULT_MAX_TICKERS = int(os.environ.get("SCANNER_MAX_TICKERS", "2000"))
+_DEFAULT_MAX_TICKERS = int(os.environ.get("SCANNER_MAX_TICKERS", "10000"))
 _DEFAULT_LIMIT_HITS = int(os.environ.get("SCANNER_LIMIT_HITS", "200"))
 _MAX_LIMIT_HITS = int(os.environ.get("SCANNER_MAX_HITS", "1000"))
 _TOTAL_TIMEOUT_S = float(os.environ.get("SCANNER_TOTAL_TIMEOUT_S", "300"))
 _UNIVERSE_ECHO_LIMIT = int(os.environ.get("SCANNER_UNIVERSE_ECHO_LIMIT", "200"))
 _SKIPPED_ECHO_LIMIT = int(os.environ.get("SCANNER_SKIPPED_ECHO_LIMIT", "100"))
+
+_DEFAULT_CUTOFF_LONG = float(os.environ.get("SCANNER_DEFAULT_CUTOFF_LONG", "90.0"))
+_DEFAULT_CUTOFF_SHORT = float(os.environ.get("SCANNER_DEFAULT_CUTOFF_SHORT", "10.0"))
+_DEFAULT_TOP_COUNT = int(os.environ.get("SCANNER_DEFAULT_TOP_COUNT", "20"))
+# Neutral DCR/WCR score for candles without a high-low range (see universal_scanner).
+_FLAT_RANGE_SCORE = float(os.environ.get("SCANNER_FLAT_RANGE_SCORE", "50.0"))
+_RANGE_EPSILON = 1e-6
 
 HIT_MODES = ("first_of_episode", "all_bars")
 SKIP_REASONS = (
@@ -142,6 +150,10 @@ class ScannerRunRequest(BaseModel):
     include_details: bool = Field(default=False, description="Attach per-ticker scores/details")
     max_tickers: int = Field(default=_DEFAULT_MAX_TICKERS, description="Universe cap")
     warmup_bars: Optional[int] = Field(default=None, description="Bars loaded before 'from' (default: scanner min_bars)")
+    direction: Optional[str] = Field(default="long", description="Direction for directional scanners ('long' or 'short')")
+    cutoff: Optional[float] = Field(default=None, description="Cutoff threshold in % for DCR/WCR (e.g. 90 for DCR >= 90% long, 10 for DCR <= 10% short)")
+    count: Optional[int] = Field(default=None, description="Max number of top matches to return, ranked by score (e.g. 20)")
+    scanner_params: Optional[Dict[str, Dict[str, Any]]] = Field(default=None, description="Optional per-scanner parameter overrides")
 
     @property
     def has_range(self) -> bool:
@@ -173,7 +185,7 @@ class BaseScanner(ABC):
     support_range: bool = True
 
     @abstractmethod
-    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None, **kwargs) -> Dict[str, Any]:
         """
         Evaluates the scanner condition on the LAST bar of ``df``.
 
@@ -182,7 +194,7 @@ class BaseScanner(ABC):
         raise NotImplementedError
 
     def evaluate_range(self, ticker: str, df: pd.DataFrame,
-                       feat_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                       feat_df: Optional[pd.DataFrame] = None, **kwargs) -> pd.DataFrame:
         """
         Vectorized default: causal bar-by-bar replay of ``evaluate()``.
 
@@ -197,7 +209,7 @@ class BaseScanner(ABC):
         for i in range(len(df)):
             window = df.iloc[: i + 1]
             feat_window = feat_df.iloc[: i + 1] if isinstance(feat_df, pd.DataFrame) else None
-            res = self.evaluate(ticker, window, feat_window)
+            res = self.evaluate(ticker, window, feat_window, **kwargs)
             matched.append(bool(res.get("matched")))
             scores.append(res.get("score"))
 
@@ -234,7 +246,7 @@ class MinerviniTrendScanner(BaseScanner):
                    "above the 52-week low and within 25% of the 52-week high.")
     min_bars = 252
 
-    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None, **kwargs) -> Dict[str, Any]:
         if len(df) < 200:
             return {"matched": False, "score": 0, "details": {"error": "Not enough history (<200 bars)"}}
 
@@ -288,7 +300,7 @@ class MinerviniTrendScanner(BaseScanner):
         }
 
     def evaluate_range(self, ticker: str, df: pd.DataFrame,
-                       feat_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                       feat_df: Optional[pd.DataFrame] = None, **kwargs) -> pd.DataFrame:
         close = df["close"].astype(float)
         sma_50 = close.rolling(50).mean()
         sma_150 = close.rolling(150).mean()
@@ -320,7 +332,7 @@ class SmaCrossScanner(BaseScanner):
                    "(golden cross active); score is the spread in percent.")
     min_bars = 200
 
-    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None, **kwargs) -> Dict[str, Any]:
         if len(df) < 200:
             return {"matched": False, "score": None, "details": {"error": "Not enough history (<200 bars)"}}
 
@@ -345,7 +357,7 @@ class SmaCrossScanner(BaseScanner):
         }
 
     def evaluate_range(self, ticker: str, df: pd.DataFrame,
-                       feat_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                       feat_df: Optional[pd.DataFrame] = None, **kwargs) -> pd.DataFrame:
         close = df["close"].astype(float)
         sma_50 = close.rolling(50).mean()
         sma_200 = close.rolling(200).mean()
@@ -448,7 +460,7 @@ class MadboScanner(BaseScanner):
             suspect = suspect.iloc[list(positions)]
         return int(suspect.sum())
 
-    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None, **kwargs) -> Dict[str, Any]:
         if len(df) < self.min_bars:
             return {"matched": False, "score": None,
                     "details": {"error": f"Not enough history (<{self.min_bars} bars)"}}
@@ -475,9 +487,205 @@ class MadboScanner(BaseScanner):
         }
 
     def evaluate_range(self, ticker: str, df: pd.DataFrame,
-                       feat_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                       feat_df: Optional[pd.DataFrame] = None, **kwargs) -> pd.DataFrame:
         frame = self.frame(df)
         return frame[["matched", "score"]]
+
+
+class DcrScanner(BaseScanner):
+    """Day Close Range (DCR) scanner.
+
+    DCR = (Close - Low) / (High - Low) * 100%
+    Evaluates where the daily candle closed within its high-low range.
+    Used to identify leading groups and strong intraday accumulation/distribution;
+    the aggregate count of high-ranking closes serves as a very short-term market breadth indicator.
+    """
+
+    name = "dcr"
+    description = (
+        "Day Close Range (DCR) in %: evaluates the position of the close within the daily candle's "
+        "range ((Close - Low) / (High - Low) * 100). Used to identify leading groups and strong intraday "
+        "accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term "
+        "market breadth indicator. Supports long (high close) and short (low close)."
+    )
+    min_bars = 1
+
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                 direction: str = "long", cutoff: Optional[float] = None, **kwargs) -> Dict[str, Any]:
+        if len(df) < self.min_bars:
+            return {"matched": False, "score": None, "details": {"error": "Not enough history"}}
+
+        row = df.iloc[-1]
+        c = float(row["close"])
+        h = float(row["high"])
+        l = float(row["low"])
+        rng = h - l
+
+        if rng <= _RANGE_EPSILON:
+            dcr = _FLAT_RANGE_SCORE
+        else:
+            dcr = round(((c - l) / rng) * 100.0, 2)
+            dcr = max(0.0, min(100.0, dcr))
+
+        dir_clean = (direction or "long").strip().lower()
+        if cutoff is None:
+            eff_cutoff = _DEFAULT_CUTOFF_LONG if dir_clean == "long" else _DEFAULT_CUTOFF_SHORT
+        else:
+            eff_cutoff = float(cutoff)
+
+        if dir_clean == "short":
+            matched = dcr <= eff_cutoff
+        else:
+            matched = dcr >= eff_cutoff
+
+        return {
+            "matched": bool(matched),
+            "score": dcr,
+            "details": {
+                "dcr_pct": dcr,
+                "direction": dir_clean,
+                "cutoff": eff_cutoff,
+                "high": round(h, 4),
+                "low": round(l, 4),
+                "close": round(c, 4),
+                "range": round(rng, 4),
+            },
+        }
+
+    def evaluate_range(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                       direction: str = "long", cutoff: Optional[float] = None, **kwargs) -> pd.DataFrame:
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        rng = high - low
+
+        dcr = np.where(rng > _RANGE_EPSILON, ((close - low) / rng) * 100.0, _FLAT_RANGE_SCORE)
+        dcr = np.clip(dcr, 0.0, 100.0)
+        dcr_series = pd.Series(dcr, index=df.index).round(2)
+
+        dir_clean = (direction or "long").strip().lower()
+        if cutoff is None:
+            eff_cutoff = _DEFAULT_CUTOFF_LONG if dir_clean == "long" else _DEFAULT_CUTOFF_SHORT
+        else:
+            eff_cutoff = float(cutoff)
+
+        if dir_clean == "short":
+            matched = dcr_series <= eff_cutoff
+        else:
+            matched = dcr_series >= eff_cutoff
+
+        return pd.DataFrame({
+            "matched": matched.astype(bool),
+            "score": dcr_series.astype("float64"),
+        })
+
+
+class WcrScanner(BaseScanner):
+    """Week Close Range (WCR) scanner.
+
+    WCR = (Close - WeekLow) / (WeekHigh - WeekLow) * 100%
+    Evaluates where the latest candle closed within the week-to-date high-low range.
+    Used to identify leading groups and weekly accumulation/distribution;
+    the aggregate count of high-ranking closes serves as a very short-term market breadth indicator.
+    """
+
+    name = "wcr"
+    description = (
+        "Week Close Range (WCR) in %: evaluates the position of the close within the week-to-date "
+        "candle's range ((Close - WeekLow) / (WeekHigh - WeekLow) * 100). Used to identify leading groups "
+        "and weekly accumulation/distribution; the aggregate count of high-ranking closes serves as a "
+        "very short-term market breadth indicator. Supports long (high close) and short (low close)."
+    )
+    min_bars = 1
+
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                 direction: str = "long", cutoff: Optional[float] = None, **kwargs) -> Dict[str, Any]:
+        if len(df) < self.min_bars:
+            return {"matched": False, "score": None, "details": {"error": "Not enough history"}}
+
+        # Identify all daily bars belonging to the latest bar's ISO week
+        dt_last = datetime.fromtimestamp(int(df["timestamp"].iloc[-1]), tz=timezone.utc)
+        iso_last = dt_last.isocalendar()[:2]
+
+        timestamps = df["timestamp"].to_numpy()
+        week_indices = []
+        for i in range(len(df) - 1, -1, -1):
+            dt_i = datetime.fromtimestamp(int(timestamps[i]), tz=timezone.utc)
+            if dt_i.isocalendar()[:2] == iso_last:
+                week_indices.append(i)
+            else:
+                break
+        week_indices.reverse()
+        week_df = df.iloc[week_indices]
+
+        c = float(df["close"].iloc[-1])
+        wh = float(week_df["high"].max())
+        wl = float(week_df["low"].min())
+        rng = wh - wl
+
+        if rng <= _RANGE_EPSILON:
+            wcr = _FLAT_RANGE_SCORE
+        else:
+            wcr = round(((c - wl) / rng) * 100.0, 2)
+            wcr = max(0.0, min(100.0, wcr))
+
+        dir_clean = (direction or "long").strip().lower()
+        if cutoff is None:
+            eff_cutoff = _DEFAULT_CUTOFF_LONG if dir_clean == "long" else _DEFAULT_CUTOFF_SHORT
+        else:
+            eff_cutoff = float(cutoff)
+
+        if dir_clean == "short":
+            matched = wcr <= eff_cutoff
+        else:
+            matched = wcr >= eff_cutoff
+
+        return {
+            "matched": bool(matched),
+            "score": wcr,
+            "details": {
+                "wcr_pct": wcr,
+                "direction": dir_clean,
+                "cutoff": eff_cutoff,
+                "week_high": round(wh, 4),
+                "week_low": round(wl, 4),
+                "close": round(c, 4),
+                "week_range": round(rng, 4),
+                "week_bars": len(week_indices),
+            },
+        }
+
+    def evaluate_range(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                       direction: str = "long", cutoff: Optional[float] = None, **kwargs) -> pd.DataFrame:
+        dt = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        iso = dt.dt.isocalendar()
+        # Group by ISO year (not calendar year) so a week spanning a year boundary stays one week,
+        # matching WcrScanner.evaluate().
+        week_id = iso["year"].astype(str) + "_" + iso["week"].astype(str)
+        cum_high = df.groupby(week_id)["high"].cummax().astype(float)
+        cum_low = df.groupby(week_id)["low"].cummin().astype(float)
+        close = df["close"].astype(float)
+        rng = cum_high - cum_low
+
+        wcr = np.where(rng > _RANGE_EPSILON, ((close - cum_low) / rng) * 100.0, _FLAT_RANGE_SCORE)
+        wcr = np.clip(wcr, 0.0, 100.0)
+        wcr_series = pd.Series(wcr, index=df.index).round(2)
+
+        dir_clean = (direction or "long").strip().lower()
+        if cutoff is None:
+            eff_cutoff = _DEFAULT_CUTOFF_LONG if dir_clean == "long" else _DEFAULT_CUTOFF_SHORT
+        else:
+            eff_cutoff = float(cutoff)
+
+        if dir_clean == "short":
+            matched = wcr_series <= eff_cutoff
+        else:
+            matched = wcr_series >= eff_cutoff
+
+        return pd.DataFrame({
+            "matched": matched.astype(bool),
+            "score": wcr_series.astype("float64"),
+        })
 
 
 # ─── Scanner Registry ─────────────────────────────────────────────────────────
@@ -489,6 +697,8 @@ class ScannerRegistry:
         self.register(MinerviniTrendScanner())
         self.register(SmaCrossScanner())
         self.register(MadboScanner())
+        self.register(DcrScanner())
+        self.register(WcrScanner())
 
     def register(self, scanner: BaseScanner):
         self._scanners[scanner.name.lower()] = scanner
@@ -594,7 +804,11 @@ async def build_universe(req: ScannerRunRequest, warnings: List[str]) -> Tuple[L
             seen.add(t)
             tickers.append(t)
 
-    for ref in (req.watchlists or []):
+    watchlists = list(req.watchlists or [])
+    if not req.tickers and not watchlists:
+        watchlists = ["all"]
+
+    for ref in watchlists:
         try:
             resolved = await resolve_watchlist_reference(str(ref))
         except ValueError as e:
@@ -629,10 +843,55 @@ def _episodes(mask: Sequence[bool], mode: str) -> List[Tuple[int, int]]:
     return episodes
 
 
+def parse_scanner_spec(raw: str) -> Tuple[str, Dict[str, Any]]:
+    """Parses a scanner specifier, supporting inline parameters like 'dcr:85' or 'dcr:short:15'.
+
+    Raises ValueError for malformed specifiers instead of silently ignoring extra parts.
+    """
+    parts = [p.strip() for p in str(raw or "").strip().split(":")]
+    name = parts[0].lower()
+    params: Dict[str, Any] = {}
+    if not name:
+        raise ValueError(f"Invalid scanner specifier '{raw}'.")
+    if len(parts) > 3:
+        raise ValueError(
+            f"Invalid scanner specifier '{raw}': expected 'name', 'name:cutoff', 'name:direction' "
+            f"or 'name:direction:cutoff'."
+        )
+    if len(parts) == 2:
+        val = parts[1]
+        if val.lower() in ("long", "short"):
+            params["direction"] = val.lower()
+        else:
+            try:
+                params["cutoff"] = float(val)
+            except ValueError:
+                raise ValueError(f"Invalid scanner parameter '{val}' in '{raw}'.")
+    elif len(parts) == 3:
+        p1, p2 = parts[1], parts[2]
+        if p1.lower() in ("long", "short"):
+            params["direction"] = p1.lower()
+            try:
+                params["cutoff"] = float(p2)
+            except ValueError:
+                raise ValueError(f"Invalid cutoff '{p2}' in '{raw}'.")
+        else:
+            try:
+                params["cutoff"] = float(p1)
+            except ValueError:
+                raise ValueError(f"Invalid scanner parameter '{p1}' in '{raw}'.")
+            if p2.lower() in ("long", "short"):
+                params["direction"] = p2.lower()
+            else:
+                raise ValueError(f"Invalid direction '{p2}' in '{raw}'.")
+    return name, params
+
+
 def _scan_ticker(ticker: str, scanners: Sequence[BaseScanner], timeframe: str,
                  from_ts: Optional[int], to_ts: Optional[int], warmup_bars: int,
                  min_bars: int, want_features: bool, hit_mode: str,
-                 include_details: bool) -> Dict[str, Any]:
+                 include_details: bool,
+                 scanner_params: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "ticker": ticker,
         "status": "ok",
@@ -682,20 +941,21 @@ def _scan_ticker(ticker: str, scanners: Sequence[BaseScanner], timeframe: str,
         result["warmup_short"] = True
 
     for sc in scanners:
+        sc_kwargs = (scanner_params or {}).get(sc.name, {})
         eval_positions = positions if (from_ts is not None or to_ts is not None) else [len(df) - 1]
         issues = sc.data_quality_issues(df, feat_df, eval_positions)
         if issues:
             result["data_quality_bars"] += int(issues)
 
         if from_ts is None and to_ts is None:
-            evaluation = sc.evaluate(ticker, df, feat_df)
+            evaluation = sc.evaluate(ticker, df, feat_df, **sc_kwargs)
             result["matches"][sc.name] = bool(evaluation.get("matched", False))
             result["scores"][sc.name] = evaluation.get("score")
             if include_details:
                 result["details"][sc.name] = evaluation.get("details", {})
             continue
 
-        frame = sc.evaluate_range(ticker, df, feat_df)
+        frame = sc.evaluate_range(ticker, df, feat_df, **sc_kwargs)
         flags = frame["matched"].to_numpy().tolist()
         scores = frame["score"].to_numpy()
 
@@ -717,7 +977,8 @@ def _scan_ticker(ticker: str, scanners: Sequence[BaseScanner], timeframe: str,
                 hit["last_match_date"] = ts_to_date(int(ts[positions[local_pos + bars_matched - 1]]))
             if include_details:
                 detail_res = sc.evaluate(ticker, df.iloc[: pos + 1],
-                                         feat_df.iloc[: pos + 1] if feat_df is not None else None)
+                                         feat_df.iloc[: pos + 1] if feat_df is not None else None,
+                                         **sc_kwargs)
                 hit["details"] = detail_res.get("details", {})
             result["hits"].append(hit)
 
@@ -754,19 +1015,37 @@ async def run_scanners_endpoint(req: ScannerRunRequest):
 
     # 1. Scanners
     selected: List[BaseScanner] = []
+    resolved_params: Dict[str, Dict[str, Any]] = {}
     for raw_name in (req.scanners or []):
-        sc = registry.get(raw_name)
+        try:
+            base_name, inline_params = parse_scanner_spec(raw_name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        sc = registry.get(base_name)
         if sc is None:
             raise HTTPException(status_code=400,
                                 detail=f"Scanner '{raw_name}' not found. Available: {registry.names()}")
         if sc not in selected:
             selected.append(sc)
+
+        # Merge (instead of overwrite) so a duplicate scanner name keeps the union of its params.
+        p: Dict[str, Any] = dict(resolved_params.get(sc.name, {}))
+        if req.direction:
+            p["direction"] = req.direction
+        if req.cutoff is not None:
+            p["cutoff"] = req.cutoff
+        if req.count is not None:
+            p["count"] = req.count
+        if req.scanner_params and sc.name in req.scanner_params:
+            p.update(req.scanner_params[sc.name])
+        p.update(inline_params)
+        resolved_params[sc.name] = p
+
     if not selected:
         raise HTTPException(status_code=400, detail=f"No scanners selected. Available: {registry.names()}")
 
     if not req.tickers and not req.watchlists:
-        raise HTTPException(status_code=400,
-                            detail="Provide at least one universe source: 'tickers' and/or 'watchlists'.")
+        req.watchlists = ["all"]
 
     hit_mode = (req.hit_mode or "first_of_episode").strip().lower()
     if hit_mode not in HIT_MODES:
@@ -822,7 +1101,8 @@ async def run_scanners_endpoint(req: ScannerRunRequest):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_scan_ticker, t, selected, timeframe, from_ts, to_ts,
-                            warmup_bars, min_bars, want_features, hit_mode, req.include_details): t
+                            warmup_bars, min_bars, want_features, hit_mode, req.include_details,
+                            resolved_params): t
             for t in tickers
         }
         for future in as_completed(futures):
@@ -907,12 +1187,53 @@ async def run_scanners_endpoint(req: ScannerRunRequest):
             matches[res["ticker"]] = {sc.name: bool(res["matches"].get(sc.name, False)) for sc in selected}
             if res.get("as_of"):
                 as_of_ts = res["as_of"] if as_of_ts is None else max(as_of_ts, res["as_of"])
+
+        # Top-N ranking if count is provided. count only narrows the set of tickers that already
+        # matched the scanner; it never fabricates a match for a below-threshold score.
+        for sc in selected:
+            sc_p = resolved_params.get(sc.name, {})
+            eff_count = sc_p.get("count")
+            if eff_count is None:
+                eff_count = req.count
+            if eff_count is not None and eff_count > 0:
+                direction = str(sc_p.get("direction") or req.direction or "long").strip().lower()
+                candidates = []
+                for res in ticker_results:
+                    if res.get("status") != "ok":
+                        continue
+                    t = res["ticker"]
+                    if not matches.get(t, {}).get(sc.name):
+                        continue
+                    score = res["scores"].get(sc.name)
+                    if score is None:
+                        continue
+                    candidates.append((t, float(score)))
+
+                # Sort by score: descending for long, ascending for short.
+                candidates.sort(key=lambda item: item[1], reverse=(direction != "short"))
+
+                allowed_tickers = {item[0] for item in candidates[:eff_count]}
+                for t in matches:
+                    if t not in allowed_tickers:
+                        matches[t][sc.name] = False
+
+        scores_map = {r["ticker"]: {sc.name: r["scores"].get(sc.name) for sc in selected}
+                      for r in ticker_results if r.get("status") == "ok"}
+        primary_sc = selected[0].name
+        direction = resolved_params.get(primary_sc, {}).get("direction", req.direction or "long").strip().lower()
+        matched_tickers = [t for t, m in matches.items() if any(m.values())]
+        matched_tickers.sort(
+            key=lambda t: (scores_map.get(t, {}).get(primary_sc) is not None,
+                           scores_map.get(t, {}).get(primary_sc, -9999)),
+            reverse=(direction != "short")
+        )
+
         response["matches"] = matches
+        response["matched_tickers"] = matched_tickers
         response["as_of"] = ts_to_date(as_of_ts) if as_of_ts else None
         response["true_count"] = {sc.name: sum(1 for m in matches.values() if m.get(sc.name)) for sc in selected}
+        response["scores"] = scores_map
         if req.include_details:
-            response["scores"] = {r["ticker"]: {sc.name: r["scores"].get(sc.name) for sc in selected}
-                                  for r in ticker_results if r.get("status") == "ok"}
             response["details"] = {r["ticker"]: r["details"] for r in ticker_results
                                    if r.get("status") == "ok" and r.get("details")}
         return response
@@ -951,6 +1272,7 @@ async def run_scanners_endpoint(req: ScannerRunRequest):
         "by_scanner": by_scanner,
         "by_ticker": by_ticker,
     }
+    response["matched_tickers"] = list(by_ticker.keys())
     if hits_total > len(hits):
         response["warnings"].append(
             f"Output truncated: {hits_total} hits found, first {len(hits)} returned (raise 'limit_hits' up to {_MAX_LIMIT_HITS})."

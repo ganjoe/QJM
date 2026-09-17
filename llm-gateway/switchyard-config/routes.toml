@@ -62,6 +62,15 @@ strong_target = "gemini_31_pro"
 base_threshold = 0.5
 threshold_step = 0.1
 
+# --- Embeddings (genau EIN Backend, kein GPU-Target) ---
+# Die iGPU kann das 6,6-GB-Modell nicht halten und rechnet ohnehin auf der CPU; ein zweites
+# Backend würde nur den warmgehaltenen Zustand zerstören. Es gibt bewusst KEINEN
+# Modell-Fallback: 'qwen3-embedding:8b' ist auf 4096 Dimensionen fixiert, ein anderes Modell
+# würde Vektoren eines fremden Raums in denselben Index schreiben.
+#
+# Priorisierung übernimmt der Gateway-Scheduler (switchyard/gateway.py), gesteuert über das
+# Body-Feld "priority":  x_search (interaktiv) > x_post (X-Posts/Profile) > yt (Massenlast).
+# keep_alive=-1 hält das Modell dauerhaft geladen (native /api/embed-API).
 [routes.embeddings]
 id = "embeddings"
 type = "passthrough"

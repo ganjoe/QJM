@@ -36,7 +36,7 @@ async function processEmbeddingBatch(batchSize: number = EMBEDDING_BATCH_SIZE): 
   });
 
   // Batch embedding call via Switchyard
-  const embeddings = await getEmbeddingsBatch(textsToEmbed);
+  const embeddings = await getEmbeddingsBatch(textsToEmbed, "x_post");
 
   // Update records in DB
   for (let i = 0; i < posts.length; i++) {

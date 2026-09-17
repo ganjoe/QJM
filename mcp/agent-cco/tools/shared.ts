@@ -332,12 +332,52 @@ export function isValidTicker(ticker: string): boolean {
   // Reject percentage or multiplier formats (e.g. "50%", "5X")
   if (/^\d+[%xX]$/.test(t)) return false;
 
+  // Fiat-Währungen / Stablecoins sind keine handelbaren Aktien-Ticker
+  // (verhindert False Positives wie "$USD", "$USDC").
+  const NON_TICKERS = new Set([
+    "USD", "USDT", "USDC", "BUSD", "TUSD", "DAI",
+    "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
+    "CNY", "HKD", "INR", "KRW", "SEK", "NOK", "MXN", "BRL",
+  ]);
+  if (NON_TICKERS.has(t)) return false;
+
   const isAlphaSymbol = /^[A-Z0-9.\-\s]+$/.test(t) && /[A-Z]/.test(t);
   const isExchangeNumericCode = /^\d{4,6}(\.[A-Z]+)?$/.test(t);
 
   return isAlphaSymbol || isExchangeNumericCode;
 }
 
+/**
+ * Normalisiert rohe Ticker-Ausgaben (LLM/Text): trimmt, entfernt führende $/#,
+ * UPPERCASES, dedupliziert und verwirft ungültige Tokens (Preise, Jahre, Mengen).
+ */
+export function normalizeTickers(raw: unknown): string[] {
+  const parts: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (item == null) continue;
+      parts.push(...String(item).split(/[,\s]+/));
+    }
+  } else if (typeof raw === "string") {
+    parts.push(...raw.split(/[,\s]+/));
+  } else {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const part of parts) {
+    const t = part.trim().toUpperCase().replace(/^[$#]+/, "").replace(/[.,;:!?)\]}]+$/, "");
+    if (!t || !isValidTicker(t)) continue;
+    out.add(t);
+  }
+  return Array.from(out);
+}
+
+/**
+ * Persistiert Erst-Erwähnungen. Wichtig: Ein späterer Post darf ein bereits
+ * gespeichertes früheres Datum NICHT überschreiben. Die vorherige Version nutzte
+ * ein blindes Upsert und verschob die "Erst"-Erwähnung bei jeder neuen Erwähnung
+ * nach vorne (deshalb war max(first_mentioned_at) == Verarbeitungszeitpunkt).
+ */
 export async function updateFirstMentions(author: string, tickers: string[], publishedAt: string, postId: string): Promise<void> {
   if (!tickers || tickers.length === 0 || !publishedAt || !postId) return;
   const cleanAuthor = author.toLowerCase().startsWith("@") ? author.toLowerCase() : `@${author.toLowerCase()}`;
@@ -345,46 +385,84 @@ export async function updateFirstMentions(author: string, tickers: string[], pub
     const cleanTicker = ticker.toUpperCase().replace(/^[$#]/, "").trim();
     if (!cleanTicker || !isValidTicker(cleanTicker)) continue;
     try {
-      await supabase.from("x_first_mentions").upsert({
-        ticker: cleanTicker,
-        author: cleanAuthor,
-        first_mentioned_at: publishedAt,
-        post_id: postId
-      }, { onConflict: "ticker,author" });
+      // Atomar: upsert_first_mention aktualisiert nur, wenn das neue Datum früher liegt.
+      const { error } = await supabase.rpc("upsert_first_mention", {
+        p_ticker: cleanTicker,
+        p_author: cleanAuthor,
+        p_first_mentioned_at: publishedAt,
+        p_post_id: postId,
+      });
+      if (error) throw error;
     } catch (e: any) {
-      log.error(`Failed to update first mention for ${cleanTicker}: ${e.message}`);
+      // Fallback, falls die RPC noch nicht deployt ist: manuell, aber nie ein späteres Datum übernehmen.
+      try {
+        const { data: existing } = await supabase
+          .from("x_first_mentions")
+          .select("first_mentioned_at")
+          .eq("ticker", cleanTicker)
+          .eq("author", cleanAuthor)
+          .maybeSingle();
+        if (!existing) {
+          await supabase.from("x_first_mentions").insert({
+            ticker: cleanTicker,
+            author: cleanAuthor,
+            first_mentioned_at: publishedAt,
+            post_id: postId,
+          });
+        } else if (new Date(publishedAt).getTime() < new Date(existing.first_mentioned_at).getTime()) {
+          await supabase
+            .from("x_first_mentions")
+            .update({ first_mentioned_at: publishedAt, post_id: postId })
+            .eq("ticker", cleanTicker)
+            .eq("author", cleanAuthor);
+        }
+      } catch (e2: any) {
+        log.error(`Failed to update first mention for ${cleanTicker}: ${e2.message} (rpc: ${e.message})`);
+      }
     }
   }
 }
 
 // --- Embeddings via Switchyard ---
-export async function getEmbedding(text: string): Promise<number[]> {
-  const embeddings = await getEmbeddingsBatch([text]);
+// Prioritätsklassen für den Switchyard-Embedding-Scheduler:
+//   'x_search' = interaktive Suche (Vorrang), 'x_post' = X-Posts/Profile, 'yt' = YouTube-Chunks.
+// Ohne Angabe behandelt der Gateway die Anfrage als interaktiv.
+export type EmbeddingPriority = "x_search" | "x_post" | "yt";
+
+export async function getEmbedding(
+  text: string,
+  priority: EmbeddingPriority = "x_post",
+): Promise<number[]> {
+  const embeddings = await getEmbeddingsBatch([text], priority);
   return embeddings[0];
 }
 
-export async function getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
+export async function getEmbeddingsBatch(
+  texts: string[],
+  priority: EmbeddingPriority = "x_post",
+): Promise<number[][]> {
   if (!texts || texts.length === 0) return [];
   const start = Date.now();
   const baseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
-  
+  const cls = priority || "x_post";
+
   const r = await fetch(`${baseUrl}/embeddings`, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
       "Authorization": "Bearer switchyard"
     },
-    body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
+    body: JSON.stringify({ model: EMBED_MODEL, input: texts, priority: cls }),
   });
 
   if (!r.ok) {
     const errText = await r.text();
-    throw new Error(`Embeddings failed (${baseUrl}/embeddings, status ${r.status}): ${errText}`);
+    throw new Error(`Embeddings failed (${baseUrl}/embeddings, class ${cls}, status ${r.status}): ${errText}`);
   }
 
   const d = await r.json();
   const duration = ((Date.now() - start) / 1000).toFixed(2);
-  log.debug(`[Switchyard] Batch Embedding (${texts.length} items) completed in ${duration}s`);
+  log.debug(`[Switchyard] Batch Embedding (${texts.length} items, class ${cls}) completed in ${duration}s`);
   return d.data.map((item: any) => item.embedding);
 }
 
@@ -406,9 +484,100 @@ export async function getActiveProvider(key: string = "cco"): Promise<string> {
   return "auto";
 }
 
+// --- Switchyard Route Validation ---
+// Verhindert 404 "No route registered for model X", wenn system_settings.provider_config
+// auf eine Route zeigt, die in llm-gateway/switchyard-config/routes.toml nicht (mehr) existiert.
+// Beispiel: 'local' wurde mit Commit 07daea0 entfernt, provider_config zeigt aber weiterhin darauf.
+export const FALLBACK_ROUTE = "auto";
+
+const ROUTES_TTL_MS = 5 * 60 * 1000;
+const INVALID_TTL_MS = 60 * 1000;
+const ROUTES_TIMEOUT_MS = 2000;
+
+let routesCache: { names: Set<string>; fetchedAt: number } | null = null;
+const invalidModelCache = new Map<string, number>();
+
+/** Liest die registrierten Chat-Routen aus GET /v1/models (5 min TTL, negativer Cache 60 s). */
+async function fetchRegisteredRoutes(): Promise<Set<string> | null> {
+  const base = SWITCHYARD_URL.replace(/\/v1\/?$/, "");
+  try {
+    const res = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(ROUTES_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const data = Array.isArray(json?.data) ? json.data : [];
+    const chatRoutes = data.filter(
+      (m: any) => m && typeof m.id === "string" && m.type !== "embedding",
+    );
+    if (chatRoutes.length === 0) return null;
+    return new Set<string>(chatRoutes.map((m: any) => String(m.id)));
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Löst einen logischen Provider-/Routennamen gegen die real registrierten Switchyard-Routen auf.
+ * Fällt nur dann auf FALLBACK_ROUTE zurück, wenn die Registry abrufbar ist, der Name aber fehlt.
+ * Ist die Registry nicht abrufbar (Netzfehler, Timeout), bleibt der Name unverändert --
+ * sonst würde eine funktionierende Konfiguration bei einem transienten Fehler umgebogen.
+ */
+export async function resolveSwitchyardRoute(
+  requested: string,
+  opts: { logFallback?: boolean } = {},
+): Promise<string> {
+  if (!requested) return FALLBACK_ROUTE;
+
+  if (routesCache && Date.now() - routesCache.fetchedAt > ROUTES_TTL_MS) routesCache = null;
+  if (!routesCache) {
+    const names = await fetchRegisteredRoutes();
+    if (names) routesCache = { names, fetchedAt: Date.now() };
+  }
+
+  if (!routesCache) return requested;
+
+  if (routesCache.names.has(requested)) {
+    invalidModelCache.delete(requested);
+    return requested;
+  }
+
+  const invalidUntil = invalidModelCache.get(requested);
+  if (!invalidUntil || Date.now() > invalidUntil) {
+    invalidModelCache.set(requested, Date.now() + INVALID_TTL_MS);
+    if (opts.logFallback) {
+      log.warn(
+        `[Switchyard] Route '${requested}' ist nicht registriert (verfügbar: ${Array.from(routesCache.names).sort().join(", ")}). ` +
+        `Fallback auf '${FALLBACK_ROUTE}'. provider_config in system_settings korrigieren oder Route in routes.toml anlegen.`,
+      );
+    }
+  }
+
+  return routesCache.names.has(FALLBACK_ROUTE) ? FALLBACK_ROUTE : requested;
+}
+
+/**
+ * Modell für Vision-/OCR-Aufrufe: bevorzugt system_settings.vision_model_config.model,
+ * sonst die konfigurierte Provider-Route. In beiden Fällen gegen die Registry validiert.
+ */
+export async function resolveVisionModel(): Promise<string> {
+  let requested = "";
+  try {
+    const { data } = await supabase
+      .from("system_settings")
+      .select("value")
+      .eq("key", "vision_model_config")
+      .single();
+    if (data?.value?.model) requested = String(data.value.model);
+  } catch (_e) {
+    // fällt unten auf die Provider-Route zurück
+  }
+  if (!requested) requested = await getActiveProvider();
+  return await resolveSwitchyardRoute(requested, { logFallback: true });
+}
+
 // --- LLM Metadata Extraction (via Switchyard) ---
 export async function extractMetadata(text: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
-  const route = await getActiveProvider();
+  const configuredRoute = await getActiveProvider();
+  const route = await resolveSwitchyardRoute(configuredRoute, { logFallback: true });
   
   let systemPrompt = "Extract metadata from the user's captured thought. Return ONLY valid JSON.";
   const promptPaths = [
@@ -443,18 +612,34 @@ export async function extractMetadata(text: string, signal?: AbortSignal): Promi
 
   if (!res.ok) {
     const errText = await res.text();
-    log.error(`[extractMetadata] Switchyard (route=${route}) failed: ${res.status} - ${errText}`);
-    return { topics: ["uncategorized"], type: "observation" };
+    log.error(`[extractMetadata] Switchyard (route=${route}${route !== configuredRoute ? `, konfiguriert=${configuredRoute}` : ""}) failed: ${res.status} - ${errText}`);
+    return {
+      topics: ["uncategorized"],
+      type: "observation",
+      _extraction_failed: true,
+      _extraction_error: `Switchyard HTTP ${res.status}`,
+    };
   }
 
   const d = await res.json();
-  let parsed: any = { topics: ["uncategorized"], type: "observation" };
+  let parsed: any = null;
+  let parseError = "invalid JSON";
   try {
     const content = d.choices?.[0]?.message?.content || "";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
-  } catch {
-    // fallback
+  } catch (e: any) {
+    parseError = e.message;
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    log.warn(`[extractMetadata] LLM-Antwort nicht als Objekt parsebar (${parseError}); markiere als fehlgeschlagen.`);
+    return {
+      topics: ["uncategorized"],
+      type: "observation",
+      _extraction_failed: true,
+      _extraction_error: `parse: ${parseError}`,
+    };
   }
 
   return parsed;

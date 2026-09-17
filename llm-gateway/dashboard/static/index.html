@@ -231,9 +231,11 @@
                                 <select id="test-route-select" class="form-input">
                                     <option value="auto">auto (Classifier)</option>
                                     <option value="reasoning">reasoning (Gemini 3.1 Pro)</option>
-                                    <option value="fast">fast (Gemini 3.6 Flash)</option>
-                                    <option value="lite">lite (Gemini 3.5 Flash-Lite)</option>
-                                    <option value="local">local (LM Studio GPU)</option>
+                                    <option value="pro">pro (Gemini 3.1 Pro)</option>
+                                    <option value="fast">fast (Gemini 3.8 Flash)</option>
+                                    <option value="free">free (Gemini 3.5 Flash-Lite)</option>
+                                    <!-- 'local' (LM Studio GPU) ist in routes.toml aktuell nicht registriert;
+                                         wird von routers/models.py beim Backend-Switch automatisch angelegt. -->
                                 </select>
                             </div>
                             <div class="form-row">

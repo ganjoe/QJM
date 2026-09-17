@@ -45,6 +45,7 @@ export class WorkerManager {
       { count: pendingEmbeddingCount },
       { count: embeddedXCount },
       { count: totalPosts },
+      { count: legacyCategorizedCount },
       { count: activeInfluencers },
       { count: activeYtChannels },
       { count: ytPendingVideos },
@@ -56,8 +57,11 @@ export class WorkerManager {
     ] = await Promise.all([
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("status", "pending_metadata"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).or("status.eq.pending_embedding,status.eq.pending"),
-      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "embedded"),
+      // Vektor-Coverage unabhängig vom Status-Label: embedding IS NOT NULL.
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").not("embedding", "is", null),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post"),
+      // Legacy-Zeilen mit vorhandenem Vektor, aber altem Status 'categorized' (erklärt 31k vs 20k).
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "categorized"),
       supabase.from("x_users").select("*", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("yt_channels").select("*", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "pending"),
@@ -155,7 +159,10 @@ export class WorkerManager {
         x_posts: {
           stage_1_pending_metadata: pendingMetadataCount || 0,
           stage_2_pending_embedding: pendingEmbeddingCount || 0,
+          // Vektor-Coverage (embedding IS NOT NULL), nicht nur Status='embedded'.
           stage_3_embedded: embeddedXCount || 0,
+          // Legacy-Zeilen, die bereits einen Vektor haben, aber noch Status 'categorized' tragen.
+          stage_legacy_categorized: legacyCategorizedCount || 0,
           total: totalPosts || 0,
           active_influencers: activeInfluencers || 0,
         },

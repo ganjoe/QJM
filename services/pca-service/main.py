@@ -7,6 +7,7 @@ from indicators import router as indicator_router
 from scanners import router as scanner_router
 from watchlists_api import router as watchlist_router
 from breadth import router as breadth_router
+from universal_scanner import router as universal_scanner_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +34,7 @@ app.include_router(indicator_router, prefix="/api")
 app.include_router(scanner_router, prefix="/api")
 app.include_router(watchlist_router, prefix="/api")
 app.include_router(breadth_router, prefix="/api")
+app.include_router(universal_scanner_router, prefix="/api")
 
 
 @app.get("/health")

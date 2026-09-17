@@ -1,4 +1,4 @@
-import { supabase, log, extractMetadata, updateFirstMentions, MAX_CONCURRENT_METADATA_WORKERS } from "../tools/shared.ts";
+import { supabase, log, extractMetadata, updateFirstMentions, normalizeTickers, MAX_CONCURRENT_METADATA_WORKERS } from "../tools/shared.ts";
 
 export const metadataWorkerStats = {
   isRunning: false,
@@ -11,23 +11,63 @@ export const metadataWorkerStats = {
 
 let metadataAbortController: AbortController | null = null;
 
+/** published_at nur übernehmen, wenn es ein plausibles Datum (>= 2000) ist. */
+function sanePublishedAt(candidate: unknown, fallback: string): string {
+  const c = typeof candidate === "string" ? candidate : "";
+  const t = Date.parse(c);
+  if (!c || Number.isNaN(t) || t < Date.parse("2000-01-01T00:00:00Z")) return fallback;
+  return c;
+}
+
+/** Normalisiert String-Arrays (keywords/topics): trimmen, leere entfernen, deduplizieren. */
+function toStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return Array.from(new Set(raw.map((x) => String(x).trim()).filter(Boolean)));
+  }
+  if (typeof raw === "string") {
+    return Array.from(new Set(raw.split(",").map((x) => x.trim()).filter(Boolean)));
+  }
+  return [];
+}
+
 /**
  * Process a single post for metadata & ticker extraction
  */
-async function processSinglePost(post: any, signal?: AbortSignal): Promise<boolean> {
+export async function processSinglePost(post: any, signal?: AbortSignal, opts: { reembed?: boolean } = {}): Promise<boolean> {
   try {
     const meta = await extractMetadata(post.content, signal);
-    const existingMeta = post.metadata || {};
+    const existingMeta: Record<string, any> = { ...(post.metadata || {}) };
+    delete existingMeta.metadata_error;
 
-    const author = meta.author || existingMeta.author || "unknown";
-    const rawTickers = (meta.tickers as string[]) || [];
-    const tickers = Array.isArray(rawTickers) ? rawTickers : [];
-    const keywords = (meta.keywords as string[]) || [];
-    const topics = (meta.topics as string[]) || [];
-    const publishedAt = (meta.published_at as string) || existingMeta.published_at || post.created_at;
+    // Fehlgeschlagene LLM-Extraktion darf NICHT als kategorisiert gelten.
+    if ((meta as any)._extraction_failed === true) {
+      const msg = String((meta as any)._extraction_error || "extraction failed");
+      log.warn(`[Metadata Worker] Extraktion für Post ${post.id} fehlgeschlagen (${msg}); status=metadata_failed.`);
+      metadataWorkerStats.totalErrors++;
+      await supabase
+        .from("agent_workspace")
+        .update({
+          status: "metadata_failed",
+          metadata: { ...existingMeta, llm_categorized: false, metadata_error: msg, stage: "metadata_failed" },
+        })
+        .eq("id", post.id);
+      return false;
+    }
 
-    // Track first mentions of tickers
-    await updateFirstMentions(author as string, tickers, publishedAt, post.id);
+    // Gespeicherte Ingestion-Werte sind autoritativ: Das LLM sieht nur den Post-Text
+    // und darf den echten Handle / das Publikationsdatum nicht überschreiben.
+    const author = existingMeta.author || (meta.author as string) || "unknown";
+    const tickers = normalizeTickers(meta.tickers);
+    const keywords = toStringArray(meta.keywords);
+    const topics = toStringArray(meta.topics);
+    if (topics.length === 0) topics.push("uncategorized");
+    const publishedAt = existingMeta.published_at || sanePublishedAt(meta.published_at, post.created_at);
+
+    // Erst-Erwähnungen nur mit tatsächlich extrahierten, validen Tickern pflegen.
+    await updateFirstMentions(author, tickers, publishedAt, post.id);
+
+    // CPU-schonend: vorhandenen Vektor behalten, statt neu zu embedden (--no-reembed).
+    const skipReembed = opts.reembed === false && post.has_embedding === true;
 
     const updatedMetadata = {
       ...existingMeta,
@@ -36,15 +76,15 @@ async function processSinglePost(post: any, signal?: AbortSignal): Promise<boole
       keywords,
       topics,
       published_at: publishedAt,
-      thought_type: meta.thought_type || "observation",
+      thought_type: meta.thought_type || meta.type || existingMeta.thought_type || "observation",
       llm_categorized: true,
-      stage: "metadata_extracted",
+      stage: skipReembed ? "embedded" : "metadata_extracted",
     };
 
     const { error: updErr } = await supabase
       .from("agent_workspace")
       .update({
-        status: "pending_embedding", // Stage 2 output status
+        status: skipReembed ? "embedded" : "pending_embedding", // Stage 2 output status
         metadata: updatedMetadata,
       })
       .eq("id", post.id);
@@ -63,7 +103,7 @@ async function processSinglePost(post: any, signal?: AbortSignal): Promise<boole
       .from("agent_workspace")
       .update({
         status: "metadata_failed",
-        metadata: { ...(post.metadata || {}), metadata_error: err.message },
+        metadata: { ...(post.metadata || {}), llm_categorized: false, metadata_error: err.message, stage: "metadata_failed" },
       })
       .eq("id", post.id);
 
@@ -77,7 +117,9 @@ async function processSinglePost(post: any, signal?: AbortSignal): Promise<boole
 async function runWithConcurrencyLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<any>): Promise<void> {
   const executing = new Set<Promise<any>>();
   for (const item of items) {
-    const p = fn(item).then(() => executing.delete(p));
+    const p: Promise<any> = fn(item).then(() => {
+      executing.delete(p);
+    });
     executing.add(p);
     if (executing.size >= limit) {
       await Promise.race(executing);

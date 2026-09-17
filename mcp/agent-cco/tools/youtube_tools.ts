@@ -20,7 +20,7 @@ async function resolveChannelHandle(channel: string): Promise<string> {
 
   if (!channel.startsWith("@")) {
     try {
-      const queryEmbedding = (await getEmbeddingsBatch([channel]))[0];
+      const queryEmbedding = (await getEmbeddingsBatch([channel], "yt"))[0];
       const { data: searchResults, error } = await supabase.rpc("search_yt_channels", {
         query_embedding: queryEmbedding,
         query_text: channel,
@@ -96,7 +96,7 @@ export function registerYouTubeTools(server: McpServer) {
           if (!channel) throw new Error("channel ist für ADD erforderlich");
           const resolved = await resolveYtChannel(channel);
           const embedText = `handle: ${resolved.handle} title: ${resolved.title} notes: ${notes || ""}`;
-          const embedding = (await getEmbeddingsBatch([embedText]))[0];
+          const embedding = (await getEmbeddingsBatch([embedText], "yt"))[0];
           const { error } = await supabase.from("yt_channels").upsert({
             handle: resolved.handle,
             channel_id: resolved.channelId,
@@ -235,7 +235,7 @@ export function registerYouTubeTools(server: McpServer) {
     },
     async ({ query, channel, channels, date_from, date_to, tickers, min_similarity, limit }: any) => {
       try {
-        const qEmb = await getEmbedding(query);
+        const qEmb = await getEmbedding(query, "x_search");
         let handles: string[] | null = null;
         if (channel) handles = [await resolveChannelHandle(channel)];
         if (channels && channels.length > 0) {

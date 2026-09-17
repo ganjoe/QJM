@@ -120,13 +120,18 @@ async def calculate_market_breadth_endpoint(req: BreadthRequest):
                 if is_above:
                     counts_above[t_int] = counts_above.get(t_int, 0) + 1
 
-    valid_ts = [t for t in sorted(counts_total.keys()) if counts_total[t] >= DEFAULT_MIN_STOCKS]
+    # A scoped universe (explicit ticker list or watchlist) can never reach the universe-wide
+    # minimum, so the threshold scales down to the requested universe size. Without this a
+    # watchlist-scoped call answers `status: ok` with an empty series.
+    min_stocks = min(DEFAULT_MIN_STOCKS, total_universe)
+
+    valid_ts = [t for t in sorted(counts_total.keys()) if counts_total[t] >= min_stocks]
     all_ts = valid_ts[-req.lookback_days:]
 
     series = []
     for t_int in all_ts:
         tot = counts_total[t_int]
-        if tot < DEFAULT_MIN_STOCKS:
+        if tot < min_stocks:
             continue
         ab = counts_above.get(t_int, 0)
         pct = round((ab / tot) * 100.0, 2) if tot > 0 else 0.0

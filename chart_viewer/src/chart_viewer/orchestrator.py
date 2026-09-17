@@ -22,6 +22,18 @@ PCA_SERVICE_URL = os.environ.get("PCA_SERVICE_URL", "http://127.0.0.1:8794")
 DEFAULT_CHART_LIMIT = int(os.environ.get("CV_CHART_LIMIT", "2000"))
 
 
+def _line_style(style: dict, default_color: str) -> dict:
+    """Build an overlay line style from a preset style.
+
+    A width is only carried through when the preset explicitly sets one, so the
+    viewer's 1px default applies otherwise.
+    """
+    result = {"color": style.get("color", default_color)}
+    if style.get("width") is not None:
+        result["width"] = style["width"]
+    return result
+
+
 def _pca_get(path: str) -> Dict[str, Any]:
     """GET request to PCA-Service, returns parsed JSON."""
     url = f"{PCA_SERVICE_URL}{path}"
@@ -377,12 +389,12 @@ def build_display_stock(
             result = calculate_indicators_on_the_fly(symbol, "SMA", otf_sma_periods, timeframe, limit)
             timestamps = result.get("timestamps", [])
             for col_name, values in result.get("series", {}).items():
-                style = otf_sma_styles.get(col_name, {"color": "#2962FF", "width": 2})
+                style = otf_sma_styles.get(col_name, {"color": "#2962FF"})
                 line_values = [{"t": ts, "value": v} for ts, v in zip(timestamps, values) if v is not None]
                 overlays.append({
                     "overlay_id": f"ma_{col_name}",
                     "type": "line",
-                    "style": {"color": style.get("color", "#2962FF"), "width": style.get("width", 2)},
+                    "style": _line_style(style, "#2962FF"),
                     "values": line_values,
                 })
         except Exception as e:
@@ -393,12 +405,12 @@ def build_display_stock(
             result = calculate_indicators_on_the_fly(symbol, "EMA", otf_ema_periods, timeframe, limit)
             timestamps = result.get("timestamps", [])
             for col_name, values in result.get("series", {}).items():
-                style = otf_ema_styles.get(col_name, {"color": "#FF6D00", "width": 2})
+                style = otf_ema_styles.get(col_name, {"color": "#FF6D00"})
                 line_values = [{"t": ts, "value": v} for ts, v in zip(timestamps, values) if v is not None]
                 overlays.append({
                     "overlay_id": f"ma_{col_name}",
                     "type": "line",
-                    "style": {"color": style.get("color", "#FF6D00"), "width": style.get("width", 2)},
+                    "style": _line_style(style, "#FF6D00"),
                     "values": line_values,
                 })
         except Exception as e:

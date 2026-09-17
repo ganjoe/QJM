@@ -19,7 +19,7 @@ export function registerOpenBrainTools(server: McpServer) {
     async ({ query, limit, threshold, owner }: any) => {
       try {
         const p_agent_id = GLOBAL_BRAIN_ACCESS ? (owner || null) : AGENT_ID;
-        const qEmb = await getEmbedding(query);
+        const qEmb = await getEmbedding(query, "x_search");
 
         const { data, error } = await supabase.rpc("hybrid_search_open_brain", {
           query_embedding: qEmb,
@@ -57,7 +57,7 @@ export function registerOpenBrainTools(server: McpServer) {
     },
     async ({ content }: any) => {
       try {
-        const [embedding, metadata] = await Promise.all([getEmbedding(content), extractMetadata(content)]);
+        const [embedding, metadata] = await Promise.all([getEmbedding(content, "x_post"), extractMetadata(content)]);
         const { data: upsertResult, error: upsertError } = await supabase.rpc("upsert_open_brain", {
           p_agent_id: AGENT_ID,
           p_content: content,

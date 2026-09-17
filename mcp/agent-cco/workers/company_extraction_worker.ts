@@ -1,4 +1,4 @@
-import { supabase, log, SWITCHYARD_URL, isValidTicker } from "../tools/shared.ts";
+import { supabase, log, SWITCHYARD_URL, isValidTicker, getActiveProvider, resolveSwitchyardRoute } from "../tools/shared.ts";
 
 export const companyExtractionStats = {
   isRunning: false,
@@ -89,11 +89,12 @@ function chunkTranscriptForLLM(transcript: string, maxChars: number = 8000, over
 }
 
 /**
- * Step 1: Extract company names and timestamps from transcript text using Gemma (Local LLM)
+ * Step 1: Extract company names and timestamps from transcript text via the configured LLM route
  */
 async function extractCompaniesFromText(textSegment: string, signal?: AbortSignal): Promise<ExtractedMention[]> {
   try {
     const baseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
+    const route = await resolveSwitchyardRoute(await getActiveProvider(), { logFallback: true });
     const systemPrompt = `You are a financial entity extraction assistant.
 Extract all company names, publicly traded stocks, and commercial brands mentioned or discussed in this YouTube transcript segment.
 For each mention, find:
@@ -115,7 +116,7 @@ Do not include commentary or markdown.`;
         "Authorization": "Bearer switchyard",
       },
       body: JSON.stringify({
-        model: "local",
+        model: route,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: textSegment },
@@ -126,7 +127,7 @@ Do not include commentary or markdown.`;
     });
 
     if (!res.ok) {
-      log.warn(`[extractCompaniesFromText] Switchyard HTTP ${res.status}`);
+      log.warn(`[extractCompaniesFromText] Switchyard HTTP ${res.status} (route=${route})`);
       return [];
     }
 

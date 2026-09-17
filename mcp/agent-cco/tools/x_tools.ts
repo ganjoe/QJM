@@ -403,7 +403,7 @@ export function registerXTools(server: McpServer) {
         query: z.string().optional().describe("Search query (ticker, topic, keyword). Leave empty to list recent posts."),
         limit: z.number().optional().default(200).describe("Max results (default: 200)"),
         threshold: z.number().optional().default(0.5).describe("Similarity threshold for semantic search (default: 0.5)"),
-        artifact_type: z.string().optional().describe("Filter by artifact type (default: 'x_post')"),
+        artifact_type: z.string().optional().default("x_post").describe("Filter by artifact type (default: 'x_post')"),
         days_back: z.number().optional().describe("Filter posts from the last X days"),
         return_mode: z.enum(["ids_only", "snippets", "full_text"]).optional().default("snippets").describe("Return format for READ (default: snippets)"),
         ids: z.array(z.string()).optional().describe("Array of post IDs (for READ_IDS only)"),
@@ -465,7 +465,7 @@ export function registerXTools(server: McpServer) {
           if (error) throw error;
           data = exactData || [];
         } else {
-          const qEmb = await getEmbedding(actual_query);
+          const qEmb = await getEmbedding(actual_query, "x_search");
           const { data: semData, error } = await supabase.rpc("semantic_search_workspace", {
             query_embedding: qEmb,
             match_threshold: threshold,

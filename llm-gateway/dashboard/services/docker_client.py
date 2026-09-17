@@ -15,7 +15,6 @@ KNOWN_LLM_CONTAINERS = [
     "llm-gw-dashboard",
     "llm-gw-ollama",
     "llm-gw-ollama-cpu",
-    "llm-gw-ollama-gpu",
     "llm-gw-vllm",
 ]
 
