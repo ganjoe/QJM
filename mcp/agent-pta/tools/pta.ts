@@ -46,6 +46,17 @@ export function registerPtaTools(server: McpServer) {
         // produced a LIVE cancel request that the mode-scoped daemon then ignored.
         const activeMode = await getActiveTradingMode();
 
+        // Guard: REFRESH has no branch in this handler. Without this guard it fell
+        // through, wrote an ORDER_SUBMITTED row with action "REFRESH", and the sync
+        // daemon resolved that to a BUY market order. Refresh belongs to
+        // list_active_positions(), which triggers the snapshot and waits for it.
+        if (params.action === "REFRESH") {
+          return {
+            content: [{ type: "text", text: "REFRESH is not a valid place_trade action (it would have been sent to the broker as a BUY order). Use `list_active_positions()` instead — it triggers the broker snapshot refresh and waits for it." }],
+            isError: true
+          };
+        }
+
         let eventType = "ORDER_SUBMITTED";
         let action = params.action;
 

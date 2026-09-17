@@ -413,6 +413,17 @@ async def handle_orders():
             if po.get("action") in ["DEPOSIT", "WITHDRAW"]:
                 continue
 
+            # Fail-safe whitelist. Below, an unrecognised action used to fall through
+            # to order_action = "BUY", so a stray ORDER_SUBMITTED row (e.g. the
+            # unhandled place_trade action "REFRESH") would have bought stock.
+            if po.get("action") not in ["BUY", "SELL", "UPDATE"]:
+                logger.error(f"Refusing order {po['id']} for {po.get('ticker')}: unknown action '{po.get('action')}'")
+                await asyncio.to_thread(lambda id=po["id"]: supabase.table("pta_execution_log").update({
+                    "notes": "ERROR: UNKNOWN_ACTION",
+                    "broker_order_id": "FAILED"
+                }).eq("id", id).execute())
+                continue
+
             ticker = po.get("ticker")
             quantity = po.get("quantity")
             price = po.get("price")
