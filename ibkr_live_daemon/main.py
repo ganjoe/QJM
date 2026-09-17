@@ -238,11 +238,13 @@ async def process_queued_events():
         commission_events = []
         for c in comms:
             try:
+                # NOTE: pta_execution_log has no updated_at column. Sending it made
+                # every commission update fail with PGRST204, so commissions were
+                # silently never written (all daemon fills had commission 0).
                 await asyncio.to_thread(
                     lambda c=c: supabase.table("pta_execution_log").update({
                         "commission": c["commission"],
-                        "currency": c["currency"],
-                        "updated_at": datetime.now(timezone.utc).isoformat()
+                        "currency": c["currency"]
                     }).eq("broker_exec_id", c["exec_id"]).execute()
                 )
             except Exception as e:
@@ -278,7 +280,13 @@ async def handle_refresh_requests():
             if acc not in active_account_metrics:
                 active_account_metrics[acc] = {"totalCashBalance": 0, "netLiquidation": 0, "availableFunds": 0}
             
-            num_val = float(val.value) if val.value else 0
+            # Guard: some AccountValue entries carry non-numeric values (observed on the
+            # paper account: an entry whose value is the account id itself). A bare
+            # float() aborted the entire refresh, so no snapshot was ever written.
+            try:
+                num_val = float(val.value) if val.value else 0
+            except (TypeError, ValueError):
+                num_val = 0
             if val.currency in ["EUR", "BASE"]:
                 if val.tag == "NetLiquidation":
                     active_account_metrics[acc]["netLiquidation"] = num_val
@@ -491,7 +499,14 @@ async def handle_orders():
                 if orders_to_place:
                     orders_to_place[-1].transmit = True
                 
+                # Opt-in extended-hours trading: a US order placed outside 09:30-16:00 ET
+                # is otherwise only held and never executed. Activated by adding the
+                # marker OUTSIDE_RTH to the order notes, so normal orders are unaffected.
+                outside_rth = "OUTSIDE_RTH" in notes.upper()
+
                 for o in orders_to_place:
+                    if outside_rth:
+                        o.outsideRth = True
                     ib.placeOrder(contract, o)
                 
                 current_order_id = parent.orderId
@@ -514,6 +529,8 @@ async def handle_orders():
                     order = MarketOrder(order_action, quantity)
                 
                 order.orderRef = po.get("trade_id", "")
+                if "OUTSIDE_RTH" in notes.upper():
+                    order.outsideRth = True
                 ib.placeOrder(contract, order)
                 current_order_id = order.orderId
 
