@@ -602,10 +602,12 @@ async def handle_quotes():
                 t = tickers[0]
                 price = t.marketPrice() or t.last or t.close or 0
             
+            # NOTE: pta_execution_log has no updated_at column — sending it made every
+            # quote completion fail with PGRST204, which is why get_quote always fell
+            # back to Yahoo Finance instead of the IBKR price.
             await asyncio.to_thread(lambda id=qr["id"], p=price: supabase.table("pta_execution_log").update({
                 "price": p,
-                "notes": "COMPLETED",
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "notes": "COMPLETED"
             }).eq("id", id).execute())
             logger.info(f"Processed Quote for {ticker}: {price}")
 
