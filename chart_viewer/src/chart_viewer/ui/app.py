@@ -446,7 +446,7 @@ class ViewerApp(QObject):
             else:
                 _, idx = nearest
                 px_x = win.canvas.x_trans.bar_to_x(float(idx))
-                win.canvas._apply_crosshair_remote(px_x)
+                win.canvas._apply_crosshair_remote(px_x, idx)
 
             win.canvas.update()
 

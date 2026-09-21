@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import asyncio
 import logging
 import threading
@@ -16,6 +17,22 @@ logger = logging.getLogger("IBKR_SYNC")
 
 IB_HOST_DEFAULT = os.getenv("IB_GATEWAY_HOST", "ib-gateway")
 IB_PORT_DEFAULT = int(os.getenv("IB_GATEWAY_PORT", "4002"))
+
+# Marktdatentyp fuer reqMarketDataType(): 1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen.
+# ACHTUNG: betrifft ausschliesslich Marktdaten-Anfragen (reqTickers -> get_quote).
+# Die Depotbewertung stammt aus den Account-Updates des Brokers und ist davon
+# unabhaengig — der NAV ist also auch bei Typ 4 nicht verzoegert.
+# Ueber IB_MARKET_DATA_TYPE umstellbar, ohne Code zu aendern.
+IB_MARKET_DATA_TYPE = int(os.getenv("IB_MARKET_DATA_TYPE", "4"))
+
+# Intervall des periodischen Portfolio-Snapshots (siehe write_portfolio_snapshot).
+SNAPSHOT_INTERVAL_SEC = int(os.getenv("PTA_SNAPSHOT_INTERVAL_SEC", "30"))
+
+# Ein leeres ib.portfolio() bei gleichzeitig vorhandenen Depotzeilen wird erst
+# nach dieser Karenzzeit als "Konto ist wirklich flach" akzeptiert. Direkt nach
+# dem Verbindungsaufbau ist der Portfolio-Cache noch nicht gefuellt — ohne diese
+# Karenzzeit wuerde der erste Snapshot alle Positionen loeschen.
+EMPTY_POSITIONS_CONFIRM_SEC = int(os.getenv("PTA_EMPTY_POSITIONS_CONFIRM_SEC", "60"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "http://gateway:80")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SERVICE_ROLE_KEY", "missing"))
 
@@ -31,6 +48,12 @@ ib = IB()
 active_trading_mode = "live"
 current_host = IB_HOST_DEFAULT
 current_port = IB_PORT_DEFAULT
+
+# Monotoner Zeitstempel des letzten Snapshot-Versuchs (fuer die Intervallsteuerung).
+_last_snapshot_at = 0.0
+
+# Seit wann ib.portfolio() durchgehend leer ist (None = nicht leer).
+_empty_positions_since = None
 
 # --- Database & Config Sync ---
 def load_gateway_config():
@@ -73,7 +96,7 @@ def on_connected():
     def _run():
         update_gateway_status(True)
     threading.Thread(target=_run).start()
-    ib.reqMarketDataType(4) # Delayed-Frozen
+    ib.reqMarketDataType(IB_MARKET_DATA_TYPE)
 
 def on_disconnected():
     logger.warning("Disconnected from IB Gateway.")
@@ -252,25 +275,41 @@ async def process_queued_events():
 
 # --- Main Sync Tasks ---
 
-async def handle_refresh_requests():
+# --- Portfolio Snapshot ----------------------------------------------------
+# pta_ibkr_positions / pta_ibkr_account_summary sind die EINZIGE Quelle, aus der
+# Agenten den Depotstand lesen. Der Snapshot wird deshalb periodisch aus dem
+# sync_loop geschrieben und nicht mehr nur auf Anfrage.
+#
+# Grund: ein anfragegetriebener Snapshot ist genau so frisch wie die letzte
+# Anfrage — und wenn diese Anfrage unbemerkt scheitert, liefert das System
+# stillschweigend einen eingefrorenen Stand als aktuellen Depotstand aus. Genau
+# das ist passiert (siehe docs/architecture/broker-truth-snapshot.md).
+#
+# Der Refresh-auf-Anfrage-Pfad (handle_refresh_requests) bleibt fuer sofortige
+# Aktualisierungen erhalten, ist aber nicht mehr die Grundlage der Frische.
+
+
+async def write_portfolio_snapshot(reason: str) -> str:
+    """Schreibt einen vollstaendigen Broker-Snapshot (Positionen, Kontostand, Orders).
+
+    Rueckgabe "OK" bei Erfolg, sonst ein kurzer Grund-Code (NO_ACCOUNT_METRICS |
+    FX_RATE_MISSING | EMPTY_POSITIONS_UNCONFIRMED | EXCEPTION). Der Aufrufer
+    schreibt den Code in die Auftragszeile, damit ein Fehlschlag sichtbar wird
+    statt still zu bleiben.
+
+    Grundsatz: es wird NICHTS geschrieben, solange der neue Stand nicht
+    vollstaendig vorliegt. Ein unvollstaendiger Snapshot darf einen guten nicht
+    ueberschreiben — deshalb werden alle Daten zuerst aufgebaut und erst
+    unmittelbar vor dem Schreiben geloescht.
+    """
     try:
-        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log").select("*").eq("event_type", "REFRESH_REQUESTED").neq("notes", "PROCESSING").execute())
-        reqs = resp.data
-        if not reqs:
-            return
-
-        logger.info(f"Received {len(reqs)} new refresh request(s). Fetching snapshot from ib_insync...")
         
-        ids = [r["id"] for r in reqs]
-        await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).in_("id", ids).execute())
-
-        # NOTE: no ib.reqAccountUpdates() here. That ib_insync call is BLOCKING (it
-        # waits for the accountValues download to end) and has no timeout; calling it
-        # from this loop freezes order placement, cancels and fill processing forever.
-        # ib.connect() already subscribes via reqAccountUpdatesMultiAsync, so the
-        # streaming cache that ib.portfolio()/ib.accountValues() read is kept fresh.
-        await asyncio.sleep(1)
-
+        # NOTE: kein ib.reqAccountUpdates() hier. Dieser ib_insync-Aufruf ist BLOCKING
+        # (er wartet auf das Ende des accountValues-Downloads) und hat keinen Timeout;
+        # aus dieser Schleife heraus friert er Order-Platzierung, Cancels und
+        # Fill-Verarbeitung dauerhaft ein. ib.connect() abonniert bereits ueber
+        # reqAccountUpdatesMultiAsync, der Streaming-Cache, den ib.portfolio() und
+        # ib.accountValues() lesen, wird also frisch gehalten.
         positions = ib.portfolio()
         account_values = ib.accountValues()
 
@@ -299,6 +338,18 @@ async def handle_refresh_requests():
                 elif val.currency == "EUR" and active_account_metrics[acc]["totalCashBalance"] == 0:
                     active_account_metrics[acc]["totalCashBalance"] = num_val
 
+        # Guard: nur schreiben, wenn ein belastbarer Kontostand vorliegt. Direkt
+        # nach dem Verbindungsaufbau sind die Account-Daten noch nicht geladen;
+        # ohne diesen Guard wuerde ein solcher Lauf alle Depotzeilen loeschen und
+        # durch leere/Null-Werte ersetzen.
+        usable_metrics = {a: m for a, m in active_account_metrics.items() if m["netLiquidation"] > 0}
+        if not usable_metrics:
+            logger.warning(
+                f"Snapshot ({reason}) uebersprungen: kein Konto mit NetLiquidation > 0 "
+                f"({len(account_values)} AccountValues gelesen). Bestehender Snapshot bleibt unveraendert."
+            )
+            return "NO_ACCOUNT_METRICS"
+
         rates = {"EUR": 1.0}
         try:
             currencies = list(set([p.contract.currency for p in positions if p.contract.currency != "EUR"]))
@@ -313,16 +364,47 @@ async def handle_refresh_requests():
         except Exception as e:
             logger.error(f"Failed to fetch exchange rates: {e}")
 
-        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").delete().eq("mode", active_trading_mode).execute())
+        # Vollstaendigkeit der FX-Kurse ist Pflicht: fehlt ein Kurs, wuerde
+        # `rates.get(curr, 1.0)` den Marktwert 1:1 als EUR schreiben und den
+        # gesamten Snapshot verfaelschen. Dann lieber gar nicht schreiben.
+        missing_fx = sorted({p.contract.currency for p in positions if p.contract.currency not in rates})
+        if missing_fx:
+            logger.error(
+                f"Snapshot ({reason}) uebersprungen: kein FX-Kurs (Basis EUR) fuer "
+                f"{', '.join(missing_fx)}. Bestehender Snapshot bleibt unveraendert."
+            )
+            return "FX_RATE_MISSING"
+
+        # ---- Erst aufbauen, dann schreiben --------------------------------
+        # Zuvor wurde HIER geloescht, bevor die Folgeabfragen liefen. Eine
+        # Exception weiter unten liess die Depotzeilen dann ohne Ersatz
+        # verschwinden. Jetzt wird zuerst alles aufgebaut.
+        existing = await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").select("id").eq("mode", active_trading_mode).execute())
+        existing_count = len(existing.data or [])
+
+        global _empty_positions_since
+        if positions:
+            _empty_positions_since = None
+        elif existing_count > 0:
+            if _empty_positions_since is None:
+                _empty_positions_since = time.monotonic()
+            if time.monotonic() - _empty_positions_since < EMPTY_POSITIONS_CONFIRM_SEC:
+                logger.warning(
+                    f"Snapshot ({reason}) uebersprungen: ib.portfolio() ist leer, es liegen aber "
+                    f"{existing_count} Depotzeile(n) vor. Direkt nach dem Verbindungsaufbau ist der "
+                    f"Cache noch nicht gefuellt. Bestaetigt sich das {EMPTY_POSITIONS_CONFIRM_SEC}s "
+                    f"lang, wird das Konto als flach uebernommen. Bestehender Snapshot bleibt unveraendert."
+                )
+                return "EMPTY_POSITIONS_UNCONFIRMED"
         
         total_heat = 0
         total_core_risk = 0
 
+        inserts = []
         if positions:
             active_pos_data = await asyncio.to_thread(lambda: supabase.table("pta_active_positions").select("ticker, current_stop_loss").execute())
             stop_losses = {row["ticker"]: row["current_stop_loss"] for row in active_pos_data.data if row.get("current_stop_loss") is not None} if active_pos_data.data else {}
 
-            inserts = []
             for p in positions:
                 acc = p.account
                 net_liq = active_account_metrics.get(acc, {}).get("netLiquidation", 0)
@@ -363,28 +445,9 @@ async def handle_refresh_requests():
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
             
-            if inserts:
-                await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").insert(inserts).execute())
-
-        for acc, metrics in active_account_metrics.items():
-            cash_quote = (metrics["totalCashBalance"] / metrics["netLiquidation"]) * 100 if metrics["netLiquidation"] > 0 else 0
-            await asyncio.to_thread(lambda m=metrics, a=acc: supabase.table("pta_ibkr_account_summary").upsert({
-                "account": a,
-                "total_cash_balance": m["totalCashBalance"],
-                "net_liquidation": m["netLiquidation"],
-                "available_funds": m["availableFunds"],
-                "cash_quote": cash_quote,
-                "portfolio_heat_eur": total_heat,
-                "core_risk_eur": total_core_risk,
-                "mode": active_trading_mode,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }, on_conflict="account,mode").execute())
-
-        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_open_orders").delete().eq("mode", active_trading_mode).execute())
-        
         trades = ib.openTrades()
+        order_inserts = []
         if trades:
-            order_inserts = []
             for t in trades:
                 order_inserts.append({
                     "account": t.order.account or "UNKNOWN",
@@ -400,10 +463,87 @@ async def handle_refresh_requests():
                     "mode": active_trading_mode,
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
+
+        # ---- Schreiben: delete+insert unmittelbar hintereinander -----------
+        # Ab hier ist der neue Stand vollstaendig aufgebaut. Faellt eine der
+        # folgenden Anweisungen aus, ist der Schaden auf diesen einen Schritt
+        # begrenzt und nicht auf die vorgelagerten Abfragen.
+        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").delete().eq("mode", active_trading_mode).execute())
+        if inserts:
+            await asyncio.to_thread(lambda: supabase.table("pta_ibkr_positions").insert(inserts).execute())
+
+        # Nur Konten mit belastbarem Kontostand schreiben (siehe Guard oben).
+        for acc, metrics in usable_metrics.items():
+            cash_quote = (metrics["totalCashBalance"] / metrics["netLiquidation"]) * 100 if metrics["netLiquidation"] > 0 else 0
+            await asyncio.to_thread(lambda m=metrics, a=acc, cq=cash_quote: supabase.table("pta_ibkr_account_summary").upsert({
+                "account": a,
+                "total_cash_balance": m["totalCashBalance"],
+                "net_liquidation": m["netLiquidation"],
+                "available_funds": m["availableFunds"],
+                "cash_quote": cq,
+                "portfolio_heat_eur": total_heat,
+                "core_risk_eur": total_core_risk,
+                "mode": active_trading_mode,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }, on_conflict="account,mode").execute())
+        
+        await asyncio.to_thread(lambda: supabase.table("pta_ibkr_open_orders").delete().eq("mode", active_trading_mode).execute())
+        if order_inserts:
             await asyncio.to_thread(lambda: supabase.table("pta_ibkr_open_orders").insert(order_inserts).execute())
 
-        await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "COMPLETED"}).in_("id", ids).execute())
-        logger.info("Refresh requests processed successfully.")
+        nav_total = sum(m["netLiquidation"] for m in usable_metrics.values())
+        logger.info(
+            f"Snapshot ({reason}) geschrieben: {len(positions)} Position(en), "
+            f"{len(trades)} offene Order(s), NAV {nav_total:.2f} EUR."
+        )
+        return "OK"
+
+    except Exception as e:
+        logger.error(f"Error writing portfolio snapshot ({reason}): {e}")
+        return "EXCEPTION"
+
+
+async def handle_refresh_requests():
+    """Sofortiger Snapshot auf Anfrage — Ergaenzung zum periodischen Snapshot.
+
+    Die Auswahl erfolgt bewusst ueber einen EXPLIZITEN notes-Zustand. Zuvor
+    filterte dieser Pfad mit `notes != 'PROCESSING'`. In SQL ist
+    `NULL <> 'PROCESSING'` jedoch NULL und damit nicht wahr — jede Zeile ohne
+    notes fiel stillschweigend durch den Filter. Da pta_execution_log.notes
+    keinen DB-Default hat, traf das auf JEDEN eingehenden Refresh-Auftrag zu:
+    der Refresh lief nie an und die Agenten lieferten eingefrorene Depotwerte
+    aus. Zeilen ohne notes werden daher zusaetzlich ueber einen expliziten
+    NULL-Test eingesammelt.
+    """
+    try:
+        pending = await asyncio.to_thread(lambda: supabase.table("pta_execution_log")
+            .select("id")
+            .eq("event_type", "REFRESH_REQUESTED")
+            .eq("mode", active_trading_mode)
+            .eq("notes", "PENDING")
+            .execute())
+        legacy = await asyncio.to_thread(lambda: supabase.table("pta_execution_log")
+            .select("id")
+            .eq("event_type", "REFRESH_REQUESTED")
+            .eq("mode", active_trading_mode)
+            .is_("notes", "null")
+            .execute())
+
+        ids = [r["id"] for r in (pending.data or [])] + [r["id"] for r in (legacy.data or [])]
+        if not ids:
+            return
+
+        logger.info(f"Received {len(ids)} refresh request(s) for mode '{active_trading_mode}'. Writing snapshot...")
+        await asyncio.to_thread(lambda: supabase.table("pta_execution_log").update({"notes": "PROCESSING"}).in_("id", ids).execute())
+
+        code = await write_portfolio_snapshot("refresh_request")
+
+        # Zustand zurueckschreiben, damit der Aufrufer Erfolg und Fehlschlag
+        # unterscheiden kann — und im Fehlerfall den Grund sieht.
+        final_notes = "COMPLETED" if code == "OK" else f"ERROR: {code}"
+        await asyncio.to_thread(lambda n=final_notes, r=ids: supabase.table("pta_execution_log").update({
+            "notes": n
+        }).in_("id", r).execute())
     except Exception as e:
         logger.error(f"Error handling refresh requests: {e}")
 
@@ -648,7 +788,7 @@ async def start_http_server():
     logger.info("HTTP Server running on port 8005")
 
 async def sync_loop():
-    global active_trading_mode, current_host, current_port
+    global active_trading_mode, current_host, current_port, _last_snapshot_at
     
     await start_http_server()
     
@@ -686,6 +826,19 @@ async def sync_loop():
                     logger.error(f"Connection failed: {e}")
                     await asyncio.sleep(5)
                     continue
+
+            # Periodischer Portfolio-Snapshot: haelt die Depotwerte dauerhaft auf
+            # Broker-Stand, unabhaengig davon, ob ein Agent danach fragt. Dadurch
+            # ist list_active_positions ein reiner Lesezugriff auf eine Quelle,
+            # die nie aelter als SNAPSHOT_INTERVAL_SEC ist.
+            if time.monotonic() - _last_snapshot_at >= SNAPSHOT_INTERVAL_SEC:
+                code = await write_portfolio_snapshot("periodic")
+                if code == "OK":
+                    _last_snapshot_at = time.monotonic()
+                else:
+                    # Einen Fehlschlag nicht ein ganzes Intervall lang
+                    # quittieren, sonst verzoegert sich die Heilung.
+                    _last_snapshot_at = time.monotonic() - SNAPSHOT_INTERVAL_SEC + 5
 
             await handle_refresh_requests()
             await handle_orders()

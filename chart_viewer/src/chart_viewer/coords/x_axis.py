@@ -61,6 +61,28 @@ class XAxisTransform:
         delta_px = self.anchor_x - pixel_x
         return self.right_index - (delta_px / self.candle_width_px)
 
+    def nearest_bar_index(self, pixel_x: float, bar_count: int) -> int:
+        """Return the index of the bar nearest to pixel_x (nearest-neighbour).
+
+        Uses floor(x + 0.5) instead of Python's round() so the decision is
+        deterministic and symmetric: the boundary sits halfway between two candle
+        centers (in the gap), never at a candle center. Python round() would
+        use banker's rounding (round(2.5) == 2), which is asymmetric.
+        """
+        if bar_count <= 0:
+            return 0
+        idx = math.floor(self.x_to_bar(pixel_x) + 0.5)
+        return max(0, min(bar_count - 1, idx))
+
+    def bar_center_for_pixel(self, pixel_x: float, bar_count: int) -> tuple[int, float]:
+        """Return (bar_index, bar_center_x) for the bar nearest to pixel_x.
+
+        The returned x is the exact candle center, so the vertical cursor line and
+        the date badge share one authoritative bar index.
+        """
+        idx = self.nearest_bar_index(pixel_x, bar_count)
+        return idx, self.bar_to_x(float(idx))
+
     def ensure_touches_left(self) -> bool:
         """Enforce Rule: Chart touches the left window edge (x=0).
 

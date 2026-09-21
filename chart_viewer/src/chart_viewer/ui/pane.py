@@ -86,6 +86,7 @@ class ChartPane(QWidget):
         self._crosshair_x: Optional[float] = None   # Shared X pixel (vertical line)
         self._crosshair_y: Optional[float] = None   # Local Y pixel (horizontal line, only in active pane)
         self._is_crosshair_active: bool = False      # True if mouse is in THIS pane
+        self._crosshair_bar_index: Optional[int] = None  # Snapped candle index (shared, badge source of truth)
 
         # Measure tool
         self._is_measuring: bool = False
@@ -450,11 +451,16 @@ class ChartPane(QWidget):
                         date_str,
                     )
 
-    def set_crosshair(self, x: Optional[float], y: Optional[float], is_active: bool) -> None:
-        """Set crosshair position. x = shared X pixel, y = local Y pixel (only if active)."""
+    def set_crosshair(self, x: Optional[float], y: Optional[float], is_active: bool, bar_index: Optional[int] = None) -> None:
+        """Set crosshair position. x = shared X pixel, y = local Y pixel (only if active).
+
+        bar_index is the snapped candle index shared by every pane, so the date badge
+        drawn by the X-axis pane matches the vertical line and the emitted timestamp.
+        """
         self._crosshair_x = x
         self._crosshair_y = y if is_active else None
         self._is_crosshair_active = is_active
+        self._crosshair_bar_index = bar_index
         self.update()  # Trigger repaint (only live layer, pixmap stays cached)
 
     def _render_crosshair(self, painter: QPainter, chart_w: float, content_h: float, chart_h: float) -> None:
@@ -498,17 +504,17 @@ class ChartPane(QWidget):
 
         # Crosshair time badge if this pane draws X-axis
         if self.draw_x_axis and self.base_timestamp > 0:
-            bar_idx = int(self.x_trans.x_to_bar(cx))
+            bar_idx = self._crosshair_bar_index
+            if bar_idx is None:
+                # Fallback: nearest-neighbour (never floor) so the badge flips in
+                # the gap between two candles, not at the candle center.
+                bar_idx = math.floor(self.x_trans.x_to_bar(cx) + 0.5)
             if self.bars and 0 <= bar_idx < len(self.bars):
                 t_sec = self.bars[bar_idx].t_open
             else:
                 t_sec = self.base_timestamp + int(bar_idx * self.bar_duration)
-            try:
-                dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
-                time_str = dt.strftime("%Y-%m-%d")
-            except Exception:
-                time_str = f"Bar {bar_idx}"
-            badge_w = 100
+            time_str = self._format_crosshair_time(t_sec, bar_idx)
+            badge_w = 118
             badge_h = 18
             axis_y = chart_h - X_AXIS_HEIGHT
             badge_rect = QRectF(cx - badge_w / 2.0, axis_y + 1, badge_w, badge_h)
@@ -518,6 +524,17 @@ class ChartPane(QWidget):
             badge_font.setPointSize(8)
             painter.setFont(badge_font)
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, time_str)
+
+    def _format_crosshair_time(self, t_sec: int, bar_idx: int) -> str:
+        """Format a bar timestamp for the crosshair badge (date, plus time intraday)."""
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromtimestamp(t_sec, tz=timezone.utc)
+        except Exception:
+            return f"Bar {bar_idx}"
+        if self.bar_duration >= 86400:
+            return dt.strftime("%Y-%m-%d")
+        return dt.strftime("%Y-%m-%d %H:%M")
 
     def _render_measure_tool(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
         """Render TC2000-style measure tool with info card."""

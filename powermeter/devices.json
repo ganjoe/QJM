@@ -1,0 +1,10 @@
+[
+  {
+    "handle": "server-plug",
+    "name": "QJM Server Steckdose",
+    "ip": "10.20.0.33",
+    "is_server_plug": true,
+    "model": "Shelly Plus Plug S",
+    "enabled": true
+  }
+]

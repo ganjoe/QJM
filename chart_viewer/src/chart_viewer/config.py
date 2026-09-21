@@ -51,6 +51,7 @@ class ViewerConfig:
     default_grid_color: str = "#2A2E39"
     default_text_color: str = "#D1D4DC"
     default_crosshair_color: str = "#758696"
+    crosshair_snap_to_bar: bool = True  # TC2000-style: snap cursor line to nearest candle center
 
     # Plot rendering & Indicator styles
     default_indicator_line_width_px: int = 1  # Line width for indicator lines that set no explicit width
@@ -104,6 +105,7 @@ class ViewerConfig:
             right_margin_pct=float(os.getenv("CV_RIGHT_MARGIN_PCT", "0.10")),
             touch_left_border=os.getenv("CV_TOUCH_LEFT_BORDER", "true").lower() in ("true", "1", "yes"),
             y_handle_hit_radius_px=float(os.getenv("CV_Y_HANDLE_HIT_RADIUS_PX", "8.0")),
+            crosshair_snap_to_bar=os.getenv("CV_CROSSHAIR_SNAP", "true").lower() in ("true", "1", "yes"),
             default_indicator_line_width_px=int(os.getenv("CV_DEFAULT_INDICATOR_LINE_WIDTH_PX", "1")),
             crisp_thin_indicator_lines=os.getenv("CV_CRISP_THIN_INDICATOR_LINES", "true").lower() in ("true", "1", "yes"),
             enable_antialiasing=os.getenv("CV_ENABLE_ANTIALIASING", "true").lower() in ("true", "1", "yes"),

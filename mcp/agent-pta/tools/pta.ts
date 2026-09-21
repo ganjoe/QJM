@@ -1,6 +1,135 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, getActiveTradingMode } from "./shared.ts";
+import { supabase, getActiveTradingMode, log } from "./shared.ts";
+
+// ---------------------------------------------------------------------------
+// Broker-Truth-Snapshot — Frische-Kontrakt
+// ---------------------------------------------------------------------------
+// pta_ibkr_positions / pta_ibkr_account_summary sind die EINZIGE Quelle der
+// Depotwerte. Sie werden von ibkr-sync geschrieben (periodisch + auf Anfrage).
+// Ein Wert ohne Zeitstempel ist wertlos: er sieht identisch aus, egal ob er
+// 3 Sekunden oder 3 Tage alt ist. Genau daran ist die Portfolio-Anzeige
+// zuvor gescheitert — sie lieferte wochenlang eingefrorene Kurse aus, ohne
+// das kenntlich zu machen. Deshalb gilt hier:
+//   * Jeder Refresh-Auftrag trägt einen EXPLIZITEN notes-Zustand.
+//     (Die Spalte pta_execution_log.notes hat keinen DB-Default; ein Insert
+//      ohne notes erzeugt NULL und fällt durch jeden notes-Filter im Daemon.)
+//   * Ein nicht bestätigter Refresh wird nie verschwiegen.
+//   * Jede Antwort nennt den Snapshot-Zeitpunkt und dessen Alter.
+// Details: docs/architecture/broker-truth-snapshot.md
+const REFRESH_STATE = {
+  /** Vom Tool gesetzt: Auftrag liegt bereit. */
+  PENDING: "PENDING",
+  /** Vom Daemon gesetzt, waehrend er den Snapshot schreibt. */
+  PROCESSING: "PROCESSING",
+  /** Vom Daemon gesetzt bei Erfolg. */
+  COMPLETED: "COMPLETED",
+  /**
+   * Vom Daemon gesetzt, wenn er geantwortet hat, aber nicht schreiben konnte
+   * (z. B. "ERROR: NO_ACCOUNT_METRICS"). Muss getrennt behandelt werden: sonst
+   * laeuft der Poll in den Timeout und meldet faelschlich "nicht abgeholt" —
+   * obwohl der Daemon sehr wohl geantwortet hat.
+   */
+  ERROR_PREFIX: "ERROR:",
+} as const;
+
+/** Wartezeit auf die Bestätigung des Daemons (20 x 500 ms = 10 s). */
+const REFRESH_POLL_ATTEMPTS = 20;
+const REFRESH_POLL_INTERVAL_MS = 500;
+
+/** Ab diesem Alter gilt der Snapshot als veraltet und wird als solcher ausgewiesen. */
+const SNAPSHOT_STALE_AFTER_SEC = 90;
+
+/** Neuester Zeitstempel aus einer Menge von updated_at-Werten. */
+function latestTimestamp(candidates: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  let bestMs = -Infinity;
+  for (const c of candidates) {
+    if (!c) continue;
+    const ms = new Date(c).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/** Alter des aktuell gespeicherten Snapshots in Sekunden (null = kein Snapshot vorhanden). */
+async function readSnapshotAgeSec(mode: "live" | "paper"): Promise<number | null> {
+  try {
+    const candidates: Array<string | null | undefined> = [];
+
+    const { data: posRows } = await supabase
+      .from("pta_ibkr_positions")
+      .select("updated_at")
+      .eq("mode", mode)
+      .order("updated_at", { ascending: false })
+      .limit(1);
+    candidates.push(posRows?.[0]?.updated_at);
+
+    const { data: accRow } = await supabase
+      .from("pta_ibkr_account_summary")
+      .select("updated_at")
+      .eq("mode", mode)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    candidates.push(accRow?.updated_at);
+
+    const newest = latestTimestamp(candidates);
+    if (!newest) return null;
+    const ms = new Date(newest).getTime();
+    return Number.isFinite(ms) ? (Date.now() - ms) / 1000 : null;
+  } catch (e) {
+    // Die Vorprüfung darf den Abruf nicht verhindern. Im Zweifel wird ein
+    // Refresh angefordert (Rückgabe null) — das entspricht dem Verhalten vor
+    // dieser Änderung und ist immer noch besser als ein abgebrochener Abruf.
+    log.warn(`[Snapshot] Altersprüfung fehlgeschlagen, fordere Refresh an: ${e}`);
+    return null;
+  }
+}
+
+/**
+ * Kopfzeile jeder Portfolio-Antwort: Zeitpunkt, Alter, Bewertung.
+ * Bewusst als erste Zeile — vor jeder Zahl, damit kein Wert ohne
+ * Haltbarkeitsdatum gelesen werden kann.
+ */
+function refreshFailureNote(refreshConfirmed: boolean, refreshError: string | null): string {
+  if (refreshConfirmed) return "";
+  if (refreshError) {
+    return `Der Daemon hat den Refresh beantwortet, konnte den Snapshot aber nicht schreiben (${refreshError}). ` +
+      `Die Ursache liegt beim Kontozustand, nicht bei der Zustellung.\n`;
+  }
+  return "Der angeforderte Refresh wurde nicht bestätigt — ibkr-sync hat den Auftrag nicht abgeholt.\n";
+}
+
+function formatSnapshotHeader(
+  snapshotAt: string | null,
+  ageSec: number | null,
+  isStale: boolean,
+  refreshConfirmed: boolean,
+  refreshError: string | null = null,
+): string {
+  if (!snapshotAt) {
+    return "=== SNAPSHOT: KEINER VORHANDEN ===\n" +
+      "Es liegt noch kein Broker-Snapshot vor. Die folgenden Bereiche sind leer oder unvollständig.\n" +
+      refreshFailureNote(refreshConfirmed, refreshError);
+  }
+
+  const age = ageSec === null ? "?" : `${ageSec.toFixed(1)}s`;
+  const state = isStale
+    ? "⚠️ VERALTET"
+    : (refreshConfirmed ? "✅ frisch" : "⚠️ nicht bestätigt");
+  const legend = isStale
+    ? `\n⚠️ Der Snapshot ist älter als ${SNAPSHOT_STALE_AFTER_SEC}s. Die folgenden Depotwerte weichen ` +
+      `mit hoher Wahrscheinlichkeit von dem ab, was der Broker beim Login zeigt.` +
+      (refreshConfirmed ? "" : `\n${refreshFailureNote(refreshConfirmed, refreshError)}`)
+    : "";
+
+  return `=== SNAPSHOT: ${snapshotAt} (Alter: ${age}) — ${state} ===${legend}`;
+}
 
 /**
  * Leitet aus Ledger-Zeilen (pta_active_positions) die Exit-Richtung ab.
@@ -298,7 +427,8 @@ export function registerPtaTools(server: McpServer) {
     "list_active_positions",
     {
       title: "List Active Positions",
-      description: "Shows all currently open trades and their net positions by pulling live data from the broker. This tool also triggers a live refresh, provides the current account summary (such as Cash Balance and Net Liquidation Value), lists all unconfirmed or queued orders, and displays locally tracked trades. Use this tool if you need to know the account's cash balance, check for hanging orders, or see the real-time status of the portfolio.",
+      description: "Shows all currently open trades and their net positions from the broker snapshot. This tool requests a broker snapshot refresh, provides the current account summary (such as Cash Balance and Net Liquidation Value), lists all unconfirmed or queued orders, and displays locally tracked trades. Use this tool if you need to know the account's cash balance, check for hanging orders, or see the current status of the portfolio.\n\n" +
+        "IMPORTANT — data freshness: the answer ALWAYS starts with a '=== SNAPSHOT: ... ===' header giving the timestamp and age of the underlying broker snapshot. The figures below that header are only as current as that snapshot. If the header says '⚠️ VERALTET' (older than 90s) or 'nicht bestätigt', the numbers MUST NOT be presented to the user as the current portfolio — say explicitly that the snapshot is stale and that the broker app is the authoritative source.",
       inputSchema: {
         ticker: z.string().optional().describe("Optional filter by ticker"),
       },
@@ -307,36 +437,78 @@ export function registerPtaTools(server: McpServer) {
       try {
         const activeMode = await getActiveTradingMode();
 
-        // 1. Trigger live position refresh from IBKR by logging a REFRESH_REQUESTED event
-        const { data: refreshData, error: insertErr } = await supabase.from("pta_execution_log").insert({
-          trade_id: "SYSTEM",
-          ticker: "SYSTEM",
-          event_type: "REFRESH_REQUESTED",
-          action: "REFRESH",
-          quantity: 0,
-          price: 0
-        }).select("id").single();
+        // ── Snapshot-Refresh ────────────────────────────────────────────────
+        // Im Regelbetrieb schreibt ibkr-sync den Snapshot selbst periodisch
+        // (alle 30 s). Dann ist hier NICHTS zu tun: dieser Handler bleibt ein
+        // reiner Lesezugriff und berührt den Order-Kanal nicht.
+        // Nur wenn der vorliegende Stand veraltet ist, wird ein Refresh
+        // angefordert. Das deckt zwei Fälle ab: einen Daemon, der noch nicht
+        // periodisch schreibt, und einen, der gerade nicht verbunden ist.
+        const preAgeSec = await readSnapshotAgeSec(activeMode);
+        const needsRefresh = preAgeSec === null || preAgeSec > SNAPSHOT_STALE_AFTER_SEC;
+        let refreshConfirmed = !needsRefresh;
+        let refreshError: string | null = null;
 
-        if (insertErr || !refreshData) throw new Error("Failed to create REFRESH_REQUESTED event");
-        const refreshId = refreshData.id;
+        if (needsRefresh) {
+          // R1. Refresh anfordern.
+          //    `notes` MUSS gesetzt werden (die Spalte hat keinen DB-Default) und
+          //    `mode` ebenfalls — sonst übernimmt die Spalte ihren Default 'live'
+          //    und ein Refresh aus PAPER wäre als LIVE-Auftrag markiert.
+          const { data: refreshData, error: insertErr } = await supabase.from("pta_execution_log").insert({
+            trade_id: "SYSTEM",
+            ticker: "SYSTEM",
+            event_type: "REFRESH_REQUESTED",
+            action: "REFRESH",
+            quantity: 0,
+            price: 0,
+            notes: REFRESH_STATE.PENDING,
+            mode: activeMode
+          }).select("id").single();
 
-        // 2. Poll up to 10 seconds for the sync to complete (notes == 'COMPLETED')
-        let attempts = 0;
-        while (attempts < 20) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const { data: checkData } = await supabase
-                .from("pta_execution_log")
-                .select("notes")
-                .eq("id", refreshId)
-                .single();
-            if (checkData && checkData.notes === "COMPLETED") {
-                break;
-            }
-            attempts++;
+          if (insertErr || !refreshData) throw new Error("Failed to create REFRESH_REQUESTED event");
+          const refreshId = refreshData.id;
+
+          // R2. Auf die Antwort des Daemons warten (COMPLETED oder ERROR:...).
+          //     Ein Fehlerzustand bricht sofort ab — sonst liefe der Poll in den
+          //     Timeout und meldete "nicht abgeholt", obwohl geantwortet wurde.
+          for (let attempt = 0; attempt < REFRESH_POLL_ATTEMPTS; attempt++) {
+              await new Promise(resolve => setTimeout(resolve, REFRESH_POLL_INTERVAL_MS));
+              const { data: checkData } = await supabase
+                  .from("pta_execution_log")
+                  .select("notes")
+                  .eq("id", refreshId)
+                  .single();
+              const state = String(checkData?.notes ?? "");
+              if (state === REFRESH_STATE.COMPLETED) {
+                  refreshConfirmed = true;
+                  break;
+              }
+              if (state.startsWith(REFRESH_STATE.ERROR_PREFIX)) {
+                  refreshError = state;
+                  break;
+              }
+          }
+
+          // R3. Auftragszeile aufräumen. Bei Erfolg wird sie entfernt, im
+          //    Fehlerfall bleibt sie als Nachweis stehen — sie wird nicht erneut
+          //    abgeholt, weil der Daemon nur auf PENDING selektiert.
+          //    Eine fehlende Bestätigung wird NICHT verschluckt: sie erscheint
+          //    in der Kopfzeile der Antwort.
+          if (refreshConfirmed) {
+            await supabase.from("pta_execution_log").delete().eq("id", refreshId);
+          } else {
+            log.warn(
+              `[Snapshot] REFRESH_REQUESTED (id ${refreshId}, mode ${activeMode}) blieb unbeantwortet ` +
+              `(${(REFRESH_POLL_ATTEMPTS * REFRESH_POLL_INTERVAL_MS) / 1000}s). ` +
+              (refreshError
+                ? `Der Daemon hat mit "${refreshError}" geantwortet, konnte den Snapshot also nicht schreiben.`
+                : `ibkr-sync hat den Auftrag nicht abgeholt (nicht verbunden, oder notes-Filter greift nicht).`) +
+              ` Ausgeliefert wird der letzte erfolgreiche Snapshot — Alter siehe Kopfzeile.`,
+            );
+          }
+        } else {
+          log.debug(`[Snapshot] Stand ist ${preAgeSec?.toFixed(1)}s alt — kein Refresh nötig, reiner Lesezugriff.`);
         }
-        
-        // Clean up the event
-        await supabase.from("pta_execution_log").delete().eq("id", refreshId);
 
         // 3. Fetch local active positions (filtered by active mode — critical for paper/live isolation)
         let activeQuery = supabase.from("pta_active_positions").select("*").eq("mode", activeMode);
@@ -350,10 +522,15 @@ export function registerPtaTools(server: McpServer) {
         const { data: liveData, error: liveErr } = await liveQuery;
         if (liveErr) throw liveErr;
 
-        // 5. Fetch account summary (filtered by active mode)
+        // 5. Fetch account summary (filtered by active mode).
+        //    Sortierung nach updated_at: es kann mehrere Konten je Modus geben,
+        //    und die Frischeanzeige muss den jüngsten Stand bewerten — nicht
+        //    eine beliebige Zeile.
         const { data: accData, error: accErr } = await supabase
           .from("pta_ibkr_account_summary").select("*")
-          .eq("mode", activeMode).limit(1).maybeSingle();
+          .eq("mode", activeMode)
+          .order("updated_at", { ascending: false })
+          .limit(1).maybeSingle();
         if (accErr) throw accErr;
 
         // 6. Fetch live open orders (filtered by active mode)
@@ -416,15 +593,29 @@ export function registerPtaTools(server: McpServer) {
             return ((now - openTime) / (1000 * 3600 * 24)).toFixed(1);
         };
 
-        let responseText = `=== TRADING MODE: ${activeMode.toUpperCase()} ===\n\n`;
+        // Snapshot-Frische bestimmen: maßgeblich ist der jüngste updated_at-Wert
+        // der Positionszeilen, ersatzweise der des Kontostands (ein flaches Konto
+        // hat keine Positionszeilen, ist aber trotzdem ein gültiger Snapshot).
+        const snapshotAt = latestTimestamp([
+          ...(liveData || []).map((p: any) => p.updated_at),
+          accData?.updated_at,
+        ]);
+        const snapshotAgeSec = snapshotAt ? (Date.now() - new Date(snapshotAt).getTime()) / 1000 : null;
+        const snapshotStale = snapshotAgeSec === null || snapshotAgeSec > SNAPSHOT_STALE_AFTER_SEC;
+
+        let responseText = `=== TRADING MODE: ${activeMode.toUpperCase()} ===\n`;
+        responseText += formatSnapshotHeader(snapshotAt, snapshotAgeSec, snapshotStale, refreshConfirmed, refreshError) + "\n\n";
 
         // Format account summary
         if (accData && !ticker) {
+          // Number(... ?? 0): eine einzelne NULL-Spalte darf nicht die gesamte
+          // Portfolio-Antwort mit einem TypeError zerstören.
+          const eur = (v: any) => Number(v ?? 0).toFixed(2);
           responseText += `=== ${activeMode.toUpperCase()} IBKR ACCOUNT SUMMARY (Base: EUR) ===\n`;
-          responseText += `- Total Cash Balance: ${accData.total_cash_balance.toFixed(2)} EUR\n`;
-          responseText += `- Net Liquidation Value: ${accData.net_liquidation.toFixed(2)} EUR\n`;
-          responseText += `- Available Funds: ${accData.available_funds.toFixed(2)} EUR\n`;
-          responseText += `- Cash Quote: ${accData.cash_quote?.toFixed(2) || '0.00'}%\n\n`;
+          responseText += `- Total Cash Balance: ${eur(accData.total_cash_balance)} EUR\n`;
+          responseText += `- Net Liquidation Value: ${eur(accData.net_liquidation)} EUR\n`;
+          responseText += `- Available Funds: ${eur(accData.available_funds)} EUR\n`;
+          responseText += `- Cash Quote: ${eur(accData.cash_quote)}%\n\n`;
         } else if (!ticker) {
           responseText += `No account summary available for ${activeMode} mode yet.\n\n`;
         }
@@ -671,26 +862,60 @@ export function registerPtaTools(server: McpServer) {
         const avgRWin = getAvg(rMultWinners);
         const avgRLoss = getAvg(rMultLosers);
 
-        let report = `=== PORTFOLIO ANALYTICS ===\n\n`;
+        let report = `=== PORTFOLIO ANALYTICS (mode: ${activeMode.toUpperCase()}) ===\n\n`;
         
         // Show overarching live risk and cash metrics if no specific timeframe is filtered
         if (!days && !start_date && !end_date) {
-            const { data: summaryData } = await supabase.from("pta_portfolio_summary").select("*").single();
-            const { data: riskData } = await supabase.from("pta_live_risk").select("*").limit(1).maybeSingle();
-            
+            // LIVE RISK bewusst DIREKT aus pta_ibkr_account_summary und modus-
+            // gescoped gelesen:
+            //  * Die View `pta_live_risk` hat WEDER eine mode-Spalte NOCH einen
+            //    Filter. Gelesen mit `.limit(1).maybeSingle()` lieferte sie damit
+            //    eine BELIEBIGE Zeile aus live ODER paper — im LIVE-Modus konnte
+            //    so der PAPER-Kontostand als Portfolio-NAV erscheinen.
+            //  * Der Snapshot-Zeitpunkt wird jetzt mit ausgewiesen (Frische-Kontrakt),
+            //    sonst gilt hier dieselbe Blindheit wie früher in
+            //    list_active_positions: ein eingefrorener Stand sieht aus wie ein
+            //    frischer.
+            const { data: riskData } = await supabase
+                .from("pta_ibkr_account_summary")
+                .select("account, net_liquidation, total_cash_balance, portfolio_heat_eur, core_risk_eur, updated_at")
+                .eq("mode", activeMode)
+                .order("updated_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            report += `=== ${activeMode.toUpperCase()} LIVE RISK & EXPOSURE ===\n`;
             if (riskData) {
-                report += `=== LIVE RISK & EXPOSURE ===\n`;
-                report += `Portfolio NAV: ${riskData.nav_eur?.toFixed(2) || "N/A"} EUR\n`;
-                report += `Portfolio Heat: ${riskData.portfolio_heat_eur?.toFixed(2) || "N/A"} EUR (${riskData.portfolio_heat_pct?.toFixed(2) || "0.00"}%)\n`;
-                report += `Core Risk: ${riskData.core_risk_eur?.toFixed(2) || "N/A"} EUR (${riskData.core_risk_pct?.toFixed(2) || "0.00"}%)\n\n`;
+                const nav = Number(riskData.net_liquidation ?? 0);
+                const heat = Number(riskData.portfolio_heat_eur ?? 0);
+                const core = Number(riskData.core_risk_eur ?? 0);
+                const pct = (v: number) => nav > 0 ? ((v / nav) * 100).toFixed(2) : "0.00";
+                // Ein fehlender Zeitstempel gilt als veraltet — nie als frisch.
+                const ageSec = riskData.updated_at
+                    ? (Date.now() - new Date(riskData.updated_at).getTime()) / 1000
+                    : null;
+                const stale = ageSec === null || ageSec > SNAPSHOT_STALE_AFTER_SEC;
+
+                report += formatSnapshotHeader(riskData.updated_at ?? null, ageSec, stale, true) + "\n";
+                report += `Account: ${riskData.account}\n`;
+                report += `Portfolio NAV: ${nav.toFixed(2)} EUR\n`;
+                report += `Portfolio Heat: ${heat.toFixed(2)} EUR (${pct(heat)}%)\n`;
+                report += `Core Risk: ${core.toFixed(2)} EUR (${pct(core)}%)\n\n`;
+            } else {
+                report += `Kein Kontostand-Snapshot fuer Modus '${activeMode}' vorhanden.\n\n`;
             }
             
+            const { data: summaryData } = await supabase.from("pta_portfolio_summary").select("*").single();
             if (summaryData) {
-                const maxDrawdown = summaryData.max_drawdown_eur !== null ? Number(summaryData.max_drawdown_eur).toFixed(2) : "N/A";
-                report += `=== AGGREGATE ACCOUNT METRICS ===\n`;
-                report += `Calculated Cash Balance (EUR): ${summaryData.calculated_cash_balance_eur?.toFixed(2) || "N/A"}\n`;
-                report += `Cash Injected (EUR): ${summaryData.cash_injected_eur?.toFixed(2) || "N/A"}\n`;
-                report += `Max Drawdown (EUR): ${maxDrawdown}\n\n`;
+                const eur = (v: any) => (v === null || v === undefined) ? "N/A" : Number(v).toFixed(2);
+                report += `=== AGGREGATE ACCOUNT METRICS (Ledger: mode = 'live') ===\n`;
+                if (activeMode === "paper") {
+                    report += `⚠️ Die View pta_portfolio_summary ist fest auf mode = 'live' gesetzt. Im PAPER-Modus\n`;
+                    report += `   sind die folgenden Kennzahlen LIVE-Werte, NICHT die des Paper-Kontos.\n`;
+                }
+                report += `Calculated Cash Balance (EUR): ${eur(summaryData.calculated_cash_balance_eur)}\n`;
+                report += `Cash Injected (EUR): ${eur(summaryData.cash_injected_eur)}\n`;
+                report += `Max Drawdown (EUR): ${eur(summaryData.max_drawdown_eur)}\n\n`;
             }
         }
 

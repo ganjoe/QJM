@@ -57,6 +57,19 @@
                 "-A",
                 "/home/daniel/QJM/mcp/agent-drawio/stdio.ts"
             ]
+        },
+        "openbrain-shelly": {
+            "command": "/home/daniel/.deno/bin/deno",
+            "args": [
+                "--quiet",
+                "run",
+                "-A",
+                "/home/daniel/QJM/mcp/agent-shelly/stdio.ts"
+            ],
+            "env": {
+                "POWERMETER_API_URL": "http://127.0.0.1:8800",
+                "TARGET_DEVICE_HANDLE": "server-plug"
+            }
         }
     }
 }

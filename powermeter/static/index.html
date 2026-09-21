@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shelly PowerMeter & Control Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-title">
+          <h1>Shelly PowerMeter Hub</h1>
+          <p>Autonome Server-Steuerung & Parquet Time-Series Logging</p>
+        </div>
+      </div>
+      <div class="header-controls">
+        <div class="device-selector">
+          <span>🔌</span>
+          <select id="deviceSelect" aria-label="Gerät auswählen"></select>
+        </div>
+        <div id="statusPill" class="status-pill">
+          <div class="status-dot"></div>
+          <span id="statusText">ONLINE</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Metrics Cards Grid -->
+    <section class="metrics-grid">
+      <!-- Card: Watt -->
+      <div class="card">
+        <div class="card-label">
+          <span>AKTUELLE LEISTUNG</span>
+          <span>⚡ W</span>
+        </div>
+        <div class="card-value cyan-glow">
+          <span id="valWatts">0.0</span>
+          <span class="unit">W</span>
+        </div>
+        <div class="card-sub">
+          <span>Echtzeit-Messung (1s-Takt)</span>
+        </div>
+      </div>
+
+      <!-- Card: Spannung & Strom -->
+      <div class="card">
+        <div class="card-label">
+          <span>NETZSPANNUNG / STROM</span>
+          <span>📊 V / A</span>
+        </div>
+        <div class="card-value amber-glow">
+          <span id="valVoltage">0.0</span>
+          <span class="unit">V</span>
+        </div>
+        <div class="card-sub">
+          <span>Stromstärke: <strong id="valCurrent" style="color: #cbd5e1;">0.00</strong> A</span>
+        </div>
+      </div>
+
+      <!-- Card: Verbrauch & Kosten -->
+      <div class="card">
+        <div class="card-label">
+          <span>VERBRAUCH / KOSTEN</span>
+          <span>💰 €</span>
+        </div>
+        <div class="card-value green-glow">
+          <span id="valKwh">0.00</span>
+          <span class="unit">kWh</span>
+        </div>
+        <div class="card-sub">
+          <span>Kosten: <strong id="valCost" style="color: #34d399;">0.00</strong> €</span>
+        </div>
+      </div>
+
+      <!-- Card: Temperatur -->
+      <div class="card">
+        <div class="card-label">
+          <span>GERÄTETEMPERATUR</span>
+          <span>🌡️ °C</span>
+        </div>
+        <div class="card-value purple-glow">
+          <span id="valTemp">0.0</span>
+          <span class="unit">°C</span>
+        </div>
+        <div class="card-sub">
+          <span>ESP32 Überhitzungsschutz aktiv</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Grid: Controls & Charts -->
+    <div class="main-grid">
+      <!-- Left Column: Chart -->
+      <section class="chart-container">
+        <div class="chart-header">
+          <div class="section-title">
+            <span>📈</span> Verbrauchsverlauf (Parquet Time-Series)
+          </div>
+          <div class="range-picker">
+            <button class="btn-range active" data-range="live">Live (1m)</button>
+            <button class="btn-range" data-range="24h">24h</button>
+            <button class="btn-range" data-range="7d">7 Tage</button>
+            <button class="btn-range" data-range="30d">30 Tage</button>
+            <button class="btn-range" data-range="1y">1 Jahr</button>
+            <button class="btn-range" data-range="all">Ewig</button>
+          </div>
+        </div>
+        <div class="canvas-wrapper">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </section>
+
+      <!-- Right Column: Control Panels -->
+      <section style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Relais Schalter Panel -->
+        <div class="card">
+          <div class="section-title">
+            <span>🔘</span> Direkte Relais-Steuerung
+          </div>
+          <div class="switch-panel">
+            <div class="switch-label">
+              <h3>Steckdosen-Zustand</h3>
+              <p id="switchStatusText">Status wird geladen...</p>
+            </div>
+            <button id="switchBtn" class="btn-toggle on">
+              <span>⚡</span> AN
+            </button>
+          </div>
+        </div>
+
+        <!-- Autonomer Power-Cycle Panel -->
+        <div class="power-cycle-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="font-size: 15px; color: #f87171;">⚠️ Server-Power-Cycle</h3>
+            <span class="card-badge">Hardware-Timer</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+            Schaltet die Steckdose sofort AUS. Der Wiedereinschalt-Timer läuft <strong>vollkommen autark auf dem Shelly-Chip</strong>, selbst wenn der Server sofort offline geht!
+          </p>
+
+          <!-- Timer Presets -->
+          <div class="timer-preset-group">
+            <button class="btn-preset active" data-seconds="5">5s (Reboot)</button>
+            <button class="btn-preset" data-seconds="30">30s</button>
+            <button class="btn-preset" data-seconds="60">1 Min.</button>
+            <button class="btn-preset" data-seconds="3600">1 Std.</button>
+            <button class="btn-preset" data-seconds="28800">8 Std.</button>
+            <button class="btn-preset" data-seconds="43200">12 Std.</button>
+          </div>
+
+          <!-- Custom Timer -->
+          <div class="custom-timer-row">
+            <input type="number" id="customRestartSeconds" value="5" min="1" max="86400" placeholder="Sekunden eingeben">
+            <span style="align-self: center; font-size: 12px; color: var(--text-muted);">Sek.</span>
+          </div>
+
+          <button id="triggerPowerCycleBtn" class="btn-danger-powercycle">
+            <span>🔄</span> Power-Cycle jetzt ausführen
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Settings Row -->
+    <section class="card">
+      <div class="section-title">
+        <span>⚙️</span> Konfiguration & Hardware-Sicherheitsnetz
+      </div>
+      <div class="settings-grid">
+        <!-- Strompreis -->
+        <div class="setting-item">
+          <label for="inputPrice">Strompreis für heute (€ / kWh):</label>
+          <div class="input-with-btn">
+            <input type="number" id="inputPrice" step="0.001" min="0.01" value="0.35">
+            <button id="btnSavePrice" class="btn-primary">Speichern</button>
+          </div>
+          <span style="font-size: 11px; color: var(--text-muted);">Wird täglich historisiert in prices.parquet geloggt.</span>
+        </div>
+
+        <!-- Hardware Auto-On Failsafe -->
+        <div class="setting-item">
+          <label for="inputAutoOn">Hardware Notfall-Wiedereinschalten (Sekunden):</label>
+          <div class="input-with-btn">
+            <input type="number" id="inputAutoOn" value="5" min="1" max="300">
+            <button id="btnSaveAutoOn" class="btn-primary">Im Flash sichern</button>
+          </div>
+          <span style="font-size: 11px; color: var(--text-muted);">Garantiert, dass der Shelly sich nach versehentlichem Ausschalten nach X Sek. selbst reaktiviert.</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Modal: Confirmation for Power Cycle -->
+  <div id="powerCycleModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-title">🚨 Server-Power-Cycle bestätigen</div>
+      <div class="modal-text">
+        Sind Sie sicher? Die Steckdose wird sofort <strong>ausgeschaltet</strong>.<br><br>
+        Der Server verliert unmittelbar den Strom. Nach <strong><span id="modalSecondsSpan">5</span> Sekunden</strong> schaltet der interne Hardware-Timer des Shelly die Steckdose wieder ein.
+      </div>
+      <div class="modal-actions">
+        <button id="cancelModalBtn" class="btn-secondary">Abbrechen</button>
+        <button id="confirmPowerCycleBtn" class="btn-danger-powercycle" style="width: auto; padding: 8px 18px;">
+          Bestätigen & Ausschalten
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -279,6 +279,20 @@ class ChartCanvas(QWidget):
             return
         self._broadcast_crosshair_from_x(x_px)
 
+    def _snap_crosshair(self, x_px: float) -> tuple[Optional[int], float]:
+        """Resolve a pixel X to (bar_index, snapped_x) using nearest-neighbour.
+
+        Returns (None, x_px) when no bars are loaded. The snapped x is the real
+        candle center, so the vertical line and the date badge always agree.
+        """
+        bars = self.window_data.bars if self.window_data else []
+        if not bars:
+            return None, x_px
+        idx, snapped_x = self.x_trans.bar_center_for_pixel(x_px, len(bars))
+        if not getattr(self.config, "crosshair_snap_to_bar", True):
+            return idx, x_px
+        return idx, snapped_x
+
     def _broadcast_crosshair_from_x(self, x_px: float) -> None:
         """Snap the cursor to the nearest real bar and emit its timestamp + index.
 
@@ -287,29 +301,31 @@ class ChartCanvas(QWidget):
         """
         if not self.window_data or not self.window_data.bars:
             return
-        bar_idx = self.x_trans.x_to_bar(x_px)
-        snapped = int(round(bar_idx))
-        snapped = max(0, min(len(self.window_data.bars) - 1, snapped))
-        ts = self.window_data.bars[snapped].t_open
-        self.crosshair_moved.emit(ts, snapped)
+        idx, _ = self._snap_crosshair(x_px)
+        if idx is None:
+            return
+        ts = self.window_data.bars[idx].t_open
+        self.crosshair_moved.emit(ts, idx)
 
     def _apply_crosshair(self, source_pane_id: str, x_px: float, y_px: float) -> None:
-        """Render crosshair locally WITHOUT re-broadcasting (for incoming inter-window sync)."""
-        if x_px < 0:
-            # Mouse left the pane — clear all crosshairs
+        """Render the crosshair locally WITHOUT re-broadcasting (mouse path)."""
+        if x_px < 0 or not self.window_data or not self.window_data.bars:
+            # Mouse left the pane, or no bars: clear all crosshairs
             for pane in self._panes.values():
                 pane.set_crosshair(None, None, False)
             return
 
+        idx, snapped_x = self._snap_crosshair(x_px)
+
         # Distribute: vertical line (x) to ALL panes, horizontal (y) only to source
         for pane_id, pane in self._panes.items():
             is_active = (pane_id == source_pane_id)
-            pane.set_crosshair(x_px, y_px if is_active else None, is_active)
+            pane.set_crosshair(snapped_x, y_px if is_active else None, is_active, idx)
 
-    def _apply_crosshair_remote(self, x_px: Optional[float]) -> None:
+    def _apply_crosshair_remote(self, x_px: Optional[float], bar_index: Optional[int] = None) -> None:
         """Apply an inter-window sync: vertical line only, no active pane, no Y."""
         for pane in self._panes.values():
-            pane.set_crosshair(x_px, None, False)
+            pane.set_crosshair(x_px, None, False, bar_index)
 
     def set_annotations(self, annotations) -> None:
         """Push the annotation set to the chart pane without touching zoom/pan state.
