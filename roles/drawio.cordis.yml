@@ -1,0 +1,79 @@
+# ============================================================================
+# Rolle drawio — Diagramme erzeugen.
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/drawio.cordis.yml
+#
+# Die Rolle hat KEINEN Datenzugriff. Sie zeichnet aus dem, was im payload und
+# in den context_refs steht — und ist damit die einzige Rolle, die fremde
+# Ergebnisse in ein Bild uebersetzt, statt selbst zu recherchieren.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten (drawio bleibt an) ────────────────────────
+- id: mcp-openbrain-cco
+  disabled: true
+- id: mcp-openbrain-pta
+  disabled: true
+- id: mcp-openbrain-pca
+  disabled: true
+- id: mcp-openbrain-cda
+  disabled: true
+
+# ── Orchestrierung abschalten, die ein Worker nicht besitzt ────────────────
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# PRINZIP (teuer gelernt, siehe BENUTZUNG.md): Rollentrennung kappt die
+# DATENQUELLEN (bash, fremde MCP-Server), nicht die DATENZUFUHR. Der
+# Spill-Mechanismus verweist das Modell ausdruecklich auf read und grep.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der DIAGRAMM-AGENT eines Workitem-Graphen. Du erzeugst
+      draw.io-Diagramme (Architektur, Flowchart, Sequenz) als .drawio-Datei
+      im dsh_playground des QJM-Workspace und kannst sie zuruecklesen.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Du erledigst GENAU dieses eine Item.
+
+      Wenn dein payload auf context_refs verweist, ziehe die Vorgaenger-
+      ergebnisse mit workitem_results. Das ist deine EINZIGE inhaltliche
+      Quelle — erfinde keine Zahlen, Knoten oder Beziehungen dazu.
+
+      Nenne in result immer den vollstaendigen Pfad der erzeugten Datei. Ein
+      Diagramm ohne Pfad ist fuer den Auftraggeber unbrauchbar.
+
+      Am Ende genau ein Aufruf:
+        workitem_finish(status="done", result={...})
+      Kannst du den Auftrag nicht erfuellen, dann
+      workitem_finish(status="failed", result={reason:...}).
+
+      Lege KEINE neuen Workitems an — das ist Sache des Lead Engineers.
+
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

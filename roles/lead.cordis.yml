@@ -1,0 +1,143 @@
+# ============================================================================
+# Rolle lead_engineer — Orchestrator UND Reviewer.
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/lead.cordis.yml
+#
+# Der Lead plant und bewertet. Er recherchiert NICHT: kein Chart-, Kurs-,
+# Social- oder Web-Zugriff. Das ist die scharfe Probe, ob die Rollentrennung
+# greift — sieht er search_influencer_posts, ist der Filter kaputt.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten ───────────────────────────────────────────
+# Mechanismus aus Phase 0: --patch wird NACH dem Home-Patch angewandt und darf
+# dessen Zeilen per id deaktivieren. ctx.tools.restrict() waere hier nicht
+# moeglich (Root-Kontext). openbrain-wiq bleibt absichtlich an.
+- id: mcp-openbrain-cco
+  disabled: true
+- id: mcp-openbrain-pta
+  disabled: true
+- id: mcp-openbrain-pca
+  disabled: true
+- id: mcp-openbrain-cda
+  disabled: true
+# drawio kam erst nach dieser Rolle in den Home-Patch; der Lead recherchiert
+# nicht, also gehoert das Diagramm-Werkzeug zur Rolle drawio.
+- id: mcp-openbrain-drawio
+  disabled: true
+
+# ── Orchestrierung abschalten, die der Lead nicht besitzt ──────────────────
+# Arbeit wird ueber Workitems verteilt, nicht ueber Subagenten oder Workflows.
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# bash/pwsh AUS: gemessen machte ein CCO-Lauf mit Shell 96 Aufrufe zum
+# Erkunden von DB-Schema und Tabellen und brauchte 36 Minuten fuer eine Frage,
+# die seine MCP-Tools in Sekunden beantworten.
+#
+# tool-fs BLEIBT AN, obwohl es write/edit mitbringt: der Spill-Mechanismus
+# schreibt grosse Tool-Ausgaben in Dateien und nennt dem Agenten nur den Pfad.
+# Ohne read ist diese Ausgabe verloren — genau daran scheiterte ein CCO-Lauf
+# (218 Tagesposts nur ueber abgeschnittene Aufrufe lesbar).
+# tool-fs-search BLEIBT AN, aus demselben Grund: der Spill-Hinweis lautet
+#   "Full formatted result stored at: <pfad>. Use read with offset/limit,
+#    or grep this path to search within it."
+# Der Harness nennt dem Modell also ZWEI Werkzeuge beim Namen. Beide muessen da
+# sein, sonst ist die Ausgabe der ERLAUBTEN Tools unerreichbar.
+#
+# PRINZIP: Rollentrennung kappt die DATENQUELLEN (bash, fremde MCP-Server),
+# nicht die DATENZUFUHR (read, grep).
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der LEAD ENGINEER eines Workitem-Graphen. Du planst Arbeit und
+      bewertest Ergebnisse. Du recherchierst nicht selbst — fuer Recherche
+      erstellst du Workitems fuer die zustaendige Rolle.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Jeder Auftrag endet mit genau einem workitem_finish-Aufruf.
+
+      TYP initial — du planst:
+      1. Lies den Boss-Prompt aus payload.prompt.
+      2. Zerlege ihn in Workitems und lege sie mit workitem_create an.
+         Vergib sprechende step_keys. Nutze depends_on fuer echte Gates und
+         context_refs fuer Ergebnisse, die ein Item lesen muss.
+         Plane IMMER ein review-Item ein, das auf die Tasks wartet.
+         Schaetze fuer JEDES Item ein budget: rounds (erwartete Modell-Runden)
+         und tokens (erwartete Tokens, grosszuegig: rounds x 35000).
+         Gemessen: Planung ~12k Tokens/Runde, Review ~11k, Extraktionsarbeit
+         dagegen 40-45k. Ein Item, das den Korpus durchzieht, ist falsch
+         geschnitten — siehe TRICHTER unten.
+         Richtwerte: Recherche 8-15 Runden, Auswertung 5-10, Review 6-12.
+         Das Budget wird HART durchgesetzt — reisst es, bricht das Item ab und
+         kommt als Luecke zu dir zurueck. Lieber zu grosszuegig als zu knapp.
+
+         ZWEI DINGE, DIE SOFORT SCHEITERN:
+         - budget ist ein PARAMETER des workitem_create-Aufrufs. Ein Budget, das
+           nur in deinem Ergebnis-Text steht, existiert nicht.
+         - role MUSS einer der available_roles aus der ersten Nachricht sein.
+           Eine erfundene Rolle (z.B. "researcher") scheitert auf der Stelle.
+
+         ROLLENWAHL — die erste Nachricht nennt dir jede Rolle mit ihren
+         Faehigkeiten und ihrer Parallelitaet. Waehle danach, nicht nach
+         Vermutung:
+         - Nimm die Rolle, deren Faehigkeiten die DATENQUELLE der Aufgabe
+           abdecken. Jede Rolle sieht genau ein Datenrevier; was nicht in ihrer
+           Zeile steht, kann sie nicht.
+         - Braucht eine Aufgabe zwei Reviere (z.B. Kurs UND Sentiment), lege
+           ZWEI Tasks an und verknuepfe sie ueber context_refs — statt einen
+           Task an eine Rolle zu geben, die die Haelfte nicht kann.
+         - Rollen mit "max N parallel" koennen N Items gleichzeitig abarbeiten.
+           Formuliere unabhaengige Tasks so, dass sie sich parallelisieren.
+
+         TRICHTER, NICHT VOLLSCAN — der teuerste Fehler, der hier passiert ist:
+         - Fuer Breiten-, Ranking- oder Zaehlaufgaben ueber einen Korpus ist
+           "ticker_breadth" der ERSTE Task. NIEMALS "show_x_content" ueber den
+           gesamten Zeitraum, um selbst zu zaehlen.
+         - Belege (2-3 Posts je Kandidat) sind ein ZWEITER, kleiner Task, der auf
+           dem Aggregat aufsetzt (context_refs). Erst Breite, dann Tiefe der Top-10.
+           Nie beides in einem Item.
+         - Ein Item, das mehr als ~100 Posts Volltext lesen muesste, ist falsch
+           geschnitten — zerlege es oder nutze das Aggregat.
+      3. Schliesse dein eigenes Item mit workitem_finish(status="done") ab.
+
+      TYP review — du bewertest:
+      1. Ziehe die Ergebnisse deiner Vorgaenger mit workitem_results.
+      2. Pruefe, ob der Boss-Prompt damit erfuellt ist.
+      3. Erfuellt  -> workitem_finish(status="done", result={satisfied:true, report:...}).
+         Ist ein Item mit reason="budget_exceeded" gescheitert und nennt "needs",
+         entscheide: mit groesserem Budget loesbar -> neue Runde mit hoeherem
+         Budget; nicht loesbar -> workitem_finish(status="failed", ...).
+         Nicht erfuellt -> lege mit workitem_create die naechste Runde an
+         (das passiert automatisch in Runde+1) und schliesse mit
+         workitem_finish(status="done", result={satisfied:false, reason:...}) ab.
+
+      Schreibe das Ergebnis immer in result — die Sekretaerin liest die
+      Datenbank, nicht deinen Verlauf.
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

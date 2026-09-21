@@ -3,8 +3,8 @@ import { z } from "zod";
 import {
   supabase,
   log,
-  getEmbedding,
-  getEmbeddingsBatch,
+  getQueryEmbedding,
+  getDocumentEmbedding,
   X_BEARER_TOKEN,
   X_CLIENT_ID,
   AGENT_ID,
@@ -439,7 +439,7 @@ export function registerXTools(server: McpServer) {
         }
 
         const actual_query = query || "";
-        const isLikelyExact = actual_query === "" || /^[A-Z0-9$.#]{1,10}$/i.test(actual_query) || actual_query.startsWith("@");
+        const trimmedQuery = actual_query.trim();
 
         let expandedAuthors: string[] | null = null;
         const expandedHandlesSet = new Set<string>();
@@ -453,9 +453,10 @@ export function registerXTools(server: McpServer) {
 
         let data: any[];
 
-        if (isLikelyExact) {
+        if (!trimmedQuery) {
+          // Leere Query = "zeige die neuesten Posts": reine Liste, keine Vektorsuche.
           const { data: exactData, error } = await supabase.rpc("exact_search_workspace", {
-            p_exact_keyword: actual_query === "" ? null : actual_query,
+            p_exact_keyword: null,
             match_count: limit,
             p_agent_id: p_agent_id,
             p_artifact_type: artifact_type || null,
@@ -465,9 +466,11 @@ export function registerXTools(server: McpServer) {
           if (error) throw error;
           data = exactData || [];
         } else {
-          const qEmb = await getEmbedding(actual_query, "x_search");
-          const { data: semData, error } = await supabase.rpc("semantic_search_workspace", {
+          // Hybrid (Vektor + Keyword, RRF) — wie search_yt_chunks, statt Entweder/Oder.
+          const qEmb = await getQueryEmbedding(trimmedQuery, "x_search");
+          const { data: hybData, error } = await supabase.rpc("hybrid_search_workspace", {
             query_embedding: qEmb,
+            query_text: trimmedQuery,
             match_threshold: threshold,
             match_count: limit,
             p_agent_id: p_agent_id,
@@ -476,7 +479,7 @@ export function registerXTools(server: McpServer) {
             p_authors: expandedAuthors,
           });
           if (error) throw error;
-          data = semData || [];
+          data = hybData || [];
         }
 
         if (expandedAuthors && expandedAuthors.length > 0) {
@@ -503,7 +506,8 @@ export function registerXTools(server: McpServer) {
       title: "Show X Content (Timeline & Live Tweet)",
       description: "Browse X/Twitter content.\n- DATABASE: Lists stored posts in reverse chronological order (optional filter by array of usernames, or specific dates/times).\n- ONLINE: Fetches a single live tweet directly from the X API by tweet ID or URL.\n\n" +
         "WHEN TO USE: Use when asked to show recent tweets from influencers, retrieve tweets from a specific day/time window, or to look up a specific tweet by URL/ID.\n" +
-        "WHEN NOT TO USE: To search across posts for specific keywords, topics, or stock tickers, use `search_influencer_posts`.",
+        "WHEN NOT TO USE: To search across posts for specific keywords, topics, or stock tickers, use `search_influencer_posts`.\n" +
+        "WHEN NOT TO USE (Ranglisten): Fuer Rang-, Breiten- oder Zaehlaufgaben ueber mehr als ~50 Posts nutze `ticker_breadth`. Jede Zeile hier enthaelt den vollen Post-Text (gemessen: ~400k Tokens pro Tageshaelfte) — und die Ticker stehen ohnehin schon als 🔑-Feld in jeder Zeile.",
       inputSchema: {
         action: z.enum(["DATABASE", "ONLINE"]).describe("DATABASE = list stored posts chronologically. ONLINE = fetch a single tweet live from API."),
         usernames: z.array(z.string()).optional().describe("Array of influencer handles to filter by (for DATABASE, e.g. ['@zerohedge']). Leave empty for all."),
@@ -789,10 +793,10 @@ export function registerXTools(server: McpServer) {
 
             // Asynchronously generate profile embedding without blocking user onboarding
             const embedText = `username: ${cleanName} screen_name: ${screenName} notes: ${notes || ''}`;
-            getEmbeddingsBatch([embedText])
-              .then((emb: any) => {
-                if (emb && emb[0]) {
-                  supabase.from("x_users").update({ embedding: emb[0] }).eq("username", cleanName).then();
+            getDocumentEmbedding(embedText)
+              .then((emb: number[]) => {
+                if (emb && emb.length > 0) {
+                  supabase.from("x_users").update({ embedding: emb }).eq("username", cleanName).then();
                 }
               })
               .catch((e: any) => log.debug(`Optional profile embedding for @${cleanName}: ${e.message}`));
@@ -894,7 +898,12 @@ export function registerXTools(server: McpServer) {
     "discover_ticker_mentions",
     {
       title: "Discover Ticker Mentions",
-      description: "Find tickers that an influencer mentioned for the VERY FIRST TIME ever.",
+      description: "Find tickers that an influencer mentioned for the VERY FIRST TIME ever. " +
+        "Laeuft in EINEM Aufruf gegen die First-Mentions-Historie — ohne vorherige Sammlung des Korpus.\n\n" +
+        "WHEN TO USE: Wenn die Frage 'was ist neu?' lautet. Das ist ein eigener, ERSTER Schritt, " +
+        "keine Ableitung aus einer Vollextraktion. start_date auf das interessierende Fenster setzen.\n" +
+        "WHEN NOT TO USE: Fuer Breite UND Rangfolge im Fenster (wie viele verschiedene Autoren nennen einen Ticker) " +
+        "nutze `ticker_breadth` mit only_new=true — das liefert beides in einem Aufruf.",
       inputSchema: {
         keywords: z.array(z.string()).optional().describe("Specific tickers to check (e.g. ['NVDA'])"),
         authors: z.array(z.string()).optional().describe("Filter to specific influencers (e.g. ['@serenity'])"),

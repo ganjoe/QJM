@@ -45,6 +45,10 @@ export class WorkerManager {
       { count: pendingEmbeddingCount },
       { count: embeddedXCount },
       { count: totalPosts },
+      { count: withTickersCount },
+      { count: emptyTickersCount },
+      { count: failedMetadataCount },
+      { count: failedPermanentCount },
       { count: legacyCategorizedCount },
       { count: activeInfluencers },
       { count: activeYtChannels },
@@ -60,6 +64,13 @@ export class WorkerManager {
       // Vektor-Coverage unabhängig vom Status-Label: embedding IS NOT NULL.
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").not("embedding", "is", null),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post"),
+      // Ticker-Coverage (Datenqualitaet metadata.tickers): nicht-leer vs. leeres Array.
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").not("metadata->tickers", "is", null).not("metadata->tickers", "eq", "[]"),
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("metadata->tickers", "[]"),
+      // Aktuell fehlgeschlagene Metadaten (Retry/Backoff/Repair steuert der metadata_worker).
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "metadata_failed"),
+      // Endgueltig aufgegebene Metadaten (MAX_METADATA_ATTEMPTS erreicht / nicht retryfaehig).
+      supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "metadata_failed_permanent"),
       // Legacy-Zeilen mit vorhandenem Vektor, aber altem Status 'categorized' (erklärt 31k vs 20k).
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "x_post").eq("status", "categorized"),
       supabase.from("x_users").select("*", { count: "exact", head: true }).eq("is_active", true),
@@ -165,6 +176,11 @@ export class WorkerManager {
           stage_legacy_categorized: legacyCategorizedCount || 0,
           total: totalPosts || 0,
           active_influencers: activeInfluencers || 0,
+          // Datenqualitaet metadata.tickers + fehlgeschlagene Metadaten.
+          with_tickers: withTickersCount || 0,
+          empty_tickers: emptyTickersCount || 0,
+          metadata_failed: failedMetadataCount || 0,
+          metadata_failed_permanent: failedPermanentCount || 0,
         },
         youtube: {
           active_channels: activeYtChannels || 0,

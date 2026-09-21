@@ -47,8 +47,8 @@ def resolve_embedding_target(requested_model: str, config: Dict[str, Any]) -> tu
     die iGPU kann das 6,6-GB-Modell nicht halten und rechnet ohnehin auf der CPU, ein
     Wechsel des Backends würde also nur den warmgehaltenen Zustand zerstören.
 
-    Kein Modell-Fallback: das Modell bleibt immer 'qwen3-embedding:8b', sonst würden
-    Vektoren eines fremden Raums in denselben vector(4096)-Index geschrieben.
+    Kein Modell-Fallback: das Modell bleibt immer 'mxbai-embed-large', sonst würden
+    Vektoren eines fremden Raums in denselben vector(1024)-Index geschrieben.
     """
     routes = config.get("routes", {})
     targets = config.get("targets", {})
@@ -72,7 +72,7 @@ def resolve_embedding_target(requested_model: str, config: Dict[str, Any]) -> tu
         if t_name not in targets:
             continue
         t_info = targets[t_name]
-        m_id = t_info.get("id", requested_model or "qwen3-embedding:8b")
+        m_id = t_info.get("id", requested_model or "mxbai-embed-large")
         c_name = t_info.get("llm_client") or t_info.get("endpoint")
         base_url = None
         if c_name and c_name in llm_clients:
@@ -92,12 +92,24 @@ def resolve_embedding_target(requested_model: str, config: Dict[str, Any]) -> tu
 # interaktive Suche nicht hinter großen Batch-Jobs wartet, laufen alle Embedding-Requests
 # durch genau einen Worker; die Reihenfolge bestimmt die Prioritätsklasse des Aufrufers.
 EMBED_FALLBACK_BASE_URL = os.getenv("EMBED_BASE_URL", "http://host.docker.internal:11434/v1")
-EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID", "qwen3-embedding:8b")
+EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID", "mxbai-embed-large")
 
 # keep_alive=-1 => Modell wird niemals entladen. Der OpenAI-kompatible Endpoint ignoriert
 # dieses Feld, deshalb geht der Gateway auf die native /api/embed-API.
 EMBED_KEEP_ALIVE = os.getenv("EMBED_KEEP_ALIVE", "-1")
 EMBED_BATCH_SIZE = max(1, int(os.getenv("EMBED_BATCH_SIZE", "8")))
+# Klassenabhaengige Batch-Groesse. Grund (gemessen 2026-09-18): Ollama hat ~0,4 s FIXEN
+# Overhead pro Backend-Call (Tokenisierung + Scheduler), die Durchsatzkosten sind also
+# 0,4 s + n * ~0,11 s. Gemessen bei 890-Zeichen-Chunks, concurrency=1:
+#   batch 1 -> 1,8 docs/s | 2 -> 3,0 | 4 -> 4,35 | 8 -> 5,7 | 16 -> 6,7
+# Fuer die Massenklasse 'yt' bringt ein groesserer Batch also fast den doppelten Durchsatz.
+# Interaktive Klassen bleiben klein: eine Anfrage wartet nur auf den EINEN laufenden Call,
+# bei yt-Batch 8 sind das ~1,3 s (Anforderung: interaktive Suche < 2 s).
+def _lane_batch_sizes() -> Dict[int, int]:
+    yt = max(1, int(os.getenv("EMBED_BATCH_SIZE_YT", "8")))
+    post = max(1, int(os.getenv("EMBED_BATCH_SIZE_XPOST", str(EMBED_BATCH_SIZE))))
+    search = max(1, int(os.getenv("EMBED_BATCH_SIZE_XSEARCH", str(EMBED_BATCH_SIZE))))
+    return {"x_search": search, "x_post": post, "yt": yt}
 EMBED_QUEUE_TIMEOUT = float(os.getenv("EMBED_QUEUE_TIMEOUT", "600"))
 EMBED_MAX_RETRIES = max(0, int(os.getenv("EMBED_MAX_RETRIES", "2")))
 
@@ -111,6 +123,10 @@ EMBED_PRIORITIES: Dict[str, int] = {
 EMBED_DEFAULT_PRIORITY_CLASS = "x_search"
 
 embed_queues: Dict[int, asyncio.Queue] = {p: asyncio.Queue() for p in EMBED_PRIORITIES.values()}
+# Prioritaet -> Batch-Groesse (siehe _lane_batch_sizes).
+LANE_BATCH_SIZES: Dict[int, int] = {
+    EMBED_PRIORITIES[cls]: size for cls, size in _lane_batch_sizes().items()
+}
 embed_lock = asyncio.Lock()
 embed_event = asyncio.Event()
 embed_scheduler_task: Optional[asyncio.Task] = None
@@ -195,8 +211,9 @@ def enqueue_embedding(
         handle = loop.call_later(max(0.0, deadline[0] - loop.time()), fire)
         owner.add_done_callback(lambda _f: handle.cancel())
 
-    for start in range(0, total, EMBED_BATCH_SIZE):
-        chunk = inputs[start:start + EMBED_BATCH_SIZE]
+    lane_batch_size = LANE_BATCH_SIZES.get(priority, EMBED_BATCH_SIZE)
+    for start in range(0, total, lane_batch_size):
+        chunk = inputs[start:start + lane_batch_size]
         chunk_fut: asyncio.Future = loop.create_future()
         chunk_fut.add_done_callback(lambda f, s=start: on_chunk_done(s, f))
         embed_queues[priority].put_nowait(
@@ -211,32 +228,37 @@ def enqueue_embedding(
     return owner
 
 
-def _collect_batch(lanes: list[asyncio.Queue]) -> list[dict]:
+def _collect_batch(lanes: list[tuple[int, asyncio.Queue]]) -> list[dict]:
     """Entnimmt nach Priorität (hoch zuerst) und bündelt zu einem Backend-Call.
 
-    Jede Lane-Anfrage ist bereits auf EMBED_BATCH_SIZE Inputs begrenzt, deshalb kann eine
-    Anfrage hier nicht angeschnitten werden. Die Budget-Prüfung bleibt als Sicherheitsnetz:
-    sie verhindert nur, dass ein Batch das Limit überschreitet.
+    Das Budget richtet sich nach der Prioritätsklasse des ZUERST entnommenen Eintrags
+    (siehe LANE_BATCH_SIZES): die interaktive Klasse deckelt den Call klein, die
+    yt-Klasse erlaubt einen grossen Batch. Jede Lane-Anfrage ist bereits auf die
+    Klassengroesse begrenzt, deshalb kann eine Anfrage nicht angeschnitten werden.
     """
     batch: list[dict] = []
-    budget = EMBED_BATCH_SIZE
-    while budget > 0:
+    budget = 0
+    while True:
         took_any = False
-        for lane in lanes:
-            if budget <= 0:
+        for prio, lane in lanes:
+            if budget <= 0 and batch:
                 break
             if lane.empty():
                 continue
             entry = lane.get_nowait()
             n = len(entry["inputs"])
+            if not batch:
+                budget = LANE_BATCH_SIZES.get(prio, EMBED_BATCH_SIZE)
             if n > budget:
                 # Sollte durch die Chunking-Logik nicht vorkommen; nicht anschneiden.
                 lane.put_nowait(entry)
+                if not batch:
+                    break
                 continue
             batch.append(entry)
             budget -= n
             took_any = True
-        if not took_any:
+        if not took_any or budget <= 0:
             break
     return batch
 
@@ -277,8 +299,8 @@ async def _embed_worker_loop() -> None:
         try:
             await embed_event.wait()
             async with embed_lock:
-                lanes = [embed_queues[p] for p in sorted(embed_queues, reverse=True)]
-                if all(q.empty() for q in lanes):
+                lanes = [(p, embed_queues[p]) for p in sorted(embed_queues, reverse=True)]
+                if all(q.empty() for _p, q in lanes):
                     embed_event.clear()
                     batch = []
                 else:

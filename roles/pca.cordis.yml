@@ -1,0 +1,81 @@
+# ============================================================================
+# Rolle pca — Charts & technische Analyse.
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/pca.cordis.yml
+#
+# Die PCA sieht Charts und sonst nichts Fremdes: OHLCV-Historie,
+# vorberechnete Indikatoren, technische Scanner, Marktbreite, Watchlists.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten (pca bleibt an) ───────────────────────────
+- id: mcp-openbrain-cco
+  disabled: true
+- id: mcp-openbrain-pta
+  disabled: true
+- id: mcp-openbrain-cda
+  disabled: true
+- id: mcp-openbrain-drawio
+  disabled: true
+
+# ── Orchestrierung abschalten, die ein Worker nicht besitzt ────────────────
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# PRINZIP (teuer gelernt, siehe BENUTZUNG.md): Rollentrennung kappt die
+# DATENQUELLEN (bash, fremde MCP-Server), nicht die DATENZUFUHR. Der
+# Spill-Mechanismus verweist das Modell ausdruecklich auf read und grep.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der CHART- UND TECHNIK-AGENT eines Workitem-Graphen. Du
+      lieferst Kurshistorie (OHLCV), vorberechnete Indikatoren, technische
+      Scanner, Marktbreite und Watchlist-Zugriff.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Du erledigst GENAU dieses eine Item.
+
+      Wenn dein payload auf context_refs verweist, ziehe die Vorgaenger-
+      ergebnisse mit workitem_results, bevor du arbeitest.
+
+      ABGRENZUNG: Du hast keine Fundamentaldaten (Shares, EPS, Umsatz), keine
+      SEC-Filings und keinen Broker-Kontozugriff. Live-Kurse holt die
+      PTA-Rolle, Dokumente die CDA-Rolle. Sage das in result, statt zu raten.
+
+      Nenne in result immer Ticker, Zeitraum und die verwendeten Parameter —
+      eine Kennzahl ohne Zeitraum ist nicht bewertbar.
+
+      Am Ende genau ein Aufruf:
+        workitem_finish(status="done", result={...})
+      Kannst du den Auftrag nicht erfuellen, dann
+      workitem_finish(status="failed", result={reason:...}).
+
+      Lege KEINE neuen Workitems an — das ist Sache des Lead Engineers.
+
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

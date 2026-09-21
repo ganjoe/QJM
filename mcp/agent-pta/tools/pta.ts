@@ -2,6 +2,78 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { supabase, getActiveTradingMode } from "./shared.ts";
 
+/**
+ * Leitet aus Ledger-Zeilen (pta_active_positions) die Exit-Richtung ab.
+ * BUY = Short covern, SELL = Long schließen. Gemischte Richtungen => null (nicht raten).
+ */
+function exitSideFromLedgerRows(rows: any[] | null): "BUY" | "SELL" | null {
+  if (!rows || rows.length === 0) return null;
+  let longQty = 0;
+  let shortQty = 0;
+  for (const r of rows) {
+    const raw = Number(r?.net_quantity) || 0;
+    const q = Math.abs(raw);
+    const isShort = String(r?.position_type || "").toUpperCase() === "SHORT" || raw < 0;
+    if (isShort) shortQty += q; else longQty += q;
+  }
+  if (longQty > 0 && shortQty > 0) return null;
+  if (shortQty > 0) return "BUY";
+  if (longQty > 0) return "SELL";
+  return null;
+}
+
+/**
+ * Ermittelt die EXIT-Richtung ausschließlich innerhalb des aktiven Modus.
+ * Liefert null, wenn keine eindeutige offene Position existiert — dann darf KEIN
+ * blinder SELL-Fallback gesendet werden, sonst eröffnet ein EXIT auf ein flaches
+ * Konto einen Short.
+ *
+ * Reihenfolge:
+ *  - STK: Broker-Snapshot (mode+ticker, über Konten aggregiert) ist maßgeblich,
+ *         danach Ledger (mode+trade_id), danach Ledger (mode+ticker).
+ *  - OPT/COMBO: Ledger (mode+trade_id) zuerst, da der Broker-Snapshot keine
+ *         Kontrakt-Identität trägt; danach Ledger (mode+ticker).
+ */
+async function resolveExitSide(
+  assetType: string,
+  ticker: string,
+  tradeId: string | undefined,
+  activeMode: "live" | "paper",
+): Promise<"BUY" | "SELL" | null> {
+  const sym = String(ticker || "").trim().toUpperCase();
+
+  if (assetType === "STK") {
+    const { data: posRows, error: posErr } = await supabase
+      .from("pta_ibkr_positions")
+      .select("quantity")
+      .eq("mode", activeMode)
+      .eq("ticker", sym);
+    if (posErr) throw new Error(`Positionsabfrage fehlgeschlagen: ${posErr.message}`);
+
+    const netQty = (posRows || []).reduce((sum: number, r: any) => sum + (Number(r?.quantity) || 0), 0);
+    if (netQty !== 0) return netQty < 0 ? "BUY" : "SELL";
+  }
+
+  if (tradeId) {
+    const { data: byTrade, error: tradeErr } = await supabase
+      .from("pta_active_positions")
+      .select("net_quantity, position_type")
+      .eq("mode", activeMode)
+      .eq("trade_id", tradeId);
+    if (tradeErr) throw new Error(`Ledger-Abfrage fehlgeschlagen: ${tradeErr.message}`);
+    const side = exitSideFromLedgerRows(byTrade);
+    if (side) return side;
+  }
+
+  const { data: byTicker, error: tickerErr } = await supabase
+    .from("pta_active_positions")
+    .select("net_quantity, position_type")
+    .eq("mode", activeMode)
+    .eq("ticker", sym);
+  if (tickerErr) throw new Error(`Ledger-Abfrage fehlgeschlagen: ${tickerErr.message}`);
+  return exitSideFromLedgerRows(byTicker);
+}
+
 export function registerPtaTools(server: McpServer) {
   // Tool: Place Trade (Execution Logger)
   server.registerTool(
@@ -92,11 +164,20 @@ export function registerPtaTools(server: McpServer) {
             eventType = "CASH_TRANSFER";
             action = params.quantity && params.quantity > 0 ? "DEPOSIT" : "WITHDRAW";
         } else if (params.action === "EXIT") {
+            // Richtung ausschließlich im aktiven Modus bestimmen; kein blinder SELL-Fallback.
+            const exitSide = await resolveExitSide(params.asset_type, params.ticker, params.trade_id, activeMode);
+            if (!exitSide) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: `EXIT abgebrochen: Für ${params.ticker} wurde im Modus ${activeMode.toUpperCase()} keine eindeutige offene Position gefunden (weder aktiver Broker-Snapshot noch Ledger). Es wurde KEINE Order erzeugt — EXIT darf niemals versehentlich eine neue Position (Short) eröffnen.`
+                    }],
+                    isError: true
+                };
+            }
+            action = exitSide;
+
             if (params.asset_type === "STK") {
-                const { data: posData } = await supabase.from("pta_ibkr_positions").select("quantity").eq("ticker", params.ticker).single();
-                if (posData && posData.quantity < 0) action = "BUY";
-                else action = "SELL";
-                
                 const { error: cancelLogErr } = await supabase.from("pta_execution_log").insert({
                     trade_id: params.trade_id || "SYSTEM",
                     ticker: params.ticker,
@@ -106,8 +187,6 @@ export function registerPtaTools(server: McpServer) {
                     mode: activeMode
                 });
                 if (cancelLogErr) console.error("Failed to auto-cancel orders on EXIT", cancelLogErr);
-            } else {
-                action = "SELL"; 
             }
         } else if (params.action === "ENTER") {
             action = "BUY";

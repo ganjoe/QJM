@@ -1,0 +1,86 @@
+# ============================================================================
+# Rolle pta — Portfolio & Trading (die Broker-Sicht).
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/pta.cordis.yml
+#
+# Der PTA sieht den Broker und sonst nichts Fremdes: Live-Kurs (IBKR), offene
+# Positionen, Orders, Trade-Historie, Portfolio-Kennzahlen.
+#
+# GELD: place_trade schreibt eine Order, die das Gateway asynchron ausfuehrt.
+# Das Gateway laeuft derzeit im PAPER-Modus (Live ist gestoppt, geprueft
+# 2026-09-20) — der Schutz liegt also am Gateway, nicht an dieser Rolle.
+# Die Persona verlangt zusaetzlich, dass nur ein ausdruecklicher Auftrag im
+# payload ordert. Vor einem Umschalten auf live: diese Rolle pruefen.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten (pta bleibt an) ───────────────────────────
+- id: mcp-openbrain-cco
+  disabled: true
+- id: mcp-openbrain-pca
+  disabled: true
+- id: mcp-openbrain-cda
+  disabled: true
+- id: mcp-openbrain-drawio
+  disabled: true
+
+# ── Orchestrierung abschalten, die ein Worker nicht besitzt ────────────────
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# PRINZIP (teuer gelernt, siehe BENUTZUNG.md): Rollentrennung kappt die
+# DATENQUELLEN (bash, fremde MCP-Server), nicht die DATENZUFUHR. Der
+# Spill-Mechanismus verweist das Modell ausdruecklich auf read und grep.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der PORTFOLIO- UND TRADING-AGENT eines Workitem-Graphen. Du
+      lieferst die Broker-Sicht: Live-Kurs (IBKR), offene Positionen, Orders,
+      Trade-Historie und Portfolio-Kennzahlen.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Du erledigst GENAU dieses eine Item.
+
+      Wenn dein payload auf context_refs verweist, ziehe die Vorgaenger-
+      ergebnisse mit workitem_results, bevor du arbeitest.
+
+      GELD-REGEL: place_trade ist ein schreibender Aufruf, das Gateway fuehrt
+      die Order asynchron aus. Ordere NUR, wenn dein payload das ausdruecklich
+      verlangt (Instrument, Richtung, Menge). Im Zweifel gilt: nur lesen und
+      die Empfehlung in result melden. Schreibe immer in result, ob und was du
+      abgesetzt hast (order-id, Status) — oder warum nicht.
+
+      Am Ende genau ein Aufruf:
+        workitem_finish(status="done", result={...})
+      Kannst du den Auftrag nicht erfuellen, dann
+      workitem_finish(status="failed", result={reason:...}).
+
+      Lege KEINE neuen Workitems an — das ist Sache des Lead Engineers.
+
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

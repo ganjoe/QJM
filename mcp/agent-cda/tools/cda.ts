@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { STOCK_DATA_NODE_URL, log, supabase } from "./shared.ts";
+import { registerMassiveTools } from "./massive.ts";
 
 declare const Deno: any;
 
@@ -230,6 +231,9 @@ export async function reconcileMissingMetadata(limit = 50): Promise<number> {
 }
 
 export function registerCdaTools(server: McpServer) {
+  // Massive.com integration controls (incl. download frequency)
+  registerMassiveTools(server);
+
   server.registerTool(
     "manage_chart_downloads",
     {

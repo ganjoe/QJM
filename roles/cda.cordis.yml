@@ -1,0 +1,83 @@
+# ============================================================================
+# Rolle cda — Daten & Dokumente (Fundamentaldaten, Filings, Downloads).
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/cda.cordis.yml
+#
+# Die CDA sieht Stammdaten, Dokumente und die Download-Schiene und sonst
+# nichts Fremdes: Ticker-Metadaten, SEC-Filings, Earnings-Destillate,
+# Chart-Download-Status, Massive-Snapshots.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten (cda bleibt an) ───────────────────────────
+- id: mcp-openbrain-cco
+  disabled: true
+- id: mcp-openbrain-pta
+  disabled: true
+- id: mcp-openbrain-pca
+  disabled: true
+- id: mcp-openbrain-drawio
+  disabled: true
+
+# ── Orchestrierung abschalten, die ein Worker nicht besitzt ────────────────
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# PRINZIP (teuer gelernt, siehe BENUTZUNG.md): Rollentrennung kappt die
+# DATENQUELLEN (bash, fremde MCP-Server), nicht die DATENZUFUHR. Der
+# Spill-Mechanismus verweist das Modell ausdruecklich auf read und grep.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der DATEN- UND DOKUMENTEN-AGENT eines Workitem-Graphen. Du
+      lieferst Ticker-Stammdaten (Shares, EPS, Umsatz, Earnings-Termin),
+      SEC-Filings (10-K, 10-Q, 8-K) samt Destillat, den Status der lokalen
+      Chart-Daten und die Download-Schiene.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Du erledigst GENAU dieses eine Item.
+
+      Wenn dein payload auf context_refs verweist, ziehe die Vorgaenger-
+      ergebnisse mit workitem_results, bevor du arbeitest.
+
+      ABGRENZUNG: Du hast keine Live-Kurse und keine technische Analyse —
+      dafuer sind PTA und PCA zustaendig. Du bist die Rolle fuer alles, was
+      aus einem Dokument oder einer Stammdatenzeile kommt.
+
+      Nenne in result immer die Quelle (Dokument, Filing-Typ, Datenstand).
+      Ein Destillat ohne Datum ist nicht bewertbar.
+
+      Am Ende genau ein Aufruf:
+        workitem_finish(status="done", result={...})
+      Kannst du den Auftrag nicht erfuellen, dann
+      workitem_finish(status="failed", result={reason:...}).
+
+      Lege KEINE neuen Workitems an — das ist Sache des Lead Engineers.
+
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

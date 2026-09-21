@@ -1,4 +1,4 @@
-import { supabase, log, SWITCHYARD_URL, isValidTicker, getActiveProvider, resolveSwitchyardRoute } from "../tools/shared.ts";
+import { supabase, log, isValidTicker, deepseekChatCompletion } from "../tools/shared.ts";
 
 export const companyExtractionStats = {
   isRunning: false,
@@ -93,8 +93,6 @@ function chunkTranscriptForLLM(transcript: string, maxChars: number = 8000, over
  */
 async function extractCompaniesFromText(textSegment: string, signal?: AbortSignal): Promise<ExtractedMention[]> {
   try {
-    const baseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
-    const route = await resolveSwitchyardRoute(await getActiveProvider(), { logFallback: true });
     const systemPrompt = `You are a financial entity extraction assistant.
 Extract all company names, publicly traded stocks, and commercial brands mentioned or discussed in this YouTube transcript segment.
 For each mention, find:
@@ -109,30 +107,20 @@ Return ONLY a valid JSON array of objects:
 If no companies or stocks are mentioned in this text, return: []
 Do not include commentary or markdown.`;
 
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer switchyard",
-      },
-      body: JSON.stringify({
-        model: route,
-        messages: [
+    let raw = "[]";
+    try {
+      raw = await deepseekChatCompletion(
+        [
           { role: "system", content: systemPrompt },
           { role: "user", content: textSegment },
         ],
-        temperature: 0.1,
-      }),
-      signal,
-    });
-
-    if (!res.ok) {
-      log.warn(`[extractCompaniesFromText] Switchyard HTTP ${res.status} (route=${route})`);
+        { signal, temperature: 0.1 },
+      ) || "[]";
+    } catch (e: any) {
+      if (e?.name === "AbortError") throw e;
+      log.warn(`[extractCompaniesFromText] DeepSeek failed: ${e?.message || e}`);
       return [];
     }
-
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || "[]";
     const jsonMatch = raw.match(/\[\s*\{[\s\S]*\}\s*\]/) || raw.match(/\[\s*\]/);
     const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
 

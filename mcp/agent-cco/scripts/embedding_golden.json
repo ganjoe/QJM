@@ -1,0 +1,79 @@
+{
+  "description": "Seed Golden-Set. relevant = YouTube video_id (yt_chunk) oder agent_workspace.id (x_post). Erweiterbar.",
+  "queries": [
+    {
+      "query": "How does price action cycle through accumulation, markup, distribution and markdown?",
+      "relevant": [
+        "OXSMciafzcU"
+      ]
+    },
+    {
+      "query": "Risks and misconceptions of zero-days-to-expiry options trading",
+      "relevant": [
+        "gDX-BAC-cSY"
+      ]
+    },
+    {
+      "query": "Selling naked puts to collect premium as a stock strategy",
+      "relevant": [
+        "GZUyJuDeFeE"
+      ]
+    },
+    {
+      "query": "Nuclear energy stocks with long-term multi-bagger potential",
+      "relevant": [
+        "eRnN7P2kQeU"
+      ]
+    },
+    {
+      "query": "Positioning a portfolio for a stock market crash by holding bonds",
+      "relevant": [
+        "JTii2juQff4"
+      ]
+    },
+    {
+      "query": "Where to place stop losses and how to reduce risk with situational awareness",
+      "relevant": [
+        "fpl2IYPezHw",
+        "nSjFOe44L1o"
+      ]
+    },
+    {
+      "query": "A repeatable research process for evaluating a company before buying",
+      "relevant": [
+        "EwjA6MIIYJQ"
+      ]
+    },
+    {
+      "query": "Escalating trade war and what it means for markets",
+      "relevant": [
+        "bFX_V4thElg"
+      ]
+    },
+    {
+      "query": "The reality of professional forex trading versus the marketing hype",
+      "relevant": [
+        "b7mn6z8QYQM"
+      ]
+    },
+    {
+      "query": "Building and customizing a stock watchlist with chart templates",
+      "relevant": [
+        "BrUDVfkqFPA",
+        "eQaF9RR-D50"
+      ]
+    },
+    {
+      "query": "Kevin Warsh as Fed chair and whether investors should prefer stocks or bonds",
+      "relevant": [
+        "FyjIbm9OlEw"
+      ]
+    },
+    {
+      "query": "Bessent policy adjustment period and its macroeconomic outlook",
+      "relevant": [
+        "u_LcFblomsA"
+      ]
+    }
+  ]
+}

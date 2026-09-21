@@ -1,0 +1,96 @@
+# ============================================================================
+# Rolle cco — Chief Communications Officer (der ausfuehrende Worker).
+#
+# Wird vom SDK-Prozess als Overlay geladen:
+#   dsh --profile sdk --patch roles/cco.cordis.yml
+#
+# Der CCO recherchiert Social-Sentiment. Er sieht openbrain-cco und den
+# Workitem-Server, sonst nichts Fremdes.
+# ============================================================================
+
+# ── Fremde MCP-Server abschalten (cco bleibt an) ───────────────────────────
+# Vollstaendig halten: drawio kam erst nach dieser Rolle in den Home-Patch und
+# war hier still mit drin (drawio.cordis.yml deckt Diagramme ab).
+- id: mcp-openbrain-pta
+  disabled: true
+- id: mcp-openbrain-pca
+  disabled: true
+- id: mcp-openbrain-cda
+  disabled: true
+- id: mcp-openbrain-drawio
+  disabled: true
+
+# ── Orchestrierung abschalten, die ein Worker nicht besitzt ────────────────
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-web
+  disabled: true
+
+# ── Shell abschalten, Dateisystem ANLASSEN ─────────────────────────────────
+# bash/pwsh AUS: gemessen machte ein CCO-Lauf mit Shell 96 Aufrufe zum
+# Erkunden von DB-Schema und Tabellen und brauchte 36 Minuten fuer eine Frage,
+# die seine MCP-Tools in Sekunden beantworten.
+#
+# tool-fs BLEIBT AN, obwohl es write/edit mitbringt: der Spill-Mechanismus
+# schreibt grosse Tool-Ausgaben in Dateien und nennt dem Agenten nur den Pfad.
+# Ohne read ist diese Ausgabe verloren — genau daran scheiterte ein CCO-Lauf
+# (218 Tagesposts nur ueber abgeschnittene Aufrufe lesbar).
+# tool-fs-search BLEIBT AN, aus demselben Grund: der Spill-Hinweis lautet
+#   "Full formatted result stored at: <pfad>. Use read with offset/limit,
+#    or grep this path to search within it."
+# Der Harness nennt dem Modell also ZWEI Werkzeuge beim Namen. Beide muessen da
+# sein, sonst ist die Ausgabe der ERLAUBTEN Tools unerreichbar.
+#
+# PRINZIP: Rollentrennung kappt die DATENQUELLEN (bash, fremde MCP-Server),
+# nicht die DATENZUFUHR (read, grep).
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+
+# ── Persona ────────────────────────────────────────────────────────────────
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      Du bist der CHIEF COMMUNICATIONS OFFICER eines Workitem-Graphen. Du
+      recherchierst Social-Sentiment (X, YouTube, gespeicherte Posts) und
+      lieferst belegte Einschaetzungen.
+
+      Deine eigene workitem_id und dein payload stehen in der ersten Nachricht.
+      Du erledigst GENAU dieses eine Item.
+
+      Wenn dein payload auf context_refs verweist, ziehe die Vorgaenger-
+      ergebnisse mit workitem_results, bevor du arbeitest.
+
+      DATENZUGRIFF — zwei Regeln, teuer gelernt:
+      - Fuer Rang-, Breiten- oder Zaehlaufgaben ueber viele Posts nutze
+        "ticker_breadth" und danach "ticker_evidence" fuer die Top-Kandidaten.
+        Lies NIE den ganzen Korpus per show_x_content, um selbst zu zaehlen:
+        das hat in einem Lauf 2 Mio Tokens gekostet und das Item gerissen.
+      - Die Ticker stehen bereits als 🔑-Feld in jeder Post-Zeile
+        (metadata.tickers) — das ist die gepflegte Quelle, nicht der Volltext.
+
+      Am Ende genau ein Aufruf:
+        workitem_finish(status="done", result={...})
+      mit deinem Ergebnis als JSON. Kannst du den Auftrag nicht erfuellen, dann
+      workitem_finish(status="failed", result={reason:...}).
+
+      Lege KEINE neuen Workitems an — das ist Sache des Lead Engineers.
+# ── Budget-Policy ──────────────────────────────────────────────────────────
+# Erzwingt das Budget aus budget_json (Rahmung). DSH selbst hat keine
+# Rundengrenze — ohne diese Zeile kann ein Item endlos weiterlaufen.
+- insert:
+    - id: budget-policy
+      name: './budget-policy.mjs'

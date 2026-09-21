@@ -1,7 +1,8 @@
 # Implementationsplan v4 — Massive.com (ehem. Polygon.io) als Primär-Provider
 
-Status: **Planung abgeschlossen — Starter-Key vorhanden. Nächster Schritt: Implementierung P1–P3.**
+Status: **P1–P3 implementiert (default disabled).** Planung abgeschlossen.
 Ziel-Paket: **Stocks Starter — aktiv.** Basic ist nicht mehr relevant.
+Live-Test: Auth OK, Universum 13.203 (stocks) + 17.984 (OTC) = 31.187.
 
 ---
 
@@ -246,3 +247,31 @@ Snapshot 1×/min ⇒ **2,05 MB/min ≈ 0,27 Mbit/s**. Backfill 5 J ≈ 1.260 × 
 - **Zero-Einträge im Snapshot** (`updated: 0`, alle Werte 0) filtern, sonst Null-Bars.
 - Metadata-Reconciler für +25k neue Ticker drosseln.
 
+
+---
+
+## 15. Implementierungsstand (P1–P3) — default disabled
+
+Neu in **stock-data-node**:
+- `config/massive.json` (enabled=false, dry_run=true)
+- `src/providers/massive/`: `session.py`, `limiter.py`, `client.py`, `merge.py`, `resolver.py`, `universe.py`, `bulk_daily.py`, `snapshot.py`, `__init__.py`
+- `src/massive_service.py` — Scheduler: Universum 1×/Tag, Snapshot minütlich (Starter), Daily-Bulk nach Close, gebündelter Flush
+- HTTP: `/massive/status`, `/massive/universe/refresh`, `/massive/daily/refresh`, `/massive/snapshot`, `/massive/flush`, `/massive/backfill`, `/massive/queue/clear`
+- `models.MassiveConfig` + `ConfigLoader.get_massive_config()`; `DEFAULT_RANKING=["MASSIVE","IBKR","YFINANCE"]`
+- `scripts/massive_smoke.py` (max. 3 Calls, nur manuell)
+- `tests/unit/test_massive.py` — **14 Tests grün**
+
+Neu in **QJM**:
+- `migrations/011_provider_ranking.sql` (Seed MASSIVE=1, IBKR=2, YFINANCE=3)
+- `migrations/012_cda_master_universe_massive.sql` (source/provider/type/active/delisted_utc)
+
+**Kernstück Merge:** Tagesbars werden auf das **Session-Datum** normalisiert (UTC-Datum des Timestamps). Das kollabiert die gemischten Konventionen auf der Platte (IBKR 00:00Z, YF 04:00Z, Massive custom 00:00ET, Grouped 16:00ET) zu genau einem Bar pro Handelstag. Massive überschreibt den Overlap, ältere Bars bleiben. Seam-Sprünge >5 % werden **nur geloggt**.
+
+**Aktivieren:**
+1. `.env`: `MASSIVE_API_KEY=...`, `SUPABASE_SERVICE_ROLE_KEY=...`
+2. `config/massive.json`: `dry_run=false`, dann `enabled=true`
+3. `docker compose up -d --build`
+4. Migrationen 011/012 anwenden
+5. Optional: `POST /massive/queue/clear` → `/massive/universe/refresh` → `/massive/backfill`
+
+**Bekannte, vorbestehende Testfehler (nicht Massive-bedingt):** `test_classification` (Error-200→QUALIFY Mapping), `test_staleness` (Datums-Mock).

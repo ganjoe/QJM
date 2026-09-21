@@ -55,8 +55,7 @@
                 "--quiet",
                 "run",
                 "-A",
-                "--env-file=/home/daniel/openBrain/.env",
-                "/home/daniel/openBrain/mcp-drawio/stdio.ts"
+                "/home/daniel/QJM/mcp/agent-drawio/stdio.ts"
             ]
         }
     }

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log, getEmbedding, resolveVisionModel, WEB_SCRAPER_URL, SWITCHYARD_URL, AGENT_ID } from "./shared.ts";
+import { supabase, log, getDocumentEmbedding, WEB_SCRAPER_URL, AGENT_ID, deepseekVisionExtract } from "./shared.ts";
 
 export function registerWebTools(server: McpServer) {
   // 1. Tool: web_scrape
@@ -161,7 +161,7 @@ export function registerWebTools(server: McpServer) {
         }
 
         const data = await res.json();
-        const embedding = await getEmbedding(`${company} ${report_type} report ${data.text_preview?.slice(0, 200) || ""}`, "x_post");
+        const embedding = await getDocumentEmbedding(`${company} ${report_type} report ${data.text_preview?.slice(0, 200) || ""}`, "x_post");
 
         await supabase.from("agent_workspace").insert({
           agent_id: AGENT_ID,
@@ -220,41 +220,10 @@ export function registerWebTools(server: McpServer) {
 
         const screenshot = await screenshotRes.json();
 
-        const visionPayload = {
-          model: await resolveVisionModel(),
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt || "Beschreibe was du siehst und extrahiere alle Zahlen und Texte." },
-                {
-                  type: "image_url",
-                  image_url: { url: `data:image/png;base64,${screenshot.base64}` },
-                },
-              ],
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 4096,
-        };
-
-        const swBaseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
-        const llmRes = await fetch(`${swBaseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer switchyard",
-          },
-          body: JSON.stringify(visionPayload),
-        });
-
-        if (!llmRes.ok) {
-          const errText = await llmRes.text();
-          return { content: [{ type: "text", text: `Vision-Modell-Fehler (${llmRes.status}): ${errText}` }], isError: true };
-        }
-
-        const llmData: any = await llmRes.json();
-        const extractedText = llmData.choices?.[0]?.message?.content || "(keine Antwort vom Vision-Modell)";
+        const extractedText = await deepseekVisionExtract(
+          `data:image/png;base64,${screenshot.base64}`,
+          prompt || "Beschreibe was du siehst und extrahiere alle Zahlen und Texte.",
+        ) || "(keine Antwort vom Vision-Modell)";
 
         return {
           content: [{

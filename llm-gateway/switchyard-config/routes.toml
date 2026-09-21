@@ -22,8 +22,12 @@ id = "gemini-3.5-flash-lite"
 llm_client = "gemini"
 
 # --- Targets (Embeddings CPU) ---
+# mxbai-embed-large (Mixedbread, BERT/334M, 1024 Dim, 512-Token-Kontext, englisch).
+# Ablösung von qwen3-embedding:8b (4096 Dim) am 2026-09-18: ~17x schneller pro Zeichen
+# bei praktisch gleichem Retrieval (Golden-Set R@1 0,92 vs. 1,00) und 1024 Dim <= 2000
+# => HNSW-Index moeglich (mit 4096 Dim nicht).
 [targets.ollama_embed_cpu]
-id = "qwen3-embedding:8b"
+id = "mxbai-embed-large"
 llm_client = "ollama_cpu"
 
 # --- Routes ---
@@ -63,10 +67,16 @@ base_threshold = 0.5
 threshold_step = 0.1
 
 # --- Embeddings (genau EIN Backend, kein GPU-Target) ---
-# Die iGPU kann das 6,6-GB-Modell nicht halten und rechnet ohnehin auf der CPU; ein zweites
-# Backend würde nur den warmgehaltenen Zustand zerstören. Es gibt bewusst KEINEN
-# Modell-Fallback: 'qwen3-embedding:8b' ist auf 4096 Dimensionen fixiert, ein anderes Modell
-# würde Vektoren eines fremden Raums in denselben Index schreiben.
+# 'mxbai-embed-large' ist auf 1024 Dimensionen fixiert; ein anderes Modell würde Vektoren
+# eines fremden Raums in denselben Index schreiben. Es gibt deshalb bewusst KEINEN
+# Modell-Fallback (der Agent prueft die Dimension zusaetzlich clientseitig, EMBED_DIM=1024).
+# Dokumente werden ROH eingebettet; NUR Queries bekommen den Prefix
+# "Represent this sentence for searching relevant passages: " (mxbai-Modellkarte).
+# Kontextgrenze: 512 TOKENS PRO INPUT — oberhalb antwortet Ollama mit HTTP 400 (kein
+# zuverlaessiges Trunkieren). Die Agenten kuerzen Dokumenttexte deshalb vor dem Hashing auf
+# EMBED_MAX_CHARS=1100 (gemessen: dichte Transkripte ~2,8 Zeichen/Token) und fangen einen
+# 400er zusaetzlich mit schrittweise kleinerem Budget ab (getDocumentEmbeddingsDetailed).
+# YT-Chunking: YT_CHUNK_SIZE=800 + Header (~90 Zeichen).
 #
 # Priorisierung übernimmt der Gateway-Scheduler (switchyard/gateway.py), gesteuert über das
 # Body-Feld "priority":  x_search (interaktiv) > x_post (X-Posts/Profile) > yt (Massenlast).

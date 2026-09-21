@@ -18,6 +18,7 @@ import { registerXTools } from "./tools/x_tools.ts";
 import { registerYouTubeTools } from "./tools/youtube_tools.ts";
 import { registerWebTools } from "./tools/web_tools.ts";
 import { registerOpenBrainTools } from "./tools/openbrain_tools.ts";
+import { registerReportTools } from "./tools/report_tools.ts";
 import { WorkerManager } from "./workers/worker_manager.ts";
 
 // --- MCP Server Setup ---
@@ -32,6 +33,7 @@ registerXTools(server);
 registerYouTubeTools(server);
 registerWebTools(server);
 registerOpenBrainTools(server);
+registerReportTools(server);
 
 // --- Hono Web App ---
 const app = new Hono();

@@ -13,7 +13,7 @@ export function registerPipelineTools(server: McpServer) {
       title: "Manage Sync Pipeline",
       description: "Controls the background sync workers (Stage 1 Ingestion, Stage 2 Metadata, Stage 3 Embeddings, YouTube) or checks backlog and throughput metrics.",
       inputSchema: {
-        action: z.enum(["START", "STOP", "STATUS", "REENRICH_X", "RETRY_METADATA_FAILED"]).describe("START/STOP = worker control, STATUS = stats, REENRICH_X = idempotenter Metadaten-Backfill für X-Posts (Datumsbereich), RETRY_METADATA_FAILED = fehlgeschlagene X-Posts erneut einreihen"),
+        action: z.enum(["START", "STOP", "STATUS", "REENRICH_X", "REPAIR_X_METADATA", "RETRY_METADATA_FAILED"]).describe("START/STOP = worker control, STATUS = stats, REENRICH_X = idempotenter Metadaten-Backfill für X-Posts (Datumsbereich), REPAIR_X_METADATA = vergiftete Altzeilen (unkategorisiert/ohne Keywords) reparieren, RETRY_METADATA_FAILED = fehlgeschlagene X-Posts erneut einreihen"),
         start_date: z.string().optional().describe("REENRICH_X: nur Posts ab diesem created_at (ISO, z.B. 2026-09-01)"),
         end_date: z.string().optional().describe("REENRICH_X: nur Posts bis zu diesem created_at (ISO)"),
         only_with_cashtags: z.boolean().optional().default(true).describe("REENRICH_X: nur Posts mit '$' im Text (Default: true)"),
@@ -47,6 +47,7 @@ export function registerPipelineTools(server: McpServer) {
             `  • Vektor vorhanden (embedding IS NOT NULL): ${status.backlog.x_posts.stage_3_embedded} Posts`,
             `  •  davon Legacy-Status 'categorized': ${status.backlog.x_posts.stage_legacy_categorized ?? 0} Posts`,
             `  • Gesamtanzahl X Posts: ${status.backlog.x_posts.total}`,
+            `  • Ticker-Coverage: ${status.backlog.x_posts.with_tickers ?? 0} mit Tickern | ${status.backlog.x_posts.empty_tickers ?? 0} ohne Ticker | ${status.backlog.x_posts.metadata_failed ?? 0} fehlgeschlagen (Retry) | ${status.backlog.x_posts.metadata_failed_permanent ?? 0} endgültig`,
             `  • Aktive Influencer: ${status.backlog.x_posts.active_influencers}`,
             ``,
             `📺 YouTube Pipeline (yt_videos & agent_workspace):`,
@@ -135,32 +136,27 @@ export function registerPipelineTools(server: McpServer) {
             .from("agent_workspace")
             .update({ status: "pending_metadata" }, { count: "exact" })
             .eq("artifact_type", "x_post")
-            .eq("status", "metadata_failed");
+            .in("status", ["metadata_failed", "metadata_failed_permanent"]);
           return { content: [{ type: "text", text: `🔄 ${count || 0} X-Posts (status='metadata_failed') wurden auf 'pending_metadata' zurückgesetzt.` }] };
         }
 
         if (action === "REENRICH_X") {
           const batchLimit = Math.max(1, Math.min(Number(limit) || 100, 1000));
-          const fetchLimit = Math.min(batchLimit * 20, 4000);
           let q = supabase
             .from("agent_workspace")
-            .select("id, content, created_at, metadata")
+            .select("id, content, created_at, metadata, embedded_at")
             .eq("artifact_type", "x_post")
+            // Serverseitig nur Zeilen ohne Ticker (NULL oder leeres Array).
+            .or("metadata->tickers.is.null,metadata->tickers.eq.[]")
             .order("created_at", { ascending: false })
-            .limit(fetchLimit);
+            .limit(batchLimit);
           if (start_date) q = q.gte("created_at", start_date);
           if (end_date) q = q.lte("created_at", end_date);
           if (only_with_cashtags !== false) q = q.like("content", "%$%");
 
           const { data, error } = await q;
           if (error) throw error;
-
-          const candidates = (data || [])
-            .filter((p: any) => {
-              const t = p.metadata?.tickers;
-              return !Array.isArray(t) || t.length === 0;
-            })
-            .slice(0, batchLimit);
+          const candidates = data || [];
 
           if (candidates.length === 0) {
             return { content: [{ type: "text", text: `ℹ️ Keine Kandidaten mit leeren Tickern im Bereich ${start_date || "∞"}..${end_date || "∞"} (cashtag-only=${only_with_cashtags !== false}).` }] };
@@ -171,12 +167,46 @@ export function registerPipelineTools(server: McpServer) {
           let fail = 0;
           for (let i = 0; i < candidates.length; i += concurrency) {
             const slice = candidates.slice(i, i + concurrency);
-            const results = await Promise.all(slice.map((p: any) => processSinglePost(p)));
+            const results = await Promise.all(slice.map((p: any) => processSinglePost(p, undefined, { reembed: false })));
             ok += results.filter(Boolean).length;
             fail += results.filter((r) => !r).length;
           }
 
           return { content: [{ type: "text", text: `♻️ X-Metadaten-Backfill: ${ok} erfolgreich, ${fail} fehlgeschlagen (Kandidaten: ${candidates.length}, Bereich ${start_date || "∞"}..${end_date || "∞"}, cashtag-only=${only_with_cashtags !== false}). Idempotent — erneuter Aufruf verarbeitet nur noch leere Ticker.` }] };
+        }
+
+        if (action === "REPAIR_X_METADATA") {
+          const batchLimit = Math.max(1, Math.min(Number(limit) || 100, 1000));
+          // Serverseitige Auswahl (JSONB-Filter), damit alte vergiftete Zeilen nicht
+          // hinter neuen, bereits reparierten Zeilen verhungern.
+          const { data, error } = await supabase
+            .from("agent_workspace")
+            .select("id, content, created_at, metadata, embedded_at")
+            .eq("artifact_type", "x_post")
+            .eq("metadata->>llm_categorized", "true")
+            .eq("metadata->tickers", "[]")
+            .or("metadata->>metadata_repaired.is.null,metadata->>metadata_repaired.neq.true")
+            .order("created_at", { ascending: true })
+            .limit(batchLimit);
+          if (error) throw error;
+
+          const candidates = data || [];
+
+          if (candidates.length === 0) {
+            return { content: [{ type: "text", text: `ℹ️ Keine vergifteten Kandidaten (unkategorisiert / ohne Keywords) gefunden.` }] };
+          }
+
+          const concurrency = 4;
+          let ok = 0;
+          let fail = 0;
+          for (let i = 0; i < candidates.length; i += concurrency) {
+            const slice = candidates.slice(i, i + concurrency);
+            const results = await Promise.all(slice.map((p: any) => processSinglePost(p, undefined, { reembed: false })));
+            ok += results.filter(Boolean).length;
+            fail += results.filter((r) => !r).length;
+          }
+
+          return { content: [{ type: "text", text: `♻️ Metadaten-Reparatur: ${ok} erfolgreich, ${fail} fehlgeschlagen (Kandidaten: ${candidates.length}). Jede Zeile wird nur einmal repariert.` }] };
         }
 
         return { content: [{ type: "text", text: `Unbekannte Aktion: ${action}` }], isError: true };

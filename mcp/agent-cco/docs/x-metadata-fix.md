@@ -124,3 +124,68 @@ Bounded-Lauf über 200 Cashtag-Posts (`--limit=200 --concurrency=4 --rebuild-fir
   weiterhin auf `local`; CDA/PCA nutzen `provider_config` derzeit nicht, sollte aber
   bei Gelegenheit bereinigt werden.
 - PCA-Nebenbefund (403 auf `pca_scan_watchlist_meta`, RLS/Service-Role) separat.
+
+## 9. Nachtrag 2026-09-20: Migration auf DeepSeek + Datenqualitäts-Fixes
+
+Die Gemini-Quota des Projekts war erschöpft (HTTP 429 „monthly spending cap"), und **alle**
+Switchyard-Chat-Routen (flash/fast/pro/free/auto) nutzen denselben `GEMINI_API_KEY`/dasselbe
+Projekt. Damit fiel die Metadaten-Erstellung erneut komplett aus; fehlgeschlagene Zeilen
+blieben liegen, weil der Worker nur `llm_categorized IS NULL` erneut aufgriff.
+
+### 9.1 Umstellung: Chat/Completion direkt auf DeepSeek
+
+- `tools/shared.ts`: neue DeepSeek-Anbindung (`deepseekChat`, `deepseekChatCompletion`,
+  `deepseekVisionExtract`) mit Retry/Backoff.
+- **Switchyard wird nur noch für Embeddings genutzt** (lokales Ollama/mxbai). Die früheren
+  Chat-Routen-Helfer (`getActiveProvider`, `resolveSwitchyardRoute`, `resolveVisionModel`)
+  sind in `shared.ts` auskommentiert. Embeddings bleiben bewusst auf Switchyard, weil DeepSeek
+  keine Embeddings-API hat und der lokale Pfad nicht von der Gemini-Quota betroffen ist.
+- `workers/company_extraction_worker.ts` (Firmen-/Ticker-Extraktion aus YouTube) und
+  `tools/web_tools.ts` (Vision-OCR) nutzen ebenfalls DeepSeek.
+- **Reasoning aus (`effort=off`)** für die einfache Extraktion: Wire-Form
+  `{"thinking":{"type":"disabled"}}` (Quelle: `@deepseek-ai/dsh-llm-deepseek`, `resolveThinking`).
+  Messung: 26 statt 176 Tokens für dieselbe Extraktion (~85 % Ersparnis).
+
+Konfiguration (Container `llm-gw-mcp-cco`, gespeist aus `llm-gateway/.env`):
+
+| Env | Default | Zweck |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | – | Pflicht |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Endpoint |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Chat-Modell |
+| `DEEPSEEK_VISION_MODEL` | `deepseek-flash` | Vision/OCR (kein eigenes Vision-Modell noetig) |
+| `DEEPSEEK_REASONING_EFFORT` | `off` | off \| low \| high \| max |
+| `DEEPSEEK_MAX_RETRIES` | `4` | HTTP-Retries (429/5xx) |
+
+### 9.2 Retry, Backoff und Circuit Breaker (`workers/metadata_worker.ts`)
+
+- Fehlgeschlagene Zeilen erhalten `metadata_attempts` + `metadata_retry_at`
+  (exponentielles Backoff, Basis 30 s, Cap 1 h).
+- Neuer Status **`metadata_failed_permanent`** nach `MAX_METADATA_ATTEMPTS` (Default 5) bzw.
+  bei nicht-retryfähigen Fehlern. Der Retry-Sweep greift nur noch `metadata_failed` an und
+  läuft daher nicht mehr endlos.
+- Bei 0 Erfolgen pro Batch pausiert der Worker (Circuit Breaker, 60 s × Fehlerserie, Cap 10 min),
+  statt die Quota weiter zu verbrennen.
+- Metadata-only-Retry/Repair behält den vorhandenen Vektor (`embedded_at`) → kein unnötiges
+  Re-Embedding.
+
+### 9.3 Reparatur der vergifteten Altzeilen
+
+- Jede erfolgreich verarbeitete Zeile erhält `metadata_repaired: true`.
+- Der Worker repariert zusätzlich alte, kategorisierte Zeilen **ohne Ticker**, solange
+  `metadata_repaired` fehlt — serverseitig per PostgREST-JSONB-Filter, damit die alten Zeilen
+  nicht hinter neuen verhungern. Max. `METADATA_REPAIR_BATCH` (Default 3) pro Zyklus.
+- Manuell: `manage_sync_pipeline(action="REPAIR_X_METADATA", limit=...)`.
+
+### 9.4 Ticker-Validator
+
+- `isValidTicker()` erlaubt jetzt Unterstrich → Continuous-Futures-Symbole wie `CL_F`, `ES_F`,
+  `NQ_F`, `RTY_F` werden nicht mehr verworfen (vorher 127 Posts mit leeren Tickern).
+- `prompts/metadata-prompt.txt` um die Ausschlussregeln (Preise, Beträge/Multiplier, Jahre,
+  Prozent) und numerische Asien-Ticker ergänzt.
+
+### 9.5 Monitoring
+
+`manage_sync_pipeline STATUS` weist jetzt aus: `mit Tickern | ohne Ticker | fehlgeschlagen
+(Retry) | endgültig` (`workers/worker_manager.ts`, `tools/pipeline_tools.ts`).
+

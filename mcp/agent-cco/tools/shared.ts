@@ -25,6 +25,23 @@ export const SWITCHYARD_URL = Deno.env.get("SWITCHYARD_URL") || "http://switchya
 export const EMBED_MODEL = Deno.env.get("EMBED_MODEL") || "embeddings";
 export const WEB_SCRAPER_URL = Deno.env.get("WEB_SCRAPER_URL") || "http://host.docker.internal:8797";
 
+// --- DeepSeek: direkte LLM-Anbindung (ersetzt Switchyard fuer Chat/Completion) ---
+// Switchyard wird NUR noch fuer Embeddings genutzt (lokales Ollama/mxbai).
+// Alle Chat-/Completion-Aufrufe (Metadaten, Vision-OCR, Company-Extraktion) gehen
+// direkt an die DeepSeek-API, damit die erschoepfte Gemini-Quota den CCO-Agenten
+// nicht mehr blockiert. Basis-URL/Modell sind per Env konfigurierbar.
+export const DEEPSEEK_API_KEY = Deno.env.get("DEEPSEEK_API_KEY") || "";
+export const DEEPSEEK_BASE_URL = (Deno.env.get("DEEPSEEK_BASE_URL") || "https://api.deepseek.com").replace(/\/+$/, "");
+export const DEEPSEEK_MODEL = Deno.env.get("DEEPSEEK_MODEL") || "deepseek-flash";
+// Kein separates Vision-Modell: deepseek-flash ist ausreichend. Die DeepSeek-API mappt
+// experimentelle/Vision-Modell-IDs ohnehin auf deepseek-flash. Per Env ueberschreibbar.
+export const DEEPSEEK_VISION_MODEL = Deno.env.get("DEEPSEEK_VISION_MODEL") || DEEPSEEK_MODEL;
+export const DEEPSEEK_TIMEOUT_MS = parseInt(Deno.env.get("DEEPSEEK_TIMEOUT_MS") || "120000");
+export const DEEPSEEK_MAX_RETRIES = parseInt(Deno.env.get("DEEPSEEK_MAX_RETRIES") || "4");
+// Reasoning-Steuerung: "off" (Default) deaktiviert das Denken fuer einfache Aufgaben
+// wie Ticker-/Metadaten-Extraktion und spart massiv Tokens. Erlaubt: off | low | high | max.
+export const DEEPSEEK_REASONING_EFFORT = (Deno.env.get("DEEPSEEK_REASONING_EFFORT") || "off").toLowerCase();
+
 // Performance & Concurrency Settings
 export const X_DISCOVERY_INTERVAL_SEC = parseInt(Deno.env.get("X_DISCOVERY_INTERVAL_SEC") || "30");
 export const X_MIN_REQUEST_DELAY_MS = parseInt(Deno.env.get("X_MIN_REQUEST_DELAY_MS") || "2500");
@@ -341,7 +358,8 @@ export function isValidTicker(ticker: string): boolean {
   ]);
   if (NON_TICKERS.has(t)) return false;
 
-  const isAlphaSymbol = /^[A-Z0-9.\-\s]+$/.test(t) && /[A-Z]/.test(t);
+  // Unterstrich ist gueltig: Continuous-Futures-Symbole wie CL_F, ES_F, HG_F, YM_F.
+  const isAlphaSymbol = /^[A-Z0-9._\-\s]+$/.test(t) && /[A-Z]/.test(t);
   const isExchangeNumericCode = /^\d{4,6}(\.[A-Z]+)?$/.test(t);
 
   return isAlphaSymbol || isExchangeNumericCode;
@@ -429,6 +447,67 @@ export async function updateFirstMentions(author: string, tickers: string[], pub
 // Ohne Angabe behandelt der Gateway die Anfrage als interaktiv.
 export type EmbeddingPriority = "x_search" | "x_post" | "yt";
 
+// Zentrale Embedding-Version. Jede Aenderung an Modell, Textaufbau oder Normalisierung
+// MUSS hier gebumpt werden, damit die Stale-Erkennung (embedding_version + source_hash) greift.
+export const EMBED_VERSION = Deno.env.get("EMBED_VERSION") || "mxbai-v1";
+// Nur Fallback: der Gateway pinnt das Backend-Modell und liefert es in der Antwort mit.
+export const EMBED_MODEL_NAME = Deno.env.get("EMBED_MODEL_NAME") || "mxbai-embed-large";
+
+// mxbai-embed-large ist ein englischer BERT-Encoder mit 512 TOKEN Kontext.
+//
+// GEMESSEN am 2026-09-18 gegen Ollama 0.21.2 (mxbai-embed-large, OLLAMA_CONTEXT_LENGTH=4096):
+//   * Ein Input mit <= 512 Tokens wird normal eingebettet.
+//   * Ein Input mit > 512 Tokens fuehrt zu HTTP 400 "the input length exceeds the context
+//     length" — Ollama trunkiert also NICHT zuverlaessig (nur bei manchen langen Texten,
+//     z.B. stark repetitiven, wird still auf 512 gekuerzt). Verlaesslich ist nur: <= 512.
+//     Belege: Transkript-Text 1440 Zeichen -> 510 Tokens OK; 1450 Zeichen -> HTTP 400.
+//     Die Token-Dichte ist dabei stark textabhaengig: dichte Transkripte mit Zeitstempeln
+//     ~2,8 Zeichen/Token, normale Prosa ~4-5 Zeichen/Token.
+//
+// Darum wird JEDER Dokumenttext VOR dem Hashing an einer Wortgrenze gekuerzt. Budget 1100
+// Zeichen => selbst bei der dichtesten gemessenen Tokenisierung (~2,8 Zeichen/Token) nur
+// ~390 Tokens, also ~25 % Reserve. Zusaetzlich faengt getDocumentEmbeddingsDetailed einen
+// 400er ab und verkleinert das Budget schrittweise (siehe unten).
+export const EMBED_MAX_CHARS = parseInt(Deno.env.get("EMBED_MAX_CHARS") || "1100");
+
+/**
+ * Ist der Fehler der Ollama-Kontextgrenze zuzuordnen (HTTP 400 "exceeds the context length")?
+ * Der Gateway reicht den Backend-Fehler als Fehlertext durch.
+ */
+export function isContextLengthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /context length|context window|exceeds the context/i.test(msg);
+}
+
+// Erwartete Vektor-Dimension. Ein Mischbetrieb zweier Modelle in einem Index ist
+// unmoeglich (pgvector erzwingt die Spaltendimension); dieser Guard laesst falsche
+// Vektoren gar nicht erst bis zur DB kommen und macht eine falsche Gateway-Route laut.
+export const EMBED_DIM = parseInt(Deno.env.get("EMBED_DIM") || "1024");
+
+// mxbai-embed-large erwartet diesen Prefix NUR fuer Queries; Dokumente bleiben roh.
+// Quelle: Modellkarte mxbai-embed-large-v1 (Mixedbread).
+export const EMBED_QUERY_PREFIX = Deno.env.get("EMBED_QUERY_PREFIX") ??
+  "Represent this sentence for searching relevant passages: ";
+
+/**
+ * Kuerzt einen Dokumenttext auf das Embedding-Kontextfenster — an der letzten Wortgrenze,
+ * damit keine halben Tokens entstehen. Idempotent: bereits kurze Texte bleiben unveraendert.
+ * WICHTIG: Das Ergebnis ist der exakt eingebettete Text und damit die Basis fuer source_hash.
+ */
+export function fitForEmbedding(text: string, maxChars: number = EMBED_MAX_CHARS): string {
+  if (typeof text !== "string" || text.length === 0) return "";
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  const head = text.slice(0, maxChars);
+  const cut = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"), head.lastIndexOf("\t"));
+  return (cut > maxChars * 0.5 ? head.slice(0, cut) : head).trimEnd();
+}
+
+/** Deterministischer SHA-256-Hex eines Textes — die eine kanonische source_hash-Funktion. */
+export async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function getEmbedding(
   text: string,
   priority: EmbeddingPriority = "x_post",
@@ -437,11 +516,15 @@ export async function getEmbedding(
   return embeddings[0];
 }
 
-export async function getEmbeddingsBatch(
+/**
+ * Wie getEmbeddingsBatch, liefert zusaetzlich den tatsaechlich vom Gateway verwendeten
+ * Modellnamen (fuer embedding_model). Der Gateway hat kein Modell-Fallback.
+ */
+export async function getEmbeddingsBatchDetailed(
   texts: string[],
   priority: EmbeddingPriority = "x_post",
-): Promise<number[][]> {
-  if (!texts || texts.length === 0) return [];
+): Promise<{ vectors: number[][]; model: string | null }> {
+  if (!texts || texts.length === 0) return { vectors: [], model: null };
   const start = Date.now();
   const baseUrl = SWITCHYARD_URL.endsWith("/v1") ? SWITCHYARD_URL : `${SWITCHYARD_URL}/v1`;
   const cls = priority || "x_post";
@@ -463,9 +546,130 @@ export async function getEmbeddingsBatch(
   const d = await r.json();
   const duration = ((Date.now() - start) / 1000).toFixed(2);
   log.debug(`[Switchyard] Batch Embedding (${texts.length} items, class ${cls}) completed in ${duration}s`);
-  return d.data.map((item: any) => item.embedding);
+  const vectors = Array.isArray(d?.data) ? d.data.map((item: any) => item.embedding) : [];
+  const reportedModel = typeof d?.model === "string" ? d.model : null;
+
+  // Dimensions-Guard: verhindert, dass Vektoren eines fremden Modells in den Index laufen.
+  for (let i = 0; i < vectors.length; i++) {
+    const v = vectors[i];
+    if (!Array.isArray(v) || v.length !== EMBED_DIM) {
+      throw new Error(
+        `Embedding-Dimension ${Array.isArray(v) ? v.length : "?"} != ${EMBED_DIM} (Index ${i}, Modell ${reportedModel ?? "?"}) — ` +
+        `falsche Gateway-Route oder Modellwechsel ohne Re-Embed. Batch wird verworfen.`,
+      );
+    }
+  }
+
+  return { vectors, model: reportedModel };
 }
 
+export async function getEmbeddingsBatch(
+  texts: string[],
+  priority: EmbeddingPriority = "x_post",
+): Promise<number[][]> {
+  return (await getEmbeddingsBatchDetailed(texts, priority)).vectors;
+}
+
+// Fallback-Budgets, falls das Backend einen Text trotz fitForEmbedding ablehnt
+// (z.B. extrem token-dichter Inhalt). Reihenfolge: gross -> klein.
+export const EMBED_SHRINK_BUDGETS = (Deno.env.get("EMBED_SHRINK_BUDGETS") || "1100,800,560,380,240,140")
+  .split(",").map((s) => parseInt(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+
+/**
+ * DOCUMENT-Embedding mit Garantie: liefert die tatsaechlich eingebetteten Texte ZURUECK.
+ *
+ * Warum das wichtig ist: source_hash muss den exakt eingebetteten Text beschreiben. Wenn
+ * das Backend einen Text wegen der 512-Token-Grenze ablehnt (HTTP 400), wird er hier
+ * schrittweise verkleinert und einzeln erneut eingebettet. Aufrufer MUESSEN `texts[i]`
+ * (nicht ihren Originaltext) hashen und fuer YT-Chunks auch als `content` speichern.
+ */
+export async function getDocumentEmbeddingsDetailed(
+  texts: string[],
+  priority: EmbeddingPriority = "x_post",
+): Promise<{ vectors: number[][]; model: string | null; texts: string[] }> {
+  if (!texts || texts.length === 0) return { vectors: [], model: null, texts: [] };
+  const fitted = texts.map((t) => fitForEmbedding(t));
+
+  try {
+    const { vectors, model } = await getEmbeddingsBatchDetailed(fitted, priority);
+    return { vectors, model, texts: fitted };
+  } catch (err) {
+    if (!isContextLengthError(err)) throw err;
+    log.warn(
+      `[Embeddings] Backend meldet Kontextgrenze für einen Batch mit ${fitted.length} Text(en) ` +
+      `(max ${Math.max(...fitted.map((t) => t.length))} Zeichen) — verkleinere betroffene Texte schrittweise.`,
+    );
+  }
+
+  const outTexts: string[] = [];
+  const outVectors: number[][] = [];
+  let model: string | null = null;
+
+  for (const original of fitted) {
+    let done = false;
+    for (const budget of EMBED_SHRINK_BUDGETS) {
+      const candidate = fitForEmbedding(original, budget);
+      if (!candidate) continue;
+      try {
+        const { vectors, model: m } = await getEmbeddingsBatchDetailed([candidate], priority);
+        outTexts.push(candidate);
+        outVectors.push(vectors[0]);
+        model = m ?? model;
+        done = true;
+        break;
+      } catch (err) {
+        if (!isContextLengthError(err)) throw err;
+      }
+    }
+    if (!done) {
+      throw new Error(
+        `Embedding-Text auch mit dem kleinsten Budget (${EMBED_SHRINK_BUDGETS[EMBED_SHRINK_BUDGETS.length - 1]} Zeichen) ` +
+        `nicht einbettbar — Backend-Kontextgrenze oder fehlerhafte Route.`,
+      );
+    }
+  }
+
+  return { vectors: outVectors, model, texts: outTexts };
+}
+
+/** Einzel-Dokument-Variante von getDocumentEmbeddingsDetailed (kuerzt + faengt 400er ab). */
+export async function getDocumentEmbedding(
+  text: string,
+  priority: EmbeddingPriority = "x_post",
+): Promise<number[]> {
+  const res = await getDocumentEmbeddingsDetailed([text], priority);
+  return res.vectors[0];
+}
+
+/**
+ * QUERY-Embedding: haengt den mxbai-Query-Prefix an. NUR fuer Suchanfragen verwenden —
+ * Dokumente werden roh eingebettet (getEmbedding/getEmbeddingsBatch).
+ */
+export async function getQueryEmbedding(
+  text: string,
+  priority: EmbeddingPriority = "x_search",
+): Promise<number[]> {
+  return await getEmbedding(EMBED_QUERY_PREFIX + text, priority);
+}
+
+/** Batch-Variante von getQueryEmbedding. */
+export async function getQueryEmbeddingsBatch(
+  texts: string[],
+  priority: EmbeddingPriority = "x_search",
+): Promise<number[][]> {
+  return await getEmbeddingsBatch(texts.map((t) => EMBED_QUERY_PREFIX + t), priority);
+}
+
+// ============================================================================
+// Switchyard-Chat-Routen -- DEAKTIVIERT (DeepSeek-Migration 2026-09-20)
+// ----------------------------------------------------------------------------
+// Diese Helfer banden den CCO-Agenten fuer Chat/Completion an die Switchyard-
+// Routen (Gemini). Weil die Gemini-Quota erschoepft war und alle Routen ueber
+// denselben Key liefen, sind sie deaktiviert. Chat/Completion laeuft jetzt
+// direkt ueber DeepSeek (siehe unten). Embeddings bleiben unveraendert auf
+// Switchyard/Ollama (getEmbeddingsBatchDetailed oben).
+// ============================================================================
+/*
 // --- Active Provider Helper (returns Switchyard route) ---
 export async function getActiveProvider(key: string = "cco"): Promise<string> {
   try {
@@ -497,7 +701,7 @@ const ROUTES_TIMEOUT_MS = 2000;
 let routesCache: { names: Set<string>; fetchedAt: number } | null = null;
 const invalidModelCache = new Map<string, number>();
 
-/** Liest die registrierten Chat-Routen aus GET /v1/models (5 min TTL, negativer Cache 60 s). */
+/** Liest die registrierten Chat-Routen aus GET /v1/models (5 min TTL, negativer Cache 60 s). * /
 async function fetchRegisteredRoutes(): Promise<Set<string> | null> {
   const base = SWITCHYARD_URL.replace(/\/v1\/?$/, "");
   try {
@@ -520,7 +724,7 @@ async function fetchRegisteredRoutes(): Promise<Set<string> | null> {
  * Fällt nur dann auf FALLBACK_ROUTE zurück, wenn die Registry abrufbar ist, der Name aber fehlt.
  * Ist die Registry nicht abrufbar (Netzfehler, Timeout), bleibt der Name unverändert --
  * sonst würde eine funktionierende Konfiguration bei einem transienten Fehler umgebogen.
- */
+ * /
 export async function resolveSwitchyardRoute(
   requested: string,
   opts: { logFallback?: boolean } = {},
@@ -557,7 +761,7 @@ export async function resolveSwitchyardRoute(
 /**
  * Modell für Vision-/OCR-Aufrufe: bevorzugt system_settings.vision_model_config.model,
  * sonst die konfigurierte Provider-Route. In beiden Fällen gegen die Registry validiert.
- */
+ * /
 export async function resolveVisionModel(): Promise<string> {
   let requested = "";
   try {
@@ -643,6 +847,222 @@ export async function extractMetadata(text: string, signal?: AbortSignal): Promi
   }
 
   return parsed;
+}
+
+*/
+
+// ============================================================================
+// DeepSeek Chat/Completion (ersetzt Switchyard fuer LLM-Aufgaben)
+// ============================================================================
+
+/** Fehler eines LLM-Aufrufs. retryable=false => Auth-/Billing-Fehler, nicht wiederholen. */
+export class LlmUnavailableError extends Error {
+  readonly retryable: boolean;
+  constructor(message: string, retryable = true) {
+    super(message);
+    this.name = "LlmUnavailableError";
+    this.retryable = retryable;
+  }
+}
+
+const DEEPSEEK_RETRY_BASE_MS = parseInt(Deno.env.get("DEEPSEEK_RETRY_BASE_MS") || "1500");
+
+function llmSleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      reject(new DOMException("Aborted", "AbortError"));
+    }, { once: true });
+  });
+}
+
+/**
+ * Ruft DeepSeek /chat/completions auf. Retry mit exponentiellem Backoff bei
+ * 429/5xx/Netzwerkfehlern; 401/402/403 werfen sofort (Auth/Billing).
+ */
+export async function deepseekChat(
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<any> {
+  if (!DEEPSEEK_API_KEY) {
+    throw new LlmUnavailableError("DEEPSEEK_API_KEY ist nicht gesetzt", false);
+  }
+  const url = `${DEEPSEEK_BASE_URL}/chat/completions`;
+  let lastErr = "unbekannter Fehler";
+
+  for (let attempt = 0; attempt <= DEEPSEEK_MAX_RETRIES; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        },
+        body: JSON.stringify(payload),
+        signal,
+      });
+    } catch (e: any) {
+      if (e?.name === "AbortError") throw e;
+      lastErr = `Netzwerkfehler: ${e?.message || e}`;
+      if (attempt < DEEPSEEK_MAX_RETRIES) {
+        await llmSleepAbortable(DEEPSEEK_RETRY_BASE_MS * 2 ** attempt, signal);
+        continue;
+      }
+      throw new LlmUnavailableError(lastErr, true);
+    }
+
+    if (res.ok) return await res.json();
+
+    const body = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 402 || res.status === 403) {
+      throw new LlmUnavailableError(`DeepSeek HTTP ${res.status}: ${body}`, false);
+    }
+    if (res.status === 429 || res.status >= 500) {
+      lastErr = `DeepSeek HTTP ${res.status}: ${body}`;
+      const retryAfterS = Number(res.headers.get("retry-after")) || 0;
+      const wait = Math.max(retryAfterS * 1000, DEEPSEEK_RETRY_BASE_MS * 2 ** attempt);
+      if (attempt < DEEPSEEK_MAX_RETRIES) {
+        log.warn(`[DeepSeek] ${lastErr} — Retry ${attempt + 1}/${DEEPSEEK_MAX_RETRIES} in ${Math.round(wait)}ms`);
+        await llmSleepAbortable(wait, signal);
+        continue;
+      }
+      throw new LlmUnavailableError(lastErr, true);
+    }
+    throw new LlmUnavailableError(`DeepSeek HTTP ${res.status}: ${body}`, false);
+  }
+
+  throw new LlmUnavailableError(lastErr, true);
+}
+
+/**
+ * Uebersetzt den Reasoning-Modus in die DeepSeek-Wire-Form:
+ *   off          -> { thinking: { type: "disabled" } }
+ *   low|high|max -> { thinking: { type: "enabled" }, reasoning_effort }
+ * Quelle: @deepseek-ai/dsh-llm-deepseek (resolveThinking).
+ */
+function deepseekThinkingPayload(effort: string): Record<string, unknown> {
+  switch (effort) {
+    case "off":
+    case "disabled":
+      return { thinking: { type: "disabled" } };
+    case "low":
+    case "high":
+    case "max":
+      return { thinking: { type: "enabled" }, reasoning_effort: effort };
+    default:
+      return {};
+  }
+}
+
+/** Bequemer Chat-Helfer: liefert den Text der ersten Assistant-Nachricht. */
+export async function deepseekChatCompletion(
+  messages: Array<Record<string, unknown>>,
+  opts: { model?: string; temperature?: number; maxTokens?: number; reasoningEffort?: string; signal?: AbortSignal } = {},
+): Promise<string> {
+  const effort = (opts.reasoningEffort ?? DEEPSEEK_REASONING_EFFORT).toLowerCase();
+  const data = await deepseekChat({
+    model: opts.model || DEEPSEEK_MODEL,
+    messages,
+    temperature: opts.temperature ?? 0.1,
+    ...deepseekThinkingPayload(effort),
+    ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+  }, opts.signal);
+  const usage = data?.usage;
+  if (usage) {
+    const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+    log.debug(
+      `[DeepSeek] model=${opts.model || DEEPSEEK_MODEL} effort=${effort || "default"} ` +
+      `tokens=${usage.total_tokens} (prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}${reasoning ? `, reasoning=${reasoning}` : ""})`,
+    );
+  }
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+/** Laedt den Metadaten-Prompt; identische Suchreihenfolge wie zuvor (Switchyard-Version). */
+function loadMetadataPrompt(): string {
+  const fallback = "Extract metadata from the user's captured thought. Return ONLY valid JSON.";
+  const promptPaths = [
+    "/app/prompts/metadata-prompt.txt",
+    "/app/metadata-prompt.txt",
+    "prompts/metadata-prompt.txt",
+    "metadata-prompt.txt",
+  ];
+  for (const p of promptPaths) {
+    try {
+      return Deno.readTextFileSync(p);
+    } catch (_e) {
+      // naechster Pfad
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Metadaten-Extraktion ueber DeepSeek. Liefert bei Fehlern ein Objekt mit
+ * _extraction_failed=true, _extraction_error und _retryable, damit der Worker
+ * Backoff/Retry und den Circuit Breaker korrekt steuern kann.
+ */
+export async function extractMetadata(text: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const systemPrompt = loadMetadataPrompt();
+  try {
+    const content = await deepseekChatCompletion(
+      [{ role: "system", content: systemPrompt }, { role: "user", content: text }],
+      { signal, temperature: 0.1 },
+    );
+
+    let parsed: any = null;
+    let parseError = "invalid JSON";
+    try {
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+    } catch (e: any) {
+      parseError = e.message;
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      log.warn(`[extractMetadata] DeepSeek-Antwort nicht als Objekt parsebar (${parseError}).`);
+      return {
+        topics: ["uncategorized"],
+        type: "observation",
+        _extraction_failed: true,
+        _extraction_error: `parse: ${parseError}`,
+        _retryable: true,
+      };
+    }
+    return parsed;
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw e;
+    const retryable = !(e instanceof LlmUnavailableError) || e.retryable;
+    log.error(`[extractMetadata] DeepSeek (model=${DEEPSEEK_MODEL}) failed: ${e?.message || e}`);
+    return {
+      topics: ["uncategorized"],
+      type: "observation",
+      _extraction_failed: true,
+      _extraction_error: String(e?.message || e),
+      _retryable: retryable,
+    };
+  }
+}
+
+/** Vision/OCR ueber DeepSeek (OpenAI-kompatibles Bildformat). imageUrl = data:- oder http(s)-URL. */
+export async function deepseekVisionExtract(
+  imageUrl: string,
+  prompt: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return await deepseekChatCompletion(
+    [{
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: imageUrl } },
+      ],
+    }],
+    { model: DEEPSEEK_VISION_MODEL, temperature: 0.1, maxTokens: 4096, signal },
+  );
 }
 
 // --- Author Handle Resolution ---

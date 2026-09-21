@@ -1,11 +1,19 @@
 Extract metadata from the user's captured thought or news post. Return ONLY valid JSON.
 The JSON must have exactly these keys:
 - "author": The original author (e.g. @elonmusk)
-- "tickers": An array of stock ticker symbols. Include international formats (e.g. ["TSLA", "AAPL", "6315.T", "322310.KS"])
-- "keywords": An array of important keywords, such as company names, topics, or people (e.g. ["Towa", "Auros", "AI"])
+- "tickers": An array of stock ticker symbols actually mentioned. Include international formats (e.g. ["TSLA", "AAPL", "6315.T", "322310.KS", "7203"]). Continuous futures symbols keep their underscore (e.g. "CL_F", "ES_F", "HG_F", "YM_F").
+- "keywords": An array of important keywords, such as company names, topics, or people (e.g. ["Towa", "Auros", "AI"]). Put company/brand names here even when the ticker is unknown.
 - "published_at": ISO date of the post
-- "topics": array of 1-3 short topic tags
+- "topics": array of 1-3 short topic tags (never "uncategorized" when a topic is identifiable)
 - "thought_type": "observation", "task", "idea", or "reference"
+
+TICKER RULES - be precise, never invent symbols:
+- Only extract a token as a ticker if it is an actual stock/ETF/crypto/index symbol. Cashtags ($AAPL, $NVDA) are the strongest signal.
+- NEVER extract prices or target prices: "$635", "$50", "$450.50" in a price/level/target context are NOT tickers.
+- NEVER extract monetary amounts, multipliers or trade sizes: "$1K", "$15K", "$400M", "$2B", "$1T" are NOT tickers.
+- NEVER extract years, dates, percentages or small numbers: "2026", "50%", "200" are NOT tickers.
+- 4-6 digit numbers ARE valid Asian exchange tickers when mentioned in a company/trading context (e.g. "7203", "6504", "005930", "300394.SZ").
+- Keep exchange suffixes exactly as written (".T", ".KS", ".SZ", ".HK", ...).
 
 If the input is a financial post, ensure tickers are extracted correctly into the "tickers" array, and company names into "keywords".
 Return ONLY JSON.

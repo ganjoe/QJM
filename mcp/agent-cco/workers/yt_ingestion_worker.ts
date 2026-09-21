@@ -1,4 +1,4 @@
-import { supabase, log, getEmbeddingsBatch, MAX_CONCURRENT_YT_CHANNELS, AGENT_ID } from "../tools/shared.ts";
+import { supabase, log, getDocumentEmbeddingsDetailed, sha256Hex, fitForEmbedding, EMBED_VERSION, EMBED_MODEL_NAME, MAX_CONCURRENT_YT_CHANNELS, AGENT_ID } from "../tools/shared.ts";
 
 export const ytIngestionStats = {
   isRunning: false,
@@ -23,8 +23,6 @@ export const ytIngestionStats = {
 
 let ytAbortController: AbortController | null = null;
 const YT_COOKIES_PATH = "/app/cookies.txt";
-const EMBED_VERSION = Deno.env.get("EMBED_VERSION") || "v2-qwen3-embedding-8b";
-const EMBED_MODEL_NAME = "qwen3-embedding:8b";
 const RETRY_BASE_SEC = parseInt(Deno.env.get("YT_RETRY_BASE_SEC") || "300");
 const RETRY_MAX_SEC = parseInt(Deno.env.get("YT_RETRY_MAX_SEC") || "21600");
 
@@ -80,11 +78,6 @@ function extractTimecodes(text: string): { start: number | null; end: number | n
     last = sec;
   }
   return { start: first, end: last };
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export async function runCommandWithTimeout(
@@ -328,9 +321,13 @@ export async function syncSingleChannel(handle: string, signal?: AbortSignal) {
 /**
  * Chunk transcript text into manageable overlapping segments
  */
+// mxbai-embed-large hat NUR 512 Tokens Kontext PRO INPUT; oberhalb antwortet Ollama mit
+// HTTP 400 statt zuverlaessig zu trunkieren. Dichte Transkripte tokenisieren mit nur
+// ~2,8 Zeichen/Token: YT_CHUNK_SIZE=800 + Kontext-Header (~90 Zeichen) => ~890 Zeichen
+// ~= 320 Tokens, also ~40 % Reserve unter der Grenze.
 export function chunkTranscript(
   transcript: string,
-  chunkSize: number = parseInt(Deno.env.get("YT_CHUNK_SIZE") || "1500"),
+  chunkSize: number = parseInt(Deno.env.get("YT_CHUNK_SIZE") || "800"),
   overlap: number = parseInt(Deno.env.get("YT_CHUNK_OVERLAP") || "200"),
 ): string[] {
   if (!transcript || transcript.trim().length === 0) return [];
@@ -429,16 +426,39 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
     const contextHeader = `[Video: "${video.title}" | Kanal: ${video.channel}`
       + (video.upload_date ? ` | Upload: ${video.upload_date}` : "")
       + `]`;
-    const augmentedTexts = chunks.map((chunk) => `${contextHeader}\n\n${chunk}`);
+    // fitForEmbedding ist hier ein No-Op (Header+800 < 1100), sichert aber die
+    // 512-Token-Grenze ab und haelt content == exakt eingebetteter Text (source_hash).
+    const augmentedTexts = chunks.map((chunk) => fitForEmbedding(`${contextHeader}\n\n${chunk}`));
 
     ytIngestionStats.activeEmbeddingsRunning++;
     const t0 = Date.now();
     let embeddings: number[][];
+    // embeddedTexts = die TATSAECHLICH eingebetteten Texte (bei Kontext-400 ggf. gekuerzt).
+    // Sie sind die Basis fuer content UND source_hash — sonst passt beides nicht zusammen.
+    let embeddedTexts: string[] = augmentedTexts;
+    let reportedModel: string | null = null;
     try {
-      embeddings = await getEmbeddingsBatch(augmentedTexts, "yt");
+      const res = await getDocumentEmbeddingsDetailed(augmentedTexts, "yt");
+      embeddings = res.vectors;
+      embeddedTexts = res.texts;
+      reportedModel = res.model;
     } finally {
       ytIngestionStats.activeEmbeddingsRunning = Math.max(0, ytIngestionStats.activeEmbeddingsRunning - 1);
     }
+
+    // Harte Integritaetspruefung VOR Delete/Insert: eine Teilantwort darf niemals
+    // als "embedded" gespeichert werden (NULL-Vektoren waeren dauerhaft unauffindbar).
+    if (!Array.isArray(embeddings) || embeddings.length !== chunks.length) {
+      await scheduleRetry(video.video_id, "embed", `Embedding-Anzahl ${embeddings?.length ?? 0} != ${chunks.length} Chunks`, video.retry_count);
+      return false;
+    }
+    for (let i = 0; i < embeddings.length; i++) {
+      if (!Array.isArray(embeddings[i]) || embeddings[i].length === 0) {
+        await scheduleRetry(video.video_id, "embed", `Leerer/ungueltiger Vektor an Index ${i}`, video.retry_count);
+        return false;
+      }
+    }
+
     const durationMs = Math.max(1, Date.now() - t0);
 
     // Live performance metrics calculation
@@ -459,7 +479,7 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
     ytIngestionStats.lastProcessedTitle = video.title || "";
     ytIngestionStats.lastProcessedChannel = video.channel || "";
 
-    const sourceHashes = await Promise.all(augmentedTexts.map((t) => sha256Hex(t)));
+    const sourceHashes = await Promise.all(embeddedTexts.map((t) => sha256Hex(t)));
 
     const rowsToInsert = chunks.map((chunk, idx) => {
       const tc = extractTimecodes(chunk);
@@ -470,9 +490,9 @@ async function embedSingleTranscript(video: any, signal?: AbortSignal): Promise<
         chunk_index: idx,
         t_start_sec: tc.start,
         t_end_sec: tc.end,
-        content: augmentedTexts[idx],
+        content: embeddedTexts[idx],
         embedding: embeddings[idx],
-        embedding_model: EMBED_MODEL_NAME,
+        embedding_model: reportedModel || EMBED_MODEL_NAME,
         embedding_version: EMBED_VERSION,
         embedded_at: new Date().toISOString(),
         source_hash: sourceHashes[idx],

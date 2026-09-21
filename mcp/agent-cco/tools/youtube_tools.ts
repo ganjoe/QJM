@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { supabase, log, getEmbedding, getEmbeddingsBatch } from "./shared.ts";
+import { supabase, log, getDocumentEmbedding, getQueryEmbedding, getQueryEmbeddingsBatch } from "./shared.ts";
 import { resolveYtChannel, syncSingleChannel, runCommandWithTimeout } from "../workers/yt_ingestion_worker.ts";
 
 const YT_COOKIES_PATH = "/app/cookies.txt";
@@ -20,7 +20,11 @@ async function resolveChannelHandle(channel: string): Promise<string> {
 
   if (!channel.startsWith("@")) {
     try {
-      const queryEmbedding = (await getEmbeddingsBatch([channel], "yt"))[0];
+      // WICHTIG: interaktive Query -> Prioritätsklasse "x_search". Mit der Massenklasse "yt"
+      // landet die Anfrage HINTER den ~150 bereits enqueued Chunks eines Bulk-Videos und
+      // wartete gemessen bis zu 37 s (MCP-Timeout 60 s). Die Klasse steuert nur die
+      // Reihenfolge, nicht die Semantik des Vektors.
+      const queryEmbedding = (await getQueryEmbeddingsBatch([channel], "x_search"))[0];
       const { data: searchResults, error } = await supabase.rpc("search_yt_channels", {
         query_embedding: queryEmbedding,
         query_text: channel,
@@ -96,7 +100,7 @@ export function registerYouTubeTools(server: McpServer) {
           if (!channel) throw new Error("channel ist für ADD erforderlich");
           const resolved = await resolveYtChannel(channel);
           const embedText = `handle: ${resolved.handle} title: ${resolved.title} notes: ${notes || ""}`;
-          const embedding = (await getEmbeddingsBatch([embedText], "yt"))[0];
+          const embedding = await getDocumentEmbedding(embedText, "yt");
           const { error } = await supabase.from("yt_channels").upsert({
             handle: resolved.handle,
             channel_id: resolved.channelId,
@@ -235,7 +239,7 @@ export function registerYouTubeTools(server: McpServer) {
     },
     async ({ query, channel, channels, date_from, date_to, tickers, min_similarity, limit }: any) => {
       try {
-        const qEmb = await getEmbedding(query, "x_search");
+        const qEmb = await getQueryEmbedding(query, "x_search");
         let handles: string[] | null = null;
         if (channel) handles = [await resolveChannelHandle(channel)];
         if (channels && channels.length > 0) {
