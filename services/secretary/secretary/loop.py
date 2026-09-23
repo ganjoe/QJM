@@ -1,12 +1,16 @@
 """Der Tick. Die Sekretaerin hat kein LLM; sie waehlt nur aus und startet.
 
-Ein Tick macht vier Dinge:
+Ein Tick macht sechs Dinge:
   1. fertige Laeufe einsammeln (und Protokollverletzungen behandeln)
   2. abgelaufene Leases erholen
-  3. unerreichbare Tasks ueberspringen (Reviews ausgenommen)
-  4. bereite Items bis zur Rollen-Kapazitaet dispatchen
+  3. stehende Aufgaben scharfstellen (Termin berechnen, schedules.py)
+  4. faellige stehende Aufgaben materialisieren (ein Vorkommen, ein Lauf)
+  5. unerreichbare Tasks ueberspringen (Reviews ausgenommen)
+  6. bereite Items bis zur Rollen-Kapazitaet dispatchen
 
 Es gibt bewusst KEINEN Unblock-Code: Bereitschaft ist die View ready_workitems.
+Und keinen Scheduler-Timer: ein Termin ist nur eine weitere Zeile in der
+Datenbank, die faellig wird — dieselbe Selbstheilung wie bei den Workitems.
 """
 from __future__ import annotations
 
@@ -15,9 +19,10 @@ import signal
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any
 
-from . import framing, store, usage
+from . import framing, schedules, store, usage
 from .config import Config
 from .harness import RolePool
 
@@ -62,9 +67,13 @@ class Secretary:
         if claimed is None:
             return  # jemand war schneller
         predecessors = store.context_predecessors(item["id"])
+        change_item = store.change_item(item["change_item_id"])
         prompt = framing.build(
-            item, predecessors, self._entry_prompt(item["change_item_id"]), self.cfg,
+            item, predecessors,
+            change_item["entry_prompt"] if change_item else None,
+            self.cfg,
             roles=store.roles_catalog(),
+            max_rounds=change_item["max_rounds"] if change_item else None,
         )
 
         # Nur Planer und Reviewer behalten eine Session: dort muss der Kontext
@@ -81,18 +90,20 @@ class Secretary:
             # Runde bleibt leer und das Item scheitert erneut an "kein workitem_finish".
             session_id = f"{claimed['id']}-v{claimed['attempts']}"
 
-        runner = self.pool.get(claimed["role"], role_row["patch"], role_row["model"])
+        # Reasoning-Level: Item schlaegt Rolle schlaegt DSH-Default. Der Level
+        # gehoert zum Prozess (DSH setzt ihn bei der Initialisierung), deshalb
+        # haelt der Pool einen Prozess pro (Rolle, Level).
+        effort = claimed.get("reasoning_effort") or role_row.get("reasoning_effort")
+
+        runner = self.pool.get(claimed["role"], role_row["patch"], role_row["model"], effort)
         future = self.executor.submit(self._execute, runner, prompt, session_id)
         self.inflight[future] = claimed
         self.running_per_role[claimed["role"]] = self.running_per_role.get(claimed["role"], 0) + 1
-        log.info("dispatch %s [%s/%s] runde=%s versuch=%s/%s session=%s%s",
+        log.info("dispatch %s [%s/%s] level=%s runde=%s versuch=%s/%s session=%s%s",
                  claimed["step_key"], claimed["type"], claimed["role"],
+                 effort or "default",
                  claimed["round"], claimed["attempts"], claimed["max_attempts"],
                  session_id, " (geteilt)" if keeps_session else "")
-
-    def _entry_prompt(self, change_item_id: str) -> str | None:
-        ci = store.change_item(change_item_id)
-        return ci["entry_prompt"] if ci else None
 
     # ── Reap ───────────────────────────────────────────────────────────────
     def _reap(self) -> None:
@@ -136,6 +147,79 @@ class Secretary:
                 log.error("%s: %s — endgueltig failed", current["step_key"], reason)
                 store.fail(item["id"], reason)
 
+    # ── Stehende Aufgaben (Klasse B) ───────────────────────────────────────
+    # Zwei Schritte, beide ohne LLM: scharfstellen (Termin berechnen) und
+    # feuern (Vorkommen materialisieren). Die Terminlogik selbst liegt in
+    # schedules.py; hier steht nur die Reihenfolge und die Fehlerbehandlung.
+    def _arm_definitions(self) -> None:
+        for definition in store.unarmed_definitions():
+            try:
+                rule = schedules.parse(definition["schedule"])
+                first = schedules.first_occurrence(rule, definition["created_at"])
+            except schedules.ScheduleError as exc:
+                # Eine unbrauchbare Regel wird nicht ewig neu versucht: sie
+                # scheitert sichtbar, mit dem Grund in der Regel selbst.
+                log.error("Definition %s unbrauchbar: %s", definition["id"], exc)
+                store.stop_definition(definition["id"], "failed", str(exc))
+                continue
+            if store.arm(definition["id"], first, definition["created_at"]):
+                log.info("scharf: %s [%s] naechster Termin %s",
+                         definition["title"][:48], schedules.describe(rule),
+                         first.astimezone().strftime("%Y-%m-%d %H:%M %Z"))
+
+    def _fire_definitions(self) -> None:
+        for definition in store.due_definitions():
+            self._fire_one(definition)
+
+    def _fire_one(self, definition: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc)
+        try:
+            rule = schedules.with_anchor(
+                schedules.parse(definition["schedule"]), definition["created_at"])
+            rule_text = schedules.describe(rule)
+        except schedules.ScheduleError as exc:
+            log.error("Definition %s unbrauchbar: %s", definition["id"], exc)
+            store.stop_definition(definition["id"], "failed", str(exc))
+            return
+
+        max_runs = rule.get("max_runs")
+        if max_runs is not None and int(definition["run_count"]) >= int(max_runs):
+            log.info("Definition %s: %s Vorkommen erreicht — beendet",
+                     definition["title"][:48], max_runs)
+            store.stop_definition(definition["id"], "done")
+            return
+
+        # "strikt nach jetzt": ein verpasster Termin feuert genau einmal,
+        # danach liegt der naechste wieder in der Zukunft. Kein Nachhol-Sturm.
+        following = schedules.next_occurrence(rule, now)
+        state = "scheduled" if following is not None else "done"
+        context = {
+            "definition_id": str(definition["id"]),
+            "definition_title": definition["title"],
+            "rule": {k: v for k, v in rule.items() if not k.startswith("_")},
+            "rule_text": rule_text,
+            "due_at": definition["next_run_at"].isoformat(),
+            "fired_at": now.isoformat(),
+        }
+        try:
+            instance = store.materialize(
+                definition, definition["next_run_at"], following, state, context)
+        except RuntimeError as exc:
+            # Permanenter Schaden (Vorlage fehlt): nicht jeden Tick erneut
+            # scheitern, sondern sichtbar beenden — der Grund steht in der Regel.
+            log.error("Definition %s ist dauerhaft unbrauchbar: %s", definition["id"], exc)
+            store.stop_definition(definition["id"], "failed", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 — voruebergehend: naechster Tick versucht es erneut
+            log.exception("Definition %s: Materialisieren fehlgeschlagen", definition["id"])
+            return
+        if instance is None:
+            log.info("Definition %s: Termin wurde anderswo gezogen", definition["id"])
+            return
+        log.info("Vorkommen %s von '%s' -> Lauf %s (naechster %s)",
+                 definition["run_count"] + 1, definition["title"][:40], instance,
+                 following.astimezone().strftime("%Y-%m-%d %H:%M %Z") if following else "-")
+
     # ── Tick ───────────────────────────────────────────────────────────────
     def tick(self) -> None:
         self._reap()
@@ -143,6 +227,12 @@ class Secretary:
         recovered = store.recover_leases()
         if recovered:
             log.warning("%s abgelaufene Lease(s) zurueck auf pending", recovered)
+
+        # Vor dem Dispatch: ein Vorkommen, das in diesem Tick faellig wird,
+        # startet auch in diesem Tick.
+        self._arm_definitions()
+        self._fire_definitions()
+
         skipped = store.skip_cascade()
         if skipped:
             log.info("%s Item(s) uebersprungen", skipped)

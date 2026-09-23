@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { AGENT_ID, MCP_ACCESS_KEY, log } from "./tools/shared.ts";
+import { registerScheduleTools } from "./tools/schedules.ts";
 import { registerWorkitemTools } from "./tools/workitems.ts";
 import { registerRunTools } from "./tools/runs.ts";
 
@@ -13,6 +14,7 @@ const server = new McpServer({
 
 registerWorkitemTools(server);
 registerRunTools(server);
+registerScheduleTools(server);
 
 // --- Hono App ---
 const app = new Hono();

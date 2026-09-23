@@ -219,13 +219,20 @@ export function registerGatewayTools(server: McpServer) {
           if (!target_mode) {
             return { content: [{ type: "text", text: "Fehler: 'target_mode' ('live' oder 'paper') ist erforderlich für SWITCH_MODE." }], isError: true };
           }
-          if (cfg.active_mode === target_mode) {
-            return { content: [{ type: "text", text: `Modus ist bereits '${target_mode.toUpperCase()}'. Keine Änderung nötig.` }] };
+          // Eingabevalidierung UND Typschärfung in einem: 'target_mode' kommt als
+          // 'any' aus dem MCP-Argument und konnte bisher jeden String annehmen
+          // ("Live", "PAPER", ""), was erst beim Container-Start scheiterte.
+          if (target_mode !== "live" && target_mode !== "paper") {
+            return { content: [{ type: "text", text: `Fehler: ungültiger target_mode '${target_mode}'. Erlaubt sind 'live' und 'paper'.` }], isError: true };
+          }
+          const targetMode = target_mode as "live" | "paper";
+          if (cfg.active_mode === targetMode) {
+            return { content: [{ type: "text", text: `Modus ist bereits '${targetMode.toUpperCase()}'. Keine Änderung nötig.` }] };
           }
 
           const oldMode = cfg.active_mode;
           const oldContainer = cfg[oldMode].container_name;
-          const newContainer = cfg[target_mode].container_name;
+          const newContainer = cfg[targetMode].container_name;
 
           const steps: string[] = [`🔄 Trading Mode: ${oldMode.toUpperCase()} → ${target_mode.toUpperCase()}`];
 
@@ -242,7 +249,7 @@ export function registerGatewayTools(server: McpServer) {
           }
 
           // 3. Update DB
-          cfg.active_mode = target_mode;
+          cfg.active_mode = targetMode;
           await saveGatewayConfig(cfg);
           steps.push("3. DB aktualisiert: ✅");
 
@@ -250,7 +257,7 @@ export function registerGatewayTools(server: McpServer) {
           await setGatewayStatus(false);
           steps.push("4. Verbindungsstatus zurückgesetzt (wartet auf IBKR-Reconnect)");
 
-          log.info(`[Gateway] Switched mode: ${oldMode} → ${target_mode}`);
+          log.info(`[Gateway] Switched mode: ${oldMode} → ${targetMode}`);
           return { content: [{ type: "text", text: steps.join("\n") }] };
         }
 

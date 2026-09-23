@@ -38,9 +38,28 @@ Mal habe ich genau das vergessen — der Container lief noch mit dem alten Tool-
 
 | Tool | Zweck |
 |---|---|
-| `run_submit` | Auftrag einreichen. Optional `rounds`/`tokens` als Deckel für das Planen des Leads. |
+| `run_submit` | Auftrag einreichen. Optional `rounds`/`tokens` als Budget des Planungs-Items und `max_rounds` als Rundendeckel des Laufs. |
 | `run_status` | Jedes Workitem mit Status, Runde, Budget und Ist-Verbrauch. `include_results: true` zeigt Zwischenergebnisse. |
 | `run_result` | Die Antwort: das Ergebnis des letzten Reviews plus die Task-Ergebnisse. Meldet ehrlich, wenn der Lauf noch läuft. |
+
+### Wie viele Runden darf der Lead planen?
+
+`max_rounds` ist eine Eigenschaft des **Laufs** (`change_items.max_rounds`), nicht der
+Sekretärin — **Default 2**, einstellbar 1–10. Du setzt ihn im Dashboard beim Anlegen
+(„Planungsrunden"), per CLI (`--max-rounds`) oder per MCP (`run_submit`/`schedule_create`).
+Bei einer stehenden Aufgabe erbt jedes Vorkommen den Wert.
+
+Der Wert steht in der ersten Nachricht jedes Planungs- und Review-Items. Entscheidet das
+Review am **letzten** erlaubten Durchgang, dass der Auftrag nicht erfüllt ist, endet der Lauf
+als `failed` statt eine weitere Runde zu planen.
+
+Zwei Runden sind knapp, wenn die erste Runde an einem gerissenen Budget scheitert: die
+zweite Runde ist dann die Korrektur, und für die eigentliche Auswertung bleibt keine übrig
+(genau so ist der Lauf `47c7480b` gelaufen: 3,0 Mio Tokens für zwei Scan-Versuche). Für
+Aufträge, die Recherche **und** Auswertung brauchen, sind **3** realistischer.
+
+> Nicht verwechseln: `rounds` (Budget des Planungs-Items in *Modell*-Runden) und
+> `max_rounds` (Anzahl der *Planungsrunden* des Laufs) sind verschiedene Dinge.
 
 ## 2. Was du erwarten kannst
 
@@ -164,6 +183,44 @@ dort pro Rolle erzwungen:
 vor einem Umschalten auf live diese Rolle prüfen. Die Persona verlangt zusätzlich, dass nur
 ein ausdrücklicher Auftrag im `payload` ordert.
 
+### Reasoning-Level (wie viel das Modell nachdenken darf)
+
+Drei Ebenen, jede schlägt die vorige:
+
+| Ebene | Feld | Wer setzt es |
+|---|---|---|
+| Global | `~/.dsh/settings.yaml` → `agent-default-model.reasoningEffort` | du (gilt für alle DSH-Sitzungen) |
+| **Rolle** | `roles.reasoning_effort` | du |
+| **Aufgabe** | `workitems.reasoning_effort` | der Lead Engineer beim Anlegen (`reasoning_effort` in `workitem_create`) |
+
+Erlaubt sind `off`, `low`, `high`, `max`. Ohne Angabe auf beiden Ebenen gilt der
+globale Default — der stand auf `max`, also lief **jeder** Lauf auf der teuersten Stufe,
+auch ein Item, das nur eine Zahl nachschlägt.
+
+Rollen ansehen und setzen:
+
+```sh
+cd ~/QJM/services/secretary && source env.sh
+./.venv/bin/python -m secretary.cli roles                 # Übersicht
+./.venv/bin/python -m secretary.cli roles set cco low     # Rolle cco auf low
+./.venv/bin/python -m secretary.cli roles set cco default # zurück auf den DSH-Default
+```
+
+Der Lead Engineer sieht in seiner ersten Nachricht jede Rolle **mit** ihrem Level
+(`cco [max 2 parallel, Reasoning high] — …`) und kann pro Aufgabe abweichen: `low` für
+mechanische Arbeit, `high` für Bewertungen.
+
+**Betriebsgrenze:** DSH setzt den Level beim **Start eines Rollen-Prozesses**, nicht pro
+Session. Die Sekretärin hält deshalb einen Prozess **pro (Rolle, Level)**. Eine Änderung
+wirkt für neue Kombinationen; ein bereits laufender Prozess behält seinen Level, bis er
+endet. Die Parallelität (`max_concurrency`) gilt weiterhin pro Rolle, nicht pro Prozess.
+
+Im Log siehst du das Ergebnis jeder Zuteilung:
+
+```
+dispatch erhebe-tagesbasis [task/cco] level=low runde=1 versuch=1/2 session=…-v1
+```
+
 ## 8. Shell-Fallback
 
 Wenn du die Engine ohne Chat benutzen willst (Skripte, Tests):
@@ -187,6 +244,48 @@ bash tests/call.sh tools/call run_status '{"change_item_id":"…"}'
 | | |
 |---|---|
 | **Kein Projektbudget** | Jedes Item hat einen eigenen Deckel; die Summe überwacht niemand |
-| **Kein Dashboard** | `run_status` ist die Vorstufe |
+| **Dashboard nur lesend** | `wiq_dashboard/` zeigt alles, schreibt aber nur neue Aufträge und stehende Aufgaben — Statusübergänge bleiben bei der Sekretärin |
 | **Abgelöste Items** | Eine in Runde 1 gescheiterte Task bleibt als `failed` stehen, auch wenn Runde 2 sie löst |
 | **Jede Session darf einreichen** | Der MCP-Server kennt den Aufrufer nicht (geteilter Key im internen Netz) |
+
+---
+
+## 10. Stehende Aufgaben (verzögert / wiederkehrend)
+
+Ein Auftrag, der nicht jetzt läuft, sondern zu einem Termin — einmalig oder
+wiederkehrend. Aus dem Chat heraus:
+
+> „Richte eine stehende Aufgabe ein: durchsuche jeden Sonntag um 18:00 die
+> gespeicherten X-Posts nach Hinweisen auf X und bewerte es semantisch."
+
+Der Session ruft dann `schedule_create` auf und gibt dir die Kennung zurück:
+
+```
+Stehende Aufgabe angelegt.
+change_item_id: 1b258dbd-fc79-45c1-9a60-b797a1effe2b
+regel:          {"kind":"repeat","every":"weekly","time":"18:00","time_zone":"Europe/Berlin","weekday":6}
+rolle:          cco
+```
+
+| Tool | Zweck |
+|---|---|
+| `schedule_create` | anlegen. Genau **eine** Zeitangabe: `at` (absolut, mit Zone), `after_seconds`, `every=daily/weekly` + `time`, oder `every_seconds` (Minimum 300) |
+| `schedule_list` | Zustand, Regel, nächster Termin, Anzahl der Vorkommen |
+| `schedule_run` | sofort einmal ausführen, ohne auf den Termin zu warten |
+| `schedule_cancel` | abschalten — kein weiterer Termin |
+
+**Was beim Termin passiert:** Die Sekretärin legt einen **eigenen Lauf** an — ein
+neues `change_item` mit `source_change_item_id` auf die stehende Aufgabe, darin
+**ein** Workitem, das den Auftrag mit den MCP-Werkzeugen der angegebenen Rolle
+ausführt. Kein Lead, kein Review: eine stehende Aufgabe ist eine Aufgabe, kein
+Projekt. Die Antwort steht im `result` dieses Items — im Chat mit `run_result`,
+im Dashboard per Klick.
+
+**Wenn der Server zur Terminzeit aus war:** Das Vorkommen feuert **verspätet
+genau einmal** und der nächste Termin bleibt auf seinem regulären Platz. Es gibt
+bewusst keinen Nachhol-Sturm.
+
+**Wenn die Regel unbrauchbar ist** (z. B. eine Uhrzeit, die es wegen
+Zeitumstellung nicht gibt), steht die Aufgabe nach dem nächsten Tick als
+`failed` mit `schedule.error` in der Liste — sie läuft dann nicht.
+

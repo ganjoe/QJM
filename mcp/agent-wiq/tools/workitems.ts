@@ -29,10 +29,15 @@ type WorkitemRow = {
   round: number;
   budget: unknown;
   usage: unknown;
+  reasoning_effort: string | null;
 };
 
 const WORKITEM_COLUMNS =
-  "id,change_item_id,step_key,type,role,parent_id,payload,status,result,attempts,max_attempts,priority,round,budget,usage";
+  "id,change_item_id,step_key,type,role,parent_id,payload,status,result,attempts,max_attempts,priority,round,budget,usage,reasoning_effort";
+
+/** Erlaubte Reasoning-Level (llm-deepseek). Ein anderer Wert laesst den
+ *  Modellaufruf mit UNSUPPORTED_REASONING_EFFORT scheitern. */
+const REASONING_LEVELS = ["off", "low", "high", "max"] as const;
 
 const TERMINAL = ["done", "failed", "skipped", "cancelled"];
 
@@ -43,6 +48,7 @@ function renderItem(row: WorkitemRow): string {
     "  id=" + row.id,
   ];
   if (row.attempts > 0) parts.push("  attempts=" + row.attempts + "/" + row.max_attempts + " round=" + row.round);
+  if (row.reasoning_effort) parts.push("  reasoning=" + row.reasoning_effort);
   return parts.join("\n");
 }
 
@@ -174,6 +180,8 @@ export function registerWorkitemTools(server: McpServer) {
         "(Vorgaenger muss erfolgreich sein), context_refs sind Lese-Kanten (Ergebnis wird per " +
         "workitem_results gezogen). Eine Kette check -> confirm -> act wird ueber depends_on " +
         "ausgedrueckt; bleibt check erfolglos, werden die Folgenden automatisch uebersprungen.\n\n" +
+        "Mit reasoning_effort steuerst du, wie viel ein Item nachdenken darf (off|low|high|max). " +
+        "Ohne Angabe gilt das Level der Rolle.\n\n" +
         "WHEN TO USE: Als Planer oder Reviewer, um Arbeit zu strukturieren.\n" +
         "WHEN NOT TO USE: Als ausfuehrender Worker — du erledigst genau dein Item.",
       inputSchema: {
@@ -195,6 +203,10 @@ export function registerWorkitemTools(server: McpServer) {
             seconds: z.number().int().min(10).optional()
               .describe("Wanduhr-Obergrenze als Notausstieg. Misst auch Wartezeit — grosszuegig."),
           }).optional().describe("Geschaetztes Budget fuer dieses Item. Wird dem Agenten gezeigt und hart durchgesetzt."),
+          reasoning_effort: z.enum(REASONING_LEVELS).optional()
+            .describe("Wie viel das Modell nachdenken soll. Ohne Angabe gilt das Level der Rolle. " +
+                      "'low' fuer mechanische Arbeit (zaehlen, formatieren, nachschlagen), " +
+                      "'high' fuer Bewertungen und Abwaegungen. Kostet direkt Geld."),
         })).min(1).max(50).describe("Die anzulegenden Items."),
       },
     },
@@ -271,6 +283,7 @@ export function registerWorkitemTools(server: McpServer) {
           priority: i.priority ?? 0,
           max_attempts: i.max_attempts ?? 2,
           budget: i.budget ?? {},
+          reasoning_effort: i.reasoning_effort ?? null,
           round,
         })))
         .select("id,step_key");

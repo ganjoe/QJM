@@ -16,10 +16,17 @@ from .config import Config
 
 
 class RoleRunner:
-    """Ein Rollen-Prozess. Wird beim ersten Auftrag gestartet und dann wiederverwendet."""
+    """Ein Rollen-Prozess. Wird beim ersten Auftrag gestartet und dann wiederverwendet.
 
-    def __init__(self, role_name: str, patch: str, model: str | None, cfg: Config) -> None:
+    Der Reasoning-Level ist Teil der IDENTITAET dieses Prozesses: DSH setzt ihn
+    bei der Initialisierung (nicht pro Session). Ein Prozess traegt also genau
+    einen Level — deshalb der Schluessel (Rolle, Level) im RolePool.
+    """
+
+    def __init__(self, role_name: str, patch: str, model: str | None,
+                 reasoning: str | None, cfg: Config) -> None:
         self.role_name = role_name
+        self.reasoning = reasoning or None
         self.patch_path = str(Path(cfg.roles_dir) / Path(patch).name)
         if not os.path.exists(self.patch_path):
             raise FileNotFoundError(f"Rollen-Patch fehlt: {self.patch_path}")
@@ -31,6 +38,7 @@ class RoleRunner:
             cwd=cfg.workspace,
             provider=cfg.provider,
             model=model or cfg.model,
+            reasoning_effort=self.reasoning,
             request_timeout_seconds=None,
         ))
 
@@ -43,17 +51,22 @@ class RoleRunner:
 
 
 class RolePool:
-    """Alle Rollen-Prozesse. Threadsicher genug: das dict wird nur im Tick beruehrt."""
+    """Alle Rollen-Prozesse, Schluessel (Rolle, Reasoning-Level).
+
+    Threadsicher genug: das dict wird nur im Tick beruehrt.
+    """
 
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
-        self._runners: dict[str, RoleRunner] = {}
+        self._runners: dict[tuple[str, str], RoleRunner] = {}
 
-    def get(self, role_name: str, patch: str, model: str | None) -> RoleRunner:
-        runner = self._runners.get(role_name)
+    def get(self, role_name: str, patch: str, model: str | None,
+            reasoning: str | None = None) -> RoleRunner:
+        key = (role_name, reasoning or "")
+        runner = self._runners.get(key)
         if runner is None:
-            runner = RoleRunner(role_name, patch, model, self._cfg)
-            self._runners[role_name] = runner
+            runner = RoleRunner(role_name, patch, model, reasoning, self._cfg)
+            self._runners[key] = runner
         return runner
 
     def close(self) -> None:

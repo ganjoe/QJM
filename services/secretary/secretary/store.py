@@ -54,7 +54,8 @@ def ready_items(limit: int = 20) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             select w.id, w.change_item_id, w.step_key, w.type, w.role, w.round,
-                   w.attempts, w.max_attempts, w.priority, w.payload, w.budget
+                   w.attempts, w.max_attempts, w.priority, w.payload, w.budget,
+                   w.reasoning_effort
               from ready_workitems w
               join change_items ci on ci.id = w.change_item_id
              where ci.state = 'running'
@@ -78,7 +79,8 @@ def claim(item_id: str, owner: str, lease_seconds: int) -> dict[str, Any] | None
                    started_at = now(),
                    attempts = attempts + 1
              where id = %s and status = 'pending'
-            returning id, step_key, type, role, round, attempts, max_attempts
+            returning id, step_key, type, role, round, attempts, max_attempts,
+                      reasoning_effort
             """,
             (owner, lease_seconds, item_id),
         ).fetchone()
@@ -138,7 +140,7 @@ def load_item(item_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
             "select id, change_item_id, step_key, type, role, status, round, payload, "
-            "       attempts, max_attempts "
+            "       attempts, max_attempts, reasoning_effort "
             "  from workitems where id = %s",
             (item_id,),
         ).fetchone()
@@ -166,7 +168,7 @@ def context_predecessors(item_id: str) -> list[dict[str, Any]]:
 def role(name: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
-            "select name, patch, model, max_concurrency, description "
+            "select name, patch, model, max_concurrency, description, reasoning_effort "
             "  from roles where name = %s",
             (name,),
         ).fetchone()
@@ -182,9 +184,28 @@ def roles_catalog() -> list[dict[str, Any]]:
     """
     with connect() as conn:
         rows = conn.execute(
-            "select name, description, max_concurrency from roles order by name"
+            "select name, description, max_concurrency, reasoning_effort "
+            "  from roles order by name"
         ).fetchall()
         return list(rows)
+
+
+REASONING_LEVELS = ("off", "low", "high", "max")
+
+
+def set_role_effort(role_name: str, effort: str | None) -> bool:
+    """Reasoning-Level einer Rolle setzen. None = DSH-Default (settings.yaml).
+
+    Laufende Rollen-Prozesse behalten ihren Level: er wird beim Start gesetzt.
+    Die Aenderung wirkt fuer neue (Rolle, Level)-Kombinationen.
+    """
+    if effort is not None and effort not in REASONING_LEVELS:
+        raise ValueError(
+            f"unbekannter Reasoning-Level {effort!r}; erlaubt: {', '.join(REASONING_LEVELS)}")
+    with connect() as conn:
+        cur = conn.execute(
+            "update roles set reasoning_effort = %s where name = %s", (effort, role_name))
+        return cur.rowcount == 1
 
 
 def session_for(change_item_id: str, role_name: str) -> str | None:
@@ -260,18 +281,259 @@ def finalize_change_items() -> list[dict[str, Any]]:
         return list(rows)
 
 
+# ── Stehende Aufgaben (Klasse B) ───────────────────────────────────────────
+# Eine Definition ist ein change_item mit is_template=true, state='scheduled'
+# und einem Workitem vom Typ 'template'. Sie wird nie selbst ausgefuehrt; jedes
+# Vorkommen materialisiert sich als Instanz (eigenes change_item) mit einer
+# KOPIE der Vorlage. Die Terminlogik steht NICHT hier, sondern in schedules.py —
+# diese Datei schreibt nur, was der Tick entschieden hat.
+
+def unarmed_definitions(limit: int = 50) -> list[dict[str, Any]]:
+    """Definitionen ohne Termin: frisch angelegt, warten auf ihr Scharfstellen."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            select id, title, entry_prompt, schedule, created_at, run_count
+              from change_items
+             where state = 'scheduled' and is_template and next_run_at is null
+             order by created_at
+             limit %s
+            """,
+            (limit,),
+        ).fetchall()
+        return list(rows)
+
+
+def due_definitions(limit: int = 50) -> list[dict[str, Any]]:
+    """Definitionen, deren Termin erreicht ist. Aeltester Termin zuerst."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            select id, title, entry_prompt, schedule, created_at, run_count, next_run_at,
+                   max_rounds
+              from change_items
+             where state = 'scheduled' and next_run_at is not null and next_run_at <= now()
+             order by next_run_at
+             limit %s
+            """,
+            (limit,),
+        ).fetchall()
+        return list(rows)
+
+
+def arm(definition_id: str, next_run_at: Any, expected_created_at: Any) -> bool:
+    """Termin setzen. Vergleich-und-Setze auf (state='scheduled', next_run_at is null).
+
+    Der zweite Vergleich auf created_at ist kein Zierrat: er bindet das
+    Scharfstellen an genau die Zeile, die gelesen wurde.
+    """
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            update change_items
+               set next_run_at = %s
+             where id = %s and state = 'scheduled'
+               and next_run_at is null and created_at = %s
+            """,
+            (next_run_at, definition_id, expected_created_at),
+        )
+        return cur.rowcount == 1
+
+
+def stop_definition(definition_id: str, state: str, error: str | None = None) -> None:
+    """Definition endgueltig beenden: kein weiterer Termin. state ist 'done',
+    'cancelled' oder 'failed'; bei 'failed' wandert der Grund in die Regel,
+    damit er im Dashboard sichtbar ist und nicht nur im Log steht."""
+    with connect() as conn:
+        conn.execute(
+            """
+            update change_items
+               set state = %s,
+                   next_run_at = null,
+                   finished_at = now(),
+                   schedule = case when %s::text is null then schedule
+                                   else schedule || jsonb_build_object('error', %s::text) end
+             where id = %s and state = 'scheduled'
+            """,
+            (state, error, error, definition_id),
+        )
+
+
+def materialize(
+    definition: dict[str, Any],
+    expected_next: Any,
+    new_next: Any,
+    new_state: str,
+    context: dict[str, Any],
+) -> str | None:
+    """EIN Vorkommen materialisieren — alles in EINER Transaktion.
+
+    1. Termin fortschreiben (Vergleich-und-Setze auf den gelesenen Wert).
+    2. Instanz anlegen (state='running', source_change_item_id -> Definition).
+    3. Die Vorlage als 'task' kopieren.
+
+    Gibt die Instanz-id zurueck. None = jemand anderes hat den Termin gezogen
+    (der Tick laeuft dann einfach weiter). Schlaegt Schritt 3 fehl, faellt die
+    ganze Transaktion zurueck — eine Instanz ohne Workitem waere ein Lauf, den
+    niemand abarbeiten kann (dieselbe Regel wie bei run_submit).
+    """
+    with transaction() as cur:
+        cur.execute(
+            """
+            update change_items
+               set next_run_at = %s, last_run_at = now(), run_count = run_count + 1,
+                   state = %s
+             where id = %s and state = 'scheduled' and next_run_at = %s
+            returning run_count
+            """,
+            (new_next, new_state, definition["id"], expected_next),
+        )
+        advanced = cur.fetchone()
+        if advanced is None:
+            return None
+
+        payload_context = dict(context)
+        payload_context["occurrence"] = advanced["run_count"]
+
+        cur.execute(
+            """
+            insert into change_items (title, entry_prompt, state, source_change_item_id,
+                                      max_rounds)
+            values (%s, %s, 'running', %s, coalesce(%s, 2))
+            returning id
+            """,
+            (definition["title"], definition["entry_prompt"], definition["id"],
+             definition.get("max_rounds")),
+        )
+        instance_id = cur.fetchone()["id"]
+
+        cur.execute(
+            """
+            insert into workitems (change_item_id, step_key, type, role, payload,
+                                   priority, max_attempts, budget)
+            select %s, t.step_key, 'task', t.role,
+                   t.payload || jsonb_build_object('schedule', %s::jsonb),
+                   t.priority, t.max_attempts, t.budget
+              from workitems t
+             where t.change_item_id = %s and t.type = 'template'
+             order by t.created_at
+            """,
+            (instance_id, psycopg.types.json.Jsonb(payload_context), definition["id"]),
+        )
+        if cur.rowcount == 0:
+            raise RuntimeError(
+                "Vorlage fehlt: change_item " + str(definition["id"])
+                + " hat kein Workitem vom Typ 'template'"
+            )
+        return str(instance_id)
+
+
+def definitions(limit: int = 200) -> list[dict[str, Any]]:
+    """Alle stehenden Aufgaben mit ihrem Zustand — fuer CLI und Dashboard."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            select d.id, d.title, d.state, d.schedule, d.next_run_at, d.last_run_at,
+                   d.run_count,
+                   (select count(*) from change_items i
+                     where i.source_change_item_id = d.id) as vorkommen,
+                   (select i.state from change_items i
+                     where i.source_change_item_id = d.id
+                     order by i.created_at desc limit 1) as letzte_instanz
+              from change_items d
+             where d.is_template
+             order by d.created_at desc
+             limit %s
+            """,
+            (limit,),
+        ).fetchall()
+        return list(rows)
+
+
+def cancel_definition(definition_id: str) -> bool:
+    """Stehende Aufgabe abschalten. Kein Statusuebergang an Workitems — die
+    Definition bekommt einfach keinen Termin mehr."""
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            update change_items
+               set state = 'cancelled', next_run_at = null, finished_at = now()
+             where id = %s and state = 'scheduled'
+            """,
+            (definition_id,),
+        )
+        return cur.rowcount == 1
+
+
+def trigger_now(definition_id: str) -> bool:
+    """Definition sofort faellig stellen. Materialisiert wird weiterhin nur von
+    der Sekretaerin — hier wird ausschliesslich der Termin gezogen."""
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            update change_items
+               set next_run_at = now()
+             where id = %s and state = 'scheduled' and next_run_at is not null
+            """,
+            (definition_id,),
+        )
+        return cur.rowcount == 1
+
+
+def create_definition(
+    title: str,
+    prompt: str,
+    role: str,
+    schedule: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+    budget: dict[str, Any] | None = None,
+    max_attempts: int = 2,
+    priority: int = 0,
+    max_rounds: int | None = None,
+) -> str:
+    """Definition + Vorlagen-Workitem anlegen. Eine Transaktion: eine Definition
+    ohne Vorlage waere ein Termin, der ins Leere feuert."""
+    with transaction() as cur:
+        cur.execute(
+            """
+            insert into change_items (title, entry_prompt, state, is_template, schedule,
+                                      max_rounds)
+            values (%s, %s, 'scheduled', true, %s::jsonb, coalesce(%s, 2))
+            returning id
+            """,
+            (title, prompt, psycopg.types.json.Jsonb(schedule), max_rounds),
+        )
+        definition_id = cur.fetchone()["id"]
+        base_payload = dict(payload or {})
+        base_payload.setdefault("prompt", prompt)
+        cur.execute(
+            """
+            insert into workitems (change_item_id, step_key, type, role, payload,
+                                   priority, max_attempts, budget)
+            values (%s, 'aufgabe', 'template', %s, %s::jsonb, %s, %s, %s::jsonb)
+            """,
+            (definition_id, role, psycopg.types.json.Jsonb(base_payload),
+             priority, max_attempts, psycopg.types.json.Jsonb(budget or {})),
+        )
+        return str(definition_id)
+
+
 # ── Eingang ────────────────────────────────────────────────────────────────
 
-def submit(prompt: str, title: str | None = None, budget: dict | None = None) -> tuple[str, str]:
-    """Boss-Prompt -> change_item + initial-Workitem. Gibt (change_item_id, workitem_id)."""
+def submit(prompt: str, title: str | None = None, budget: dict | None = None,
+           max_rounds: int | None = None) -> tuple[str, str]:
+    """Boss-Prompt -> change_item + initial-Workitem. Gibt (change_item_id, workitem_id).
+
+    max_rounds ist der Rundendeckel des Laufs; None laesst den Spalten-Default (2)."""
     clean = prompt.strip()
     if not clean:
         raise ValueError("Der Prompt ist leer.")
     headline = (title or clean.splitlines()[0])[:120]
     with transaction() as cur:
         cur.execute(
-            "insert into change_items (title, entry_prompt) values (%s, %s) returning id",
-            (headline, clean),
+            "insert into change_items (title, entry_prompt, max_rounds) "
+            "values (%s, %s, coalesce(%s, 2)) returning id",
+            (headline, clean, max_rounds),
         )
         change_item_id = cur.fetchone()["id"]
         cur.execute(

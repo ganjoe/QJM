@@ -12,7 +12,7 @@ from typing import Any
 from .config import Config
 
 
-def _header(item: dict[str, Any], cfg: Config) -> list[str]:
+def _header(item: dict[str, Any], cfg: Config, max_rounds: int) -> list[str]:
     return [
         "[WORKITEM]",
         f"workitem_id: {item['id']}",
@@ -21,7 +21,10 @@ def _header(item: dict[str, Any], cfg: Config) -> list[str]:
         f"type: {item['type']}",
         f"role: {item['role']}",
         f"round: {item['round']}",
-        f"max_rounds: {cfg.max_rounds}",
+        # Der Deckel gehoert zum Lauf (change_items.max_rounds), nicht zur
+        # Sekretaerin: derselbe Dienst bedient Auftraege mit verschiedenen
+        # Rundengrenzen.
+        f"max_rounds: {max_rounds}",
     ]
 
 
@@ -33,11 +36,13 @@ def _catalog(roles: list[Any]) -> list[dict[str, Any]]:
             out.append({
                 "name": str(role.get("name", "?")),
                 "max_concurrency": int(role.get("max_concurrency") or 1),
+                "reasoning_effort": str(role.get("reasoning_effort") or "default"),
                 "description": " ".join(str(role.get("description") or "").split())
                                or "(keine Beschreibung hinterlegt)",
             })
         else:
             out.append({"name": str(role), "max_concurrency": 1,
+                        "reasoning_effort": "default",
                         "description": "(keine Beschreibung hinterlegt)"})
     return sorted(out, key=lambda r: r["name"])
 
@@ -48,9 +53,15 @@ def build(
     entry_prompt: str | None,
     cfg: Config,
     roles: list[Any] | None = None,
+    max_rounds: int | None = None,
 ) -> str:
-    """Baut die erste Nachricht der Session fuer genau dieses Workitem."""
-    lines = _header(item, cfg)
+    """Baut die erste Nachricht der Session fuer genau dieses Workitem.
+
+    max_rounds kommt vom Lauf (change_items.max_rounds); None faellt auf den
+    Dienst-Default zurueck — so bleibt der Aufruf fuer alte Laeufe gueltig.
+    """
+    limit = int(max_rounds or cfg.max_rounds)
+    lines = _header(item, cfg, limit)
     lines += ["", "payload_json:", json.dumps(item.get("payload") or {}, ensure_ascii=False)]
 
     # Das Budget MUSS der Agent kennen — sonst ist die Policy eine Überraschung
@@ -64,12 +75,19 @@ def build(
     # Rolle mit ihrer Datenquelle und ihrer Parallelitaet. Genau hier scheitert
     # eine Aufgabe sonst: sie landet bei einer Rolle, die die Quelle nicht hat.
     if roles and item["type"] in ("initial", "review"):
-        lines += ["", "available_roles (Name [Parallelitaet] — Faehigkeiten, waehle danach):"]
+        lines += ["", "available_roles (Name [Parallelitaet, Reasoning] — Faehigkeiten, waehle danach):"]
         for role in _catalog(roles):
             lines.append(
-                f"  {role['name']} [max {role['max_concurrency']} parallel]"
-                f" — {role['description']}"
+                f"  {role['name']} [max {role['max_concurrency']} parallel, "
+                f"Reasoning {role['reasoning_effort']}] — {role['description']}"
             )
+        lines += [
+            "",
+            "Das Reasoning-Level einer Aufgabe setzt du beim Anlegen mit "
+            "reasoning_effort (off|low|high|max). Ohne Angabe gilt das Level der Rolle.",
+            "Nimm 'low' fuer mechanische Arbeit (zaehlen, formatieren, nachschlagen) und",
+            "'high' fuer Bewertungen, Priorisierung und alles, was abwaegen muss.",
+        ]
 
     if item["type"] in ("initial", "review") and entry_prompt:
         # Der Lead muss den Boss-Prompt kennen, um planen oder bewerten zu koennen.
@@ -84,7 +102,7 @@ def build(
         lines += [
             "",
             "Du bist in der Review-Rolle. Pruefe, ob der Boss-Prompt durch die",
-            "Ergebnisse erfuellt ist. Bei round >= max_rounds und Nichterfuellung",
+            f"Ergebnisse erfuellt ist. Bei round >= {limit} und Nichterfuellung",
             'schliesse mit status="failed" ab, statt eine weitere Runde zu planen.',
         ]
 

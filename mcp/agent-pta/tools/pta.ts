@@ -206,6 +206,157 @@ async function resolveExitSide(
   return exitSideFromLedgerRows(byTicker);
 }
 
+// ---------------------------------------------------------------------------
+// F7 — Adoptionspfad für Broker-Positionen ohne lokalen Trade-Record
+// ---------------------------------------------------------------------------
+// Eine Position, die nicht über dieses System entstanden ist (manuell in TWS,
+// anderer API-Client, Fill ohne lokalen Record), existiert nur im Broker-
+// Snapshot: kein trade_id, kein Stop-Tracking und keine Aufnahme in Portfolio
+// Heat / Core Risk. ADOPT überführt sie bewusst in den Ledger.
+//
+// Sicherheitsregeln:
+//  * nur STK — Optionen/Kombis tragen im Broker-Snapshot keine Kontraktidentität
+//  * notes ist PFLICHT: die Notiz ist die bewusste Bestätigung des Aufrufers
+//  * adoptiert nur die DIFFERENZ Broker-Bestand minus bereits getrackter Bestand
+//  * broker_exec_id = "ADOPT-<trade_id>" macht die Adoption idempotent
+//  * ein übernommener Stop wird mit der ECHTEN Broker-Order-ID geschrieben,
+//    damit der Sync-Daemon ihn nicht erneut als Order abschickt
+async function adoptOrphanPosition(
+  params: any,
+  activeMode: "live" | "paper",
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const sym = String(params.ticker || "").trim().toUpperCase();
+  const notes = String(params.notes || "").trim();
+
+  if (params.asset_type !== "STK") {
+    return {
+      content: [{ type: "text", text: "ADOPT abgebrochen: nur für asset_type STK möglich. Optionen und Kombis lassen sich aus dem Broker-Snapshot nicht eindeutig einem Kontrakt zuordnen — bitte regulär über ENTER erfassen." }],
+      isError: true
+    };
+  }
+  if (!notes) {
+    return {
+      content: [{ type: "text", text: "ADOPT abgebrochen: 'notes' ist Pflicht. Die Notiz ist die bewusste Bestätigung, dass diese Broker-Position dem Ledger zugeschlagen wird (z. B. \"manuell in TWS gekauft am 21.09.\")." }],
+      isError: true
+    };
+  }
+
+  // 1. Broker-Bestand (mode-scoped)
+  const { data: posRows, error: posErr } = await supabase
+    .from("pta_ibkr_positions")
+    .select("ticker, quantity, avg_cost, currency")
+    .eq("mode", activeMode)
+    .eq("ticker", sym);
+  if (posErr) throw new Error("ADOPT: Broker-Bestand nicht lesbar: " + posErr.message);
+  const brokerQty = (posRows || []).reduce((s: number, r: any) => s + (Number(r.quantity) || 0), 0);
+  if (!posRows || posRows.length === 0 || brokerQty === 0) {
+    return {
+      content: [{ type: "text", text: "ADOPT abgebrochen: im Modus " + activeMode.toUpperCase() + " liegt beim Broker keine Position in " + sym + ". Nichts zu adoptieren." }],
+      isError: true
+    };
+  }
+  const avgCost = (posRows || []).reduce((s: number, r: any) => s + (Number(r.avg_cost) || 0) * (Number(r.quantity) || 0), 0) / brokerQty;
+  const currency = (posRows || [])[0]?.currency || params.currency || "USD";
+
+  // 2. Bereits getrackter Bestand
+  const { data: ledgerRows, error: ledgerErr } = await supabase
+    .from("pta_active_positions")
+    .select("trade_id, net_quantity")
+    .eq("mode", activeMode)
+    .eq("ticker", sym);
+  if (ledgerErr) throw new Error("ADOPT: Ledger-Bestand nicht lesbar: " + ledgerErr.message);
+  const ledgerQty = (ledgerRows || []).reduce((s: number, r: any) => s + (Number(r.net_quantity) || 0), 0);
+  const delta = brokerQty - ledgerQty;
+
+  if (Math.abs(delta) < 1e-9) {
+    return {
+      content: [{ type: "text", text: "ADOPT: nichts zu tun — der Broker-Bestand (" + brokerQty + ") ist bereits vollständig getrackt (" + ledgerQty + "). Trade-IDs: " + (ledgerRows || []).map((r: any) => r.trade_id).join(", ") }]
+    };
+  }
+  if (Math.sign(delta) !== Math.sign(brokerQty)) {
+    return {
+      content: [{ type: "text", text: "ADOPT abgebrochen: Broker " + brokerQty + " vs. Ledger " + ledgerQty + " bei " + sym + " — unterschiedliche Vorzeichen. Das ist ein Datenkonflikt (z. B. Long im Ledger, Short beim Broker) und darf nicht automatisch geglättet werden. Bitte zuerst über EXIT/CANCEL bereinigen." }],
+      isError: true
+    };
+  }
+
+  // 3. Synthetischer FILL — die Kostenbasis kommt aus dem Broker-Durchschnittskurs
+  const action = delta > 0 ? "BUY" : "SELL";
+  const qty = Math.abs(delta);
+  const execId = "ADOPT-" + String(params.trade_id || sym);
+  const { data: fillId, error: fillErr } = await supabase.rpc("pta_log_event", {
+    p_trade_id: params.trade_id,
+    p_ticker: sym,
+    p_event_type: "FILL",
+    p_action: action,
+    p_quantity: qty,
+    p_price: Math.abs(avgCost),
+    p_stop_price: null,
+    p_broker_order_id: null,
+    p_commission: 0,
+    p_currency: currency,
+    p_exchange: "SMART",
+    p_slippage: 0,
+    p_notes: "ADOPTED: " + notes,
+    p_broker_exec_id: execId,
+    p_order_ref: params.trade_id,
+    p_mode: activeMode
+  });
+  if (fillErr) throw new Error("ADOPT: FILL-Eintrag fehlgeschlagen: " + fillErr.message);
+
+  // 4. Arbeitsenden Broker-Stop übernehmen (nur bei genau einem eindeutigen Wert)
+  let stopInfo = "Kein arbeitender Broker-Stop gefunden — die Position ist jetzt getrackt, aber ohne Stop.";
+  const { data: orderRows } = await supabase
+    .from("pta_ibkr_open_orders")
+    .select("order_id, stop_price, order_type")
+    .eq("mode", activeMode)
+    .eq("ticker", sym);
+  const stops = (orderRows || []).filter((o: any) =>
+    String(o.order_type || "").toUpperCase().includes("STP") && o.stop_price !== null && o.stop_price !== undefined);
+  const distinct = Array.from(new Set(stops.map((o: any) => Number(o.stop_price)))).filter((n) => Number.isFinite(n));
+  if (distinct.length === 1) {
+    const { error: stopErr } = await supabase.rpc("pta_log_event", {
+      p_trade_id: params.trade_id,
+      p_ticker: sym,
+      p_event_type: "ORDER_SUBMITTED",
+      p_action: action,
+      p_quantity: qty,
+      p_stop_price: distinct[0],
+      p_broker_order_id: String(stops[0].order_id),
+      p_notes: "ADOPTED STOP — übernommener arbeitender Broker-Stop, NICHT neu platziert",
+      p_take_profit: null,
+      p_mode: activeMode
+    });
+    stopInfo = stopErr
+      ? "⚠️ Broker-Stop " + distinct[0] + " gefunden, konnte aber nicht übernommen werden: " + stopErr.message
+      : "Stop " + distinct[0] + " aus Broker-Order #" + stops[0].order_id + " übernommen (nicht neu platziert).";
+  } else if (distinct.length > 1) {
+    stopInfo = "⚠️ " + distinct.length + " unterschiedliche arbeitende Stops (" + distinct.join(", ") + ") — NICHT übernommen. Bitte erst auf einen Stop reduzieren (CANCEL_STOP, dann neuen Stop setzen).";
+  }
+
+  // 5. Ergebnis aus dem Ledger zurücklesen
+  const { data: after } = await supabase
+    .from("pta_active_positions")
+    .select("net_quantity, current_stop_loss, position_type")
+    .eq("mode", activeMode)
+    .eq("trade_id", params.trade_id)
+    .maybeSingle();
+
+  return {
+    content: [{
+      type: "text",
+      text: "✅ ADOPT ausgeführt (FILL-ID " + fillId + ", execId " + execId + ").\n" +
+            "- Trade-ID: " + params.trade_id + " | " + sym + " | Modus " + activeMode.toUpperCase() + "\n" +
+            "- adoptiert: " + action + " " + qty + " @ " + Math.abs(avgCost).toFixed(4) + " " + currency +
+            "   (Broker-Bestand " + brokerQty + ", bisher getrackt " + ledgerQty + ")\n" +
+            "- " + stopInfo + "\n" +
+            (after ? "- Ledger jetzt: " + after.net_quantity + " @ " + after.position_type + " | SL: " + (after.current_stop_loss ?? "keiner") + "\n" : "") +
+            "Hinweis: adoptierte Positionen haben keinen Broker-Fill als Historie; die Kostenbasis stammt aus dem Durchschnittskurs des Broker-Snapshots.\n" +
+            "Prüfe das Ergebnis mit list_active_positions() — der Reconciliation-Block darf danach keine orphan position mehr melden."
+    }]
+  };
+}
+
 export function registerPtaTools(server: McpServer) {
   // Tool: Place Trade (Execution Logger)
   server.registerTool(
@@ -215,9 +366,10 @@ export function registerPtaTools(server: McpServer) {
       description: "Submits a trade to the broker by logging an execution event into the database, which is then asynchronously picked up and executed by the gateway. Supports STK, OPT, or COMBO. Valid actions are ENTER, UPDATE, EXIT, CANCEL, CANCEL_STOP, CASH, and REFRESH.\n\n" +
         "WICHTIG — Verifikation: Die Antwort enthält ein Feld 'verified'. Nur bei verified: true hat der BROKER die Order tatsächlich angenommen (Read-back aus dem Sync-Daemon). Bei verified: false wurde die Order abgelehnt (z. B. IB-Fehler 321) — die Antwort ist dann als Fehler markiert und der Ledger-Zustand wurde NICHT geändert.\n\n" +
         "WICHTIG — Stückzahl: EXIT und UPDATE leiten die Stückzahl bei fehlender Angabe aus dem Broker-Bestand des aktiven Modus ab. Fehlt sie auch dort, wird KEINE Order erzeugt (vorher entstand eine 0-Stück-Order, die IB verwarf, während das Tool Erfolg meldete).\n\n" +
-        "WICHTIG — Stop löschen: stop_loss = null zusammen mit action UPDATE (oder die eigene action CANCEL_STOP) entfernt den Stop — im Ledger UND als arbeitende Broker-Order. stop_loss = 0 ist KEIN gültiges Löschen mehr.",
+        "WICHTIG — Stop löschen: stop_loss = null zusammen mit action UPDATE (oder die eigene action CANCEL_STOP) entfernt den Stop — im Ledger UND als arbeitende Broker-Order. stop_loss = 0 ist KEIN gültiges Löschen mehr.\n\n" +
+        "WICHTIG — ADOPT: Überführt eine Broker-Position OHNE lokalen Trade-Record (manuell in TWS gekauft, anderer Client) in den Ledger. Nur für STK, notes ist Pflicht (bewusste Bestätigung), es wird nur die Differenz Broker-Bestand minus getrackter Bestand adoptiert, und ein arbeitender Broker-Stop wird mit übernommen. Adoptierte Positionen werden dadurch erstmals in Portfolio Heat / Core Risk und im Stop-Tracking sichtbar.",
       inputSchema: {
-        action: z.enum(["ENTER", "UPDATE", "EXIT", "CANCEL", "CANCEL_STOP", "CASH", "REFRESH"]).describe("The execution action"),
+        action: z.enum(["ENTER", "UPDATE", "EXIT", "CANCEL", "CANCEL_STOP", "ADOPT", "CASH", "REFRESH"]).describe("The execution action"),
         asset_type: z.enum(["STK", "OPT", "COMBO"]).default("STK").describe("The asset type"),
         trade_id: z.string().describe("The unique Trade-ID (generated by STM)"),
         ticker: z.string().describe("The stock symbol"),
@@ -262,6 +414,13 @@ export function registerPtaTools(server: McpServer) {
             content: [{ type: "text", text: "REFRESH is not a valid place_trade action (it would have been sent to the broker as a BUY order). Use `list_active_positions()` instead — it triggers the broker snapshot refresh and waits for it." }],
             isError: true
           };
+        }
+
+        // ── ADOPT: Broker-Position ohne lokalen Record in den Ledger überführen ──
+        // Muss VOR der Stückzahl-Ableitung und der Stop-Lösch-Logik stehen: ADOPT
+        // schreibt seine Einträge selbst und erzeugt keine Broker-Order.
+        if (params.action === "ADOPT") {
+          return await adoptOrphanPosition(params, activeMode);
         }
 
         let eventType = "ORDER_SUBMITTED";
@@ -968,6 +1127,21 @@ export function registerPtaTools(server: McpServer) {
             return !bStops.some((bp: number) => Math.abs(bp - l) <= 0.005);
           });
 
+          // Ein Stop, der nur einen Teil der Position abdeckt, ist ein stilles
+          // Risiko: "die Stops stimmen überein" galt bisher allein für den PREIS.
+          const positionQtyByTicker = new Map<string, number>();
+          for (const p of liveData || []) {
+            positionQtyByTicker.set(p.ticker, (positionQtyByTicker.get(p.ticker) || 0) + (Number(p.quantity) || 0));
+          }
+          const underCovered = Array.from(brokerTickers).map(t => {
+            const bStops = stopOrdersByTicker[t] || [];
+            if (bStops.length === 0) return null;
+            const stopQty = bStops.reduce((s: number, o: any) => s + (Number(o.quantity) || 0), 0);
+            const posQty = Math.abs(positionQtyByTicker.get(t) || 0);
+            if (stopQty <= 0 || posQty <= 0 || stopQty >= posQty - 1e-9) return null;
+            return t + " (Stop " + stopQty + " von " + posQty + ")";
+          }).filter(Boolean) as string[];
+
           const ok = orphanPositions.length === 0 && orphanOrders.length === 0 &&
                      ledgerOnlyStops.length === 0 && stopMismatches.length === 0 &&
                      ledgerOnlyPositions.length === 0;
@@ -999,6 +1173,9 @@ export function registerPtaTools(server: McpServer) {
             if (snapshotStale) {
               responseText += "⚠️ Der Broker-Snapshot ist veraltet (" + (snapshotAgeSec === null ? "?" : snapshotAgeSec.toFixed(1)) + "s) — dieser Abgleich ist möglicherweise nicht aktuell.\n";
             }
+          }
+          if (underCovered.length > 0) {
+            responseText += "ℹ️ " + underCovered.length + " Position(en) mit Stop, der nur einen TEIL abdeckt (Preis stimmt, Menge nicht): " + underCovered.join(", ") + "\n";
           }
           if (missingStops.length > 0) {
             responseText += "ℹ️ " + missingStops.length + " Position(en) ganz ohne Stop (weder beim Broker noch dokumentiert): " + missingStops.join(", ") + "\n";

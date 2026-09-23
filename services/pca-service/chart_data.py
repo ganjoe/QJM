@@ -64,7 +64,27 @@ def read_chart_data(symbol: str, timeframe: str = "1D", limit: int = DEFAULT_CAN
                 cols += ", " + ", ".join(f'"{c}"' for c in extra_cols)
                 columns.extend(extra_cols)
 
-        query = f"SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}"
+        # --- Lab-RS (Testlab, reversibel): separate <TF>_lab_rs.parquet, Praefix lab_ ---
+        lab_path = PARQUET_BASE / symbol / f"{timeframe}_lab_rs.parquet"
+        lab_cols = []
+        if has_features and lab_path.exists():
+            try:
+                lab_schema = db.execute(f"DESCRIBE SELECT * FROM read_parquet('{lab_path}') LIMIT 1").fetchall()
+                lab_cols = [r[0] for r in lab_schema if r[0] not in ("timestamp", "t", "ticker")]
+            except Exception as e:
+                logger.warning("lab_rs schema read failed for %s: %s", symbol, e)
+
+        if lab_cols:
+            lab_select = ", ".join(f'l."{c}"' for c in lab_cols)
+            query = (
+                f"SELECT b.*, {lab_select} FROM "
+                f"(SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}) b "
+                f"LEFT JOIN read_parquet('{lab_path}') l ON b.timestamp = l.timestamp "
+                f"ORDER BY b.timestamp DESC"
+            )
+            columns.extend(lab_cols)
+        else:
+            query = f"SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}"
         rows = db.execute(query).fetchall()
         db.close()
 

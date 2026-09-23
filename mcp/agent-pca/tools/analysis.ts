@@ -289,7 +289,8 @@ export function registerAnalysisTools(server: McpServer) {
         "- 'wcr': Week Close Range (WCR) in %: evaluates the position of the close within the week-to-date candle's range ((Close - WeekLow) / (WeekHigh - WeekLow) * 100). Used to identify leading groups and weekly accumulation/distribution; the aggregate count of high-ranking closes serves as a very short-term market breadth indicator. Supports 'direction' ('long' or 'short'), 'cutoff' in %, 'count' (top N). Needs 1 bar.\n" +
         "- 'madbo': MADBO — Moving Average Dollar Volume Breakout. The five close SMAs (10/20/50/100/200) form a fan narrower than the bar's true range (ATR(1)) while dollar volume (close x volume) exceeds 2x its 50-bar average. Score = dollar-volume multiple. Needs 200 bars.\n" +
         "- 'minervini_trend': Minervini Trend Template (score 0-6, matched at >= 5: 200 SMA trending up, price above the 150 & 200 SMA, 50 SMA above the 150 & 200 SMA, >= 25% above the 52-week low, within 25% of the 52-week high). Needs 252 bars.\n" +
-        "- 'sma_cross': 50/200 SMA golden cross active; score is the spread in percent. Needs 200 bars.\n\n" +
+        "- 'sma_cross': 50/200 SMA golden cross active; score is the spread in percent. Needs 200 bars.\n" +
+        "- 'phoenix': Phoenix — RS Rating Rebirth: the IBD Relative Strength rating (ibd_rs, 1-99) fell to or below 'rs_from' (default 30) at some point inside the last 'days' bars (default 20) and has since climbed to or above 'rs_to' (default 80). Flags relative-strength turnarounds from laggard to leadership. Params via scanner_params: { phoenix: { days, rs_from, rs_to } }. Score = RS rating on the matched bar. Needs 30 bars + the feature parquet.\n\n" +
         "WHEN TO USE: whenever asked to screen or scan a watchlist/ticker list for a pattern, or to find out WHEN a setup triggered inside a period.\n" +
         "WHEN NOT TO USE: for raw candle history use `get_timeseries`; for the live price use `get_quote`.",
       inputSchema: {
@@ -305,9 +306,11 @@ export function registerAnalysisTools(server: McpServer) {
         direction: z.enum(["long", "short"]).optional().default("long").describe("Direction for directional scanners like DCR/WCR: 'long' (closing near highs) or 'short' (closing near lows). Default: 'long'"),
         cutoff: z.number().optional().describe("Cutoff threshold in % for DCR/WCR (e.g. 90 for DCR >= 90% long, 10 for DCR <= 10% short)"),
         count: z.number().optional().describe("Maximum number of top matches to return, ranked by score among tickers that already matched (e.g. 10 or 20)"),
+        scanner_params: z.record(z.string(), z.record(z.string(), z.any())).optional().describe("Per-scanner parameter overrides, e.g. { phoenix: { days: 20, rs_from: 30, rs_to: 80 } } or { dcr: { cutoff: 85 } }."),
+        warmup_bars: z.number().optional().describe("Bars loaded before 'from' for indicator warm-up (default: the selected scanners' min_bars). Raise this when phoenix 'days' exceeds 30."),
       },
     },
-    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, max_tickers, direction, cutoff, count }: any) => {
+    async ({ scanners, tickers, watchlists, from, to, timeframe, hit_mode, limit_hits, max_tickers, direction, cutoff, count, scanner_params, warmup_bars }: any) => {
       try {
         const body: Record<string, any> = {
           scanners,
@@ -319,6 +322,8 @@ export function registerAnalysisTools(server: McpServer) {
         };
         if (cutoff !== undefined && cutoff !== null) body.cutoff = cutoff;
         if (count !== undefined && count !== null) body.count = count;
+        if (scanner_params && typeof scanner_params === "object") body.scanner_params = scanner_params;
+        if (warmup_bars !== undefined && warmup_bars !== null) body.warmup_bars = warmup_bars;
         if (Array.isArray(tickers) && tickers.length > 0) {
           body.tickers = tickers.map((t: string) => String(t).trim().toUpperCase()).filter(Boolean);
         }

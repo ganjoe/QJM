@@ -35,7 +35,7 @@ from universal_scanner import (
     FilterCondition,
     KNOWN_ABBREVIATIONS,
 )
-from scanners import DcrScanner, WcrScanner, parse_scanner_spec
+from scanners import DcrScanner, WcrScanner, PhoenixScanner, parse_scanner_spec
 
 
 def run_all_tests():
@@ -299,6 +299,47 @@ def run_all_tests():
             fail(f"Defekte Spec akzeptiert: {bad}")
         except ValueError:
             pass
+    ok()
+
+    # ── Dimension 11: Phoenix RS-Scanner ────────────────────────────────────
+    test("D11: Phoenix evaluate == evaluate_range, Schwellen, Custom-Params")
+    def _mk_rs(rs):
+        n = len(rs)
+        return pd.DataFrame({
+            "timestamp": [1789000000 + i * 86400 for i in range(n)],
+            "open": [1.0] * n, "high": [1.0] * n, "low": [1.0] * n,
+            "close": [1.0] * n, "volume": [1.0] * n, "ibd_rs": rs,
+        })
+
+    phx = PhoenixScanner()
+
+    up = _mk_rs([10, 20, 30, 50, 70, 85, 90])
+    if not phx.evaluate("TEST", up)["matched"]:
+        fail("Phoenix: Anstieg 10->90 innerhalb 20 Tagen sollte matchen")
+    if phx.evaluate("TEST", up)["score"] != 90.0:
+        fail("Phoenix: Score sollte das aktuelle RS-Rating sein")
+
+    late = _mk_rs([10, 20, 40, 50, 60, 70, 90])
+    if phx.evaluate_range("TEST", late, days=5)["matched"].any():
+        fail("Phoenix: zu alter Tiefpunkt (ausserhalb days=5) darf nicht matchen")
+    if not phx.evaluate_range("TEST", late, days=6)["matched"].iloc[-1]:
+        fail("Phoenix: Tiefpunkt innerhalb days=6 sollte matchen")
+
+    high = _mk_rs([90, 90, 90])
+    if phx.evaluate("TEST", high)["matched"]:
+        fail("Phoenix: reine Hochphase darf nicht matchen")
+
+    f = phx.evaluate_range("TEST", up)
+    if bool(f["matched"].iloc[-1]) != bool(phx.evaluate("TEST", up)["matched"]):
+        fail("Phoenix: evaluate/evaluate_range uneinig am letzten Bar")
+
+    custom = _mk_rs([10, 15, 25, 35, 45, 55])
+    if not phx.evaluate("TEST", custom, days=3, rs_from=40, rs_to=50)["matched"]:
+        fail("Phoenix: Custom-Parameter days=3 rs_from=40 rs_to=50 sollte matchen")
+
+    no_feat = up.drop(columns=["ibd_rs"])
+    if phx.evaluate("TEST", no_feat)["matched"]:
+        fail("Phoenix: fehlende ibd_rs-Spalte darf nicht matchen")
     ok()
 
     print("\n" + "=" * 70)

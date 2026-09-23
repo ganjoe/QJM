@@ -326,6 +326,34 @@ services:
           - chart-viewer-server
 
   # ============================================
+  # WIQ Dashboard — Lesefenster der Workitem-Engine (Client-Bootstrap + API)
+  # ============================================
+  wiq-dashboard:
+    build:
+      context: ../wiq_dashboard/server
+      dockerfile: Dockerfile
+    image: llm-gw-wiq-dashboard:latest
+    container_name: qjm-wiq-dashboard
+    restart: unless-stopped
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - WIQ_CLIENT_DIR=/app/client
+      - WIQ_SCHEDULES_PY=/app/schedules_source.py
+      - PORT=8799
+    volumes:
+      - ../wiq_dashboard/client:/app/client:ro
+      - ../services/secretary/secretary/schedules.py:/app/schedules_source.py:ro
+    ports:
+      - "8799:8799"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - wiq-dashboard
+
+  # ============================================
   # CDA MCP Server — Chart Download & Data Ingestion Agent
   # ============================================
   mcp-cda:

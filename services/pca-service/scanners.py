@@ -688,6 +688,110 @@ class WcrScanner(BaseScanner):
         })
 
 
+class PhoenixScanner(BaseScanner):
+    """Phoenix -- RS Rating Rebirth.
+
+    Finds stocks whose IBD Relative Strength rating (ibd_rs, 1-99) was at or below
+    rs_from at some bar inside the last days trading days and has since climbed to
+    or above rs_to. Captures relative-strength turnarounds: a formerly weak stock
+    that ignites into leadership inside a short window.
+
+    Latest mode: matched when min(rs[-days:]) <= rs_from AND rs[-1] >= rs_to.
+    Range mode : matched on every bar where the trailing days-bar RS minimum is
+                 <= rs_from and the bar RS is >= rs_to; with the default
+                 first_of_episode hit mode the hit date is the trigger day -- the
+                 first bar on which the RS reached rs_to after the weak reading.
+    """
+
+    name = "phoenix"
+    description = (
+        "Phoenix -- RS Rating Rebirth: the IBD Relative Strength rating (ibd_rs, 1-99) fell to or "
+        "below rs_from (default 30) at some point inside the last days bars (default 20) and has "
+        "since climbed to or above rs_to (default 80). Detects stocks whose relative strength turns "
+        "from laggard into leadership inside a short window. Params: days, rs_from, rs_to. "
+        "Score = RS rating on the matched bar."
+    )
+    min_bars = 30
+    requires_features = True
+    support_range = True
+
+    def _params(self, days: Optional[int] = None, rs_from: Optional[float] = None,
+                rs_to: Optional[float] = None, **kwargs) -> Tuple[int, float, float]:
+        d = 20 if days is None else int(days)
+        d = max(1, d)
+        rf = 30.0 if rs_from is None else float(rs_from)
+        rt = 80.0 if rs_to is None else float(rs_to)
+        return d, rf, rt
+
+    @staticmethod
+    def _rs_series(df: pd.DataFrame) -> Optional[pd.Series]:
+        if "ibd_rs" not in df.columns:
+            return None
+        return pd.to_numeric(df["ibd_rs"], errors="coerce")
+
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                 days: Optional[int] = None, rs_from: Optional[float] = None,
+                 rs_to: Optional[float] = None, **kwargs) -> Dict[str, Any]:
+        d, rf, rt = self._params(days, rs_from, rs_to)
+        rs = self._rs_series(df)
+        if rs is None:
+            return {"matched": False, "score": None,
+                    "details": {"error": "ibd_rs feature unavailable (features parquet missing)"}}
+
+        window = rs.dropna().iloc[-d:]
+        if window.empty:
+            return {"matched": False, "score": None, "details": {"error": "No valid ibd_rs values"}}
+
+        rs_now = float(window.iloc[-1])
+        rs_min = float(window.min())
+        min_label = window.index[int(window.argmin())]
+        min_pos = df.index.get_loc(min_label) if min_label in df.index else None
+        bars_ago = (len(df) - 1 - min_pos) if isinstance(min_pos, int) else None
+        min_ts = None
+        if "timestamp" in df.columns and min_label in df.index:
+            try:
+                min_ts = int(df.loc[min_label, "timestamp"])
+            except (TypeError, ValueError):
+                min_ts = None
+
+        matched = (rs_now >= rt) and (rs_min <= rf)
+        return {
+            "matched": bool(matched),
+            "score": round(rs_now, 2),
+            "details": {
+                "days": d,
+                "rs_from": rf,
+                "rs_to": rt,
+                "rs_now": round(rs_now, 2),
+                "rs_min": round(rs_min, 2),
+                "rs_min_date": ts_to_date(min_ts) if min_ts is not None else None,
+                "rs_min_bars_ago": bars_ago,
+                "rs_rise": round(rs_now - rs_min, 2),
+                "lookback_bars": int(len(window)),
+            },
+        }
+
+    def evaluate_range(self, ticker: str, df: pd.DataFrame,
+                       feat_df: Optional[pd.DataFrame] = None,
+                       days: Optional[int] = None, rs_from: Optional[float] = None,
+                       rs_to: Optional[float] = None, **kwargs) -> pd.DataFrame:
+        d, rf, rt = self._params(days, rs_from, rs_to)
+        rs = self._rs_series(df)
+        if rs is None:
+            empty = pd.Series(False, index=df.index)
+            return pd.DataFrame({"matched": empty.astype(bool),
+                                 "score": pd.Series(np.nan, index=df.index, dtype="float64")})
+
+        # Trailing RS minimum. min_periods=1 keeps partial windows usable: any low we can
+        # see is by construction inside the requested days horizon, so a rise from it is
+        # still a valid within-days transition.
+        roll_min = rs.rolling(d, min_periods=1).min()
+        matched = ((rs >= rt) & (roll_min <= rf)).fillna(False).astype(bool)
+
+        return pd.DataFrame({"matched": matched,
+                             "score": rs.round(2).astype("float64")})
+
+
 # ─── Scanner Registry ─────────────────────────────────────────────────────────
 
 class ScannerRegistry:
@@ -699,6 +803,7 @@ class ScannerRegistry:
         self.register(MadboScanner())
         self.register(DcrScanner())
         self.register(WcrScanner())
+        self.register(PhoenixScanner())
 
     def register(self, scanner: BaseScanner):
         self._scanners[scanner.name.lower()] = scanner
@@ -937,7 +1042,9 @@ def _scan_ticker(ticker: str, scanners: Sequence[BaseScanner], timeframe: str,
         return result
 
     result["as_of"] = int(ts[-1])
-    if positions[0] + 1 < min_bars:
+    # Only meaningful in range mode: in latest mode positions[0] is the first bar of the
+    # loaded history, not the first bar inside a requested window.
+    if (from_ts is not None or to_ts is not None) and positions[0] + 1 < min_bars:
         result["warmup_short"] = True
 
     for sc in scanners:

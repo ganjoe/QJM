@@ -15,18 +15,49 @@ jedes Workitem eine DSH-Session.
 | `secretary/loop.py` | Der Tick |
 | `secretary/cli.py` | `submit`, `run`, `status` |
 
-## Der Tick macht vier Dinge
+## Der Tick macht sechs Dinge
 
 1. fertige Läufe einsammeln — und **Protokollverletzungen** behandeln: endet ein
    Lauf, ohne dass der Agent `workitem_finish` gerufen hat, wird das Item
    erneut versucht (bis `max_attempts`) und sonst `failed`.
 2. abgelaufene Leases erholen (`workitem_recover_leases()`)
-3. unerreichbare Tasks überspringen, Reviews ausgenommen (`workitem_skip_cascade()`)
-4. bereite Items bis zur Rollen-Kapazität dispatchen
+3. **stehende Aufgaben scharfstellen** — den ersten Termin berechnen
+   (`schedules.py`)
+4. **fällige stehende Aufgaben materialisieren** — ein Vorkommen, ein Lauf
+5. unerreichbare Tasks überspringen, Reviews ausgenommen (`workitem_skip_cascade()`)
+6. bereite Items bis zur Rollen-Kapazität dispatchen
 
 **Es gibt bewusst keinen Unblock-Code.** Bereitschaft ist die View
 `ready_workitems`, und weil die Sekretärin sowieso pollt, ist Ableiten
 einfacher und selbstheilend.
+
+## Stehende Aufgaben (Klasse B)
+
+Ein `change_item` mit `is_template = true`, `state = 'scheduled'` und einer
+Zeitregel. Es hat **ein** Workitem vom Typ `template` — die Vorlage, die Rolle,
+Auftrag und Budget trägt. Sie wird nie selbst ausgeführt (`ready_workitems`
+schließt sie aus).
+
+Zum Termin entsteht eine **Instanz**: ein eigenes `change_item` mit
+`source_change_item_id` auf die Definition, darin eine **Kopie** der Vorlage als
+Typ `task`. Der `step_key` überlebt die Kopie — deshalb sind die Vorkommen
+einer stehenden Aufgabe vergleichbar ("dieselbe Prüfung in Lauf 1 gegen Lauf 12").
+
+| Wer | Was |
+|---|---|
+| `schedules.py` | die **einzige** Stelle, die Termine rechnet (Zone, Sommerzeit, feste Rate) |
+| `store.materialize()` | Termin fortschreiben, Instanz anlegen, Vorlage kopieren — in **einer** Transaktion |
+| `loop.py` | Schritt 3 und 4 des Ticks |
+| `cli.py schedule …` | anlegen, auflisten, abschalten, sofort ausführen |
+| `mcp/agent-wiq/tools/schedules.ts` | dieselben vier Dinge aus einem Chat heraus |
+
+**Zeitsemantik** (bewusst, siehe Kopf von `schedules.py`): `next_occurrence()`
+liefert immer einen Termin **strikt in der Zukunft**. Ein verpasster Termin feuert
+deshalb genau einmal (verspätet), danach liegt der nächste wieder in der Zukunft —
+kein Nachhol-Sturm, wenn der Server länger aus war. Eine einmalige Aufgabe mit
+einer Uhrzeit, die es wegen Zeitumstellung nicht gibt, wird **abgelehnt** statt
+geraten; bei wiederkehrenden Regeln wird dieselbe Lücke aufgelöst, weil dort ein
+Ausfall ein ganzes Vorkommen kosten würde.
 
 ## Warum ein Prozess pro Rolle
 
@@ -74,6 +105,8 @@ Laufzeit aus dem `openbrain-db`-Container und exportiert es nur.
   (Muster: `~/.config/systemd/user/dsh-native.service`).
 - **Keine Kostenbremse.** Ein Lauf kann beliebig viele Items planen; es gibt
   kein Budget pro Lauf.
-- **Kein Dashboard.** `status` ist die Kommandozeilen-Vorstufe davon.
+- **Dashboard ist da, aber getrennt.** `wiq_dashboard/` (Qt6) zeigt Läufe,
+  stehende Aufgaben und Ergebnisse. Es liest die Datenbank und schreibt nur zwei
+  Dinge: einen neuen Auftrag und die Metadaten einer stehenden Aufgabe.
 - **Ein Schreiber.** Zwei Sekretärinnen parallel sind nicht vorgesehen (die
   Lease-Claims sind atomar, aber die Abschlusslogik ist es nicht).

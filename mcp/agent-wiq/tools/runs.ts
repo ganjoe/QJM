@@ -43,9 +43,13 @@ export function registerRunTools(server: McpServer) {
           .describe("Deckel für das PLANEN des Leads in Modell-Runden. Ohne Angabe schätzt er selbst."),
         tokens: z.number().int().min(1000).optional()
           .describe("Dasselbe in Tokens."),
+        max_rounds: z.number().int().min(1).max(10).optional()
+          .describe("Wie oft der Lead nachplanen darf (1-10, Default 2). Ist das Review am " +
+                    "letzten erlaubten Durchgang unbefriedigt, endet der Lauf als failed. " +
+                    "NICHT zu verwechseln mit 'rounds' (Budget des Planungs-Items)."),
       },
     },
-    async ({ prompt, title, rounds, tokens }) => {
+    async ({ prompt, title, rounds, tokens, max_rounds }) => {
       const clean = prompt.trim();
       if (clean.length === 0) return fail("Der Prompt ist leer.");
       const headline = (title ?? clean.split("\n")[0]).slice(0, 120);
@@ -55,7 +59,7 @@ export function registerRunTools(server: McpServer) {
 
       const created = await supabase
         .from("change_items")
-        .insert({ title: headline, entry_prompt: clean })
+        .insert({ title: headline, entry_prompt: clean, max_rounds: max_rounds ?? 2 })
         .select("id")
         .single();
       if (created.error || !created.data) {
@@ -88,6 +92,7 @@ export function registerRunTools(server: McpServer) {
         "change_item_id: " + changeItemId,
         "workitem_id:    " + item.data.id,
         "budget:         " + (Object.keys(budget).length ? JSON.stringify(budget) : "(schaetzt der Lead)"),
+        "max_rounds:     " + (max_rounds ?? 2),
         "",
         "Die Sekretaerin nimmt den Lauf beim naechsten Tick auf.",
         "Fortschritt: run_status mit change_item_id=" + changeItemId,

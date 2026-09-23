@@ -1,0 +1,350 @@
+{
+  "roc_63_126_252_w111": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w112": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      1,
+      1,
+      2
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w211": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      2,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w122": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      1,
+      2,
+      2
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w212": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      2,
+      1,
+      2
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w113": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      1,
+      1,
+      3
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w311": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      3,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_252_w123": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      1,
+      2,
+      3
+    ],
+    "combine": "v1"
+  },
+  "roc_50_100_200_w211": {
+    "metric": "roc",
+    "windows": [
+      50,
+      100,
+      200
+    ],
+    "weights": [
+      2,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "roc_40_80_160_w211": {
+    "metric": "roc",
+    "windows": [
+      40,
+      80,
+      160
+    ],
+    "weights": [
+      2,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "ibd_roc_63_126_189_252_w2111": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      189,
+      252
+    ],
+    "weights": [
+      2,
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "roc_63_126_189_252_w1111": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      189,
+      252
+    ],
+    "weights": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_10_20_50": {
+    "metric": "roc",
+    "windows": [
+      10,
+      20,
+      50
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_10_20_50_w123": {
+    "metric": "roc",
+    "windows": [
+      10,
+      20,
+      50
+    ],
+    "weights": [
+      1,
+      2,
+      3
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_5_10_20": {
+    "metric": "roc",
+    "windows": [
+      5,
+      10,
+      20
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_20_50_100": {
+    "metric": "roc",
+    "windows": [
+      20,
+      50,
+      100
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_20_40_80": {
+    "metric": "roc",
+    "windows": [
+      20,
+      40,
+      80
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_30_60_120": {
+    "metric": "roc",
+    "windows": [
+      30,
+      60,
+      120
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_40_80_160": {
+    "metric": "roc",
+    "windows": [
+      40,
+      80,
+      160
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_50_100_200": {
+    "metric": "roc",
+    "windows": [
+      50,
+      100,
+      200
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1"
+  },
+  "lab_rs_n": {
+    "metric": "roc",
+    "windows": [
+      63,
+      126,
+      252
+    ],
+    "weights": [
+      2,
+      1,
+      1
+    ],
+    "combine": "v1",
+    "rank": "adr_neutral",
+    "buckets": 3
+  },
+  "lab_rs_n_20_40_80": {
+    "metric": "roc",
+    "windows": [
+      20,
+      40,
+      80
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1",
+    "rank": "adr_neutral",
+    "buckets": 3
+  },
+  "lab_rs_n_30_60_120": {
+    "metric": "roc",
+    "windows": [
+      30,
+      60,
+      120
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1",
+    "rank": "adr_neutral",
+    "buckets": 3
+  },
+  "lab_rs_n_50_100_200": {
+    "metric": "roc",
+    "windows": [
+      50,
+      100,
+      200
+    ],
+    "weights": [
+      1,
+      1,
+      1
+    ],
+    "combine": "v1",
+    "rank": "adr_neutral",
+    "buckets": 3
+  }
+}
