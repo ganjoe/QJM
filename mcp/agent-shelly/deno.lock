@@ -1,10 +1,19 @@
 {
   "version": "5",
   "specifiers": {
+    "npm:@hono/mcp@0.1.1": "0.1.1_@modelcontextprotocol+sdk@1.24.3__zod@4.1.13_hono@4.9.2",
     "npm:@modelcontextprotocol/sdk@1.24.3": "1.24.3_zod@4.1.13",
+    "npm:hono@4.9.2": "4.9.2",
     "npm:zod@4.1.13": "4.1.13"
   },
   "npm": {
+    "@hono/mcp@0.1.1_@modelcontextprotocol+sdk@1.24.3__zod@4.1.13_hono@4.9.2": {
+      "integrity": "sha512-2iQ4xBKfQdBBJP3V1/XCVyxQZeWWnxJG+5ytu9/Xuwwje3D70fm9ws0VV536rZ3CKWrnZZ/X+xeJ7FwR3ErVbw==",
+      "dependencies": [
+        "@modelcontextprotocol/sdk",
+        "hono"
+      ]
+    },
     "@modelcontextprotocol/sdk@1.24.3_zod@4.1.13": {
       "integrity": "sha512-YgSHW29fuzKKAHTGe9zjNoo+yF8KaQPzDC2W9Pv41E7/57IfY+AMGJ/aDFlgTLcVVELoggKE4syABCE75u3NCw==",
       "dependencies": [
@@ -258,6 +267,9 @@
       "dependencies": [
         "function-bind"
       ]
+    },
+    "hono@4.9.2": {
+      "integrity": "sha512-UG2jXGS/gkLH42l/1uROnwXpkjvvxkl3kpopL3LBo27NuaDPI6xHNfuUSilIHcrBkPfl4y0z6y2ByI455TjNRw=="
     },
     "http-errors@2.0.1": {
       "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",

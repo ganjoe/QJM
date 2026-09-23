@@ -12,6 +12,7 @@ from config import (
 )
 from shelly_client import shelly_client
 from storage import storage
+from supabase_sync import supabase_sync
 
 logger = logging.getLogger("poller")
 
@@ -23,6 +24,7 @@ class DevicePoller:
         # Sammelpuffer für den periodischen Parquet-Flush
         self.flush_buffers: Dict[str, List[Dict[str, Any]]] = {}
         self.latest_readings: Dict[str, Dict[str, Any]] = {}
+        self._last_output: Dict[str, bool] = {}
         self._running = False
         self._last_flush = time.time()
         self._last_daily_rollup = date.today() - timedelta(days=1)
@@ -83,6 +85,27 @@ class DevicePoller:
             return list(self.live_buffers[handle])
         return []
 
+    async def sync_daily_stats(self, handle: str, day_str: str) -> bool:
+        """Aggregiert einen Tag und schreibt ihn nach Supabase."""
+        row = storage.compute_daily_stats(handle, day_str)
+        if not row:
+            logger.warning(f"Keine Tagesdaten für {handle} am {day_str}")
+            return False
+        return await supabase_sync.upsert_daily(row)
+
+    async def backfill_daily_stats(self, days: int = 7):
+        """Synchronisiert die letzten N abgeschlossenen Tage (Sicherheitsnetz/Backfill)."""
+        today = date.today()
+        for offset in range(1, days + 1):
+            day_str = (today - timedelta(days=offset)).isoformat()
+            for handle, dev in self.devices.items():
+                if not dev.get("enabled", True):
+                    continue
+                try:
+                    await self.sync_daily_stats(handle, day_str)
+                except Exception as e:
+                    logger.error(f"Tages-Backfill für {handle} {day_str} fehlgeschlagen: {e}")
+
     def flush_all(self):
         """Schreibt alle im RAM gepufferten Daten nach Parquet."""
         for handle, batch in self.flush_buffers.items():
@@ -136,6 +159,18 @@ class DevicePoller:
                         "online": False
                     }
 
+                # Failsafe wieder scharf stellen, sobald das Relais an ist
+                # (Neustart oder Übergang AUS->AN, z. B. nach physischem Einschalten).
+                prev_out = self._last_output.get(handle)
+                if reading["online"] and reading["output"] and prev_out is not True:
+                    try:
+                        delay = int(dev.get("auto_on_delay", AUTO_ON_FALLBACK_SEC))
+                        await shelly_client.configure_auto_on(ip, delay, enabled=True)
+                        logger.info(f"Re-armed hardware failsafe for {handle} (auto_on_delay={delay}s)")
+                    except Exception as e:
+                        logger.warning(f"Could not re-arm failsafe for {handle}: {e}")
+                self._last_output[handle] = reading["output"]
+
                 self.latest_readings[handle] = reading
                 self.live_buffers[handle].append(reading)
                 # Für Parquet nur loggen, wenn online oder explizit bekannt
@@ -144,17 +179,28 @@ class DevicePoller:
 
             # 2. Prüfen, ob Puffer nach Parquet geflusht werden soll
             if time.time() - self._last_flush >= BUFFER_FLUSH_INTERVAL_SEC:
-                self.flush_all()
+                try:
+                    self.flush_all()
+                except Exception as e:
+                    # Batch bleibt erhalten und wird beim nächsten Takt erneut versucht.
+                    logger.error(f"Parquet flush failed (will retry): {e}")
 
-            # 3. Nächtlicher Rollup & Cleanup (einmal täglich kurz nach Mitternacht)
+            # 3. Nächtlicher Rollup & Cleanup. Läuft einmal pro Tag; die Rollups sind idempotent,
+            #    daher ist auch ein später/erneuter Lauf (z. B. nach Neustart) unkritisch.
             current_day = now_dt.date()
-            if current_day > self._last_daily_rollup and now_dt.hour >= 0 and now_dt.minute >= 5:
-                yesterday_str = (current_day - timedelta(days=1)).isoformat()
-                logger.info(f"Triggering daily rollups for {yesterday_str}")
-                for handle in self.devices.keys():
-                    storage.run_1m_rollup(handle, yesterday_str)
-                    storage.cleanup_old_data(handle)
-                self._last_daily_rollup = current_day
+            if current_day > self._last_daily_rollup:
+                # Erst ab 00:05, damit die letzte Minute des Vortags vollständig ist.
+                if not (now_dt.hour == 0 and now_dt.minute < 5):
+                    yesterday_str = (current_day - timedelta(days=1)).isoformat()
+                    logger.info(f"Triggering daily rollups for {yesterday_str}")
+                    for handle in self.devices.keys():
+                        try:
+                            storage.run_1m_rollup(handle, yesterday_str)
+                            await self.sync_daily_stats(handle, yesterday_str)
+                            storage.cleanup_old_data(handle)
+                        except Exception as e:
+                            logger.error(f"Daily maintenance failed for {handle}: {e}")
+                    self._last_daily_rollup = current_day
 
             # Schlafzeit berechnen für exakten 1s-Takt
             elapsed = time.time() - start_ts

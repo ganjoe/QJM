@@ -55,6 +55,82 @@ _last_snapshot_at = 0.0
 # Seit wann ib.portfolio() durchgehend leer ist (None = nicht leer).
 _empty_positions_since = None
 
+# Client-ID der Sync-Verbindung. Sie bestimmt, welche Orders ib_insync von
+# sich aus synchron haelt: eigene Orders ja, fremde (TWS/andere Clients) nur
+# ueber reqAllOpenOrders().
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "10002"))
+
+# Monotoner Zeitstempel des letzten Order-Sicht-Refresh (reqAllOpenOrders).
+_last_order_refresh_at = 0.0
+
+# permIds, die die LETZTE reqAllOpenOrders-Antwort enthalten hat. Das ist die
+# einzige belastbare Aussage darueber, welche Orders beim Broker WIRKLICH offen
+# sind: ib_insync entfernt eine Order nicht aus dem Cache, wenn sie bei einem
+# fremden Client storniert wird — ohne diesen Abgleich blieb eine laengst
+# stornierte Fremd-Order dauerhaft als "offen" in pta_ibkr_open_orders stehen.
+# None = noch keine Antwort erhalten (dann wird nicht gefiltert).
+_last_all_open_perm_ids = None
+
+# Zuordnung (mode, orderId) -> pta_execution_log.id der Auftragszeile, die diese
+# Order ausgeloest hat. Damit kann der Broker-Status als Read-back an der
+# RICHTIGEN Zeile verankert werden, statt (wie zuvor) pro Statuswechsel eine
+# neue Zeile mit der Kunst-Trade-ID "ORDER-<id>" zu erzeugen.
+order_row_map = {}
+
+
+async def refresh_open_orders() -> int:
+    """Holt ALLE offenen Orders des Kontos in den ib_insync-Cache.
+
+    Warum das noetig ist: ib.connect() ruft intern nur reqOpenOrders() auf.
+    Das liefert ausschliesslich Orders DIESER Client-ID (10002). Manuell in TWS
+    platzierte Orders und Orders anderer API-Clients waren damit unsichtbar —
+    obwohl sie beim Broker arbeiteten. Genau daran ist der Order-Abgleich
+    gescheitert (pta_ibkr_open_orders blieb leer, list_active_positions zeigte
+    keine arbeitenden Orders, und eine Stop-Order auf einer Position ohne
+    lokalen Fill war fuer das System nicht existent).
+
+    reqAllOpenOrders() ist ein Snapshot ueber alle Clients und wird von IB
+    NICHT dauerhaft synchron gehalten — deshalb wird es zyklisch wiederholt
+    (siehe sync_loop) und nicht nur einmal beim Verbindungsaufbau.
+
+    Rueckgabe: Anzahl der danach sichtbaren offenen Orders (-1 bei Fehler).
+    """
+    global _last_order_refresh_at, _last_all_open_perm_ids
+    try:
+        # Rueckgabe = die Orders aus DIESER Antwort. Sie ist die autoritative
+        # Momentaufnahme; der ib_insync-Cache kann zusaetzlich veraltete
+        # Eintraege enthalten (siehe _last_all_open_perm_ids).
+        answer = await asyncio.wait_for(ib.reqAllOpenOrdersAsync(), timeout=10)
+        _last_all_open_perm_ids = {
+            t.order.permId for t in (answer or []) if t.order.permId
+        }
+        _last_order_refresh_at = time.monotonic()
+        trades = ib.openTrades()
+        logger.info(f"reqAllOpenOrders(): {len(trades)} offene Order(s) im Cache, "
+                    f"{len(_last_all_open_perm_ids)} vom Broker bestaetigt.")
+        return len(trades)
+    except asyncio.TimeoutError:
+        logger.warning("reqAllOpenOrders(): openOrderEnd blieb aus (Timeout 10s) — "
+                       "Order-Sicht evtl. unvollstaendig.")
+        return -1
+    except Exception as e:
+        logger.error(f"reqAllOpenOrders() fehlgeschlagen: {e}")
+        return -1
+
+
+def apply_stop_tif(order: 'Order', notes: str) -> 'Order':
+    """Schutz-Stops als GTC senden.
+
+    Bis hierher ging jede Order mit dem Gateway-Preset TIF=DAY raus (IB meldete
+    dazu "Error 10349, Order TIF was set to DAY based on order preset"). Ein
+    Stop, der am Sessionende verfaellt, schuetzt die Position nicht mehr — der
+    Ledger zeigte den Stop-Wert trotzdem unveraendert weiter an. Mit dem Marker
+    DAY_TIF in den Order-Notes laesst sich das pro Order abschalten.
+    """
+    if "DAY_TIF" not in (notes or "").upper():
+        order.tif = "GTC"
+    return order
+
 # --- Database & Config Sync ---
 def load_gateway_config():
     try:
@@ -84,10 +160,20 @@ def update_gateway_status(connected: bool):
         logger.error(f"Exception during gateway status update: {e}")
 
 
+# IB-Codes, die KEINE Ablehnung sind. 10349 = "Order TIF was set to DAY based
+# on order preset": IB setzt beim Absenden kurz den Status auf Cancelled und
+# meldet den Hinweis, bevor die Order mit dem korrigierten TIF weiterlaeuft.
+# Ohne diese Liste sah der Read-back fuer ~130 ms wie eine Ablehnung aus.
+#  202 = "Order Canceled - reason:". IB meldet damit jede Stornierung, auch die
+#        vom System selbst gewollte (UPDATE ersetzt den alten Stop, EXIT raeumt
+#        die Schutzorders ab). Eine Stornierung ist keine Ablehnung.
+BENIGN_ORDER_ERRORS = {10349, 202}
+
 # --- Event Queues for Callbacks ---
 fill_events = []
 status_events = []
 commission_events = []
+order_errors = []
 
 # --- Event Handlers for Callbacks ---
 
@@ -124,13 +210,64 @@ def on_exec_details(trade, fill):
 
 def on_order_status(trade):
     logger.info(f"Order Status Update: OrderId {trade.order.orderId} | Status: {trade.orderStatus.status}")
+    # Letzten echten IB-Fehler aus der Trade-Log-Kette ziehen. Ohne das war eine
+    # vom Broker abgelehnte Order (z. B. Error 321 "The size value cannot be
+    # zero") nach aussen nicht von einer akzeptierten zu unterscheiden:
+    # place_trade meldete "Event logged successfully", waehrend IB die Order
+    # Sekunden spaeter verwarf. Der Fehler ist nur bei einem Endzustand
+    # (Cancelled/ApiCancelled) relevant — ein transienter 10349-Hinweis
+    # ("TIF auf DAY gesetzt") wird vom nachfolgenden PreSubmitted ueberschrieben.
+    error_code = None
+    error_msg = None
+    try:
+        for entry in (trade.log or []):
+            code = getattr(entry, "errorCode", 0) or 0
+            if code and int(code) not in BENIGN_ORDER_ERRORS:
+                error_code = int(code)
+                error_msg = getattr(entry, "message", "") or ""
+    except Exception:
+        pass
+    failed = trade.orderStatus.status in ("Cancelled", "ApiCancelled")
     status_events.append({
         "order_id": trade.order.orderId,
+        "perm_id": trade.order.permId,
         "status": trade.orderStatus.status,
-        "trade_id": f"ORDER-{trade.order.orderId}",
+        "filled": float(trade.orderStatus.filled or 0),
+        "remaining": float(trade.orderStatus.remaining or 0),
+        # orderRef ist der echte trade_id, wenn die Order aus diesem System kam.
+        # Fremde Orders (TWS/anderer Client) haben keinen und bekommen weiterhin
+        # eine Kunst-ID, damit sie ueberhaupt auffindbar bleiben.
+        "trade_id": trade.order.orderRef or f"ORDER-{trade.order.orderId}",
         "ticker": trade.contract.symbol or "UNKNOWN",
         "why_held": trade.orderStatus.whyHeld or 'N/A',
+        "error_code": error_code if failed else None,
+        "error_msg": (error_msg[:500] if error_msg else None) if failed else None,
         "mode": active_trading_mode
+    })
+
+def on_error(reqId, errorCode, errorString, contract):
+    """Sammelt Order-bezogene Broker-Meldungen.
+
+    Ohne diesen Pfad blieb eine Order, die IB zwar beantwortet, aber nicht in
+    einen Endzustand bringt, fuer place_trade unsichtbar. Beobachtet: ein Stop
+    mit ungueltigem Preis -> IB meldet
+      Warning 110, reqId 48: The price does not conform to the minimum price
+      variation for this contract.
+    und laesst die Order auf "PendingSubmit" stehen. Es gibt dann KEINEN
+    orderStatus-Wechsel, also auch keinen Read-back — das Tool konnte nur
+    "verifiziert: UNBEKANNT" melden.
+    """
+    # Benign-Codes (z. B. 10349 "TIF auf DAY gesetzt") sind keine Fehler.
+    if errorCode in BENIGN_ORDER_ERRORS:
+        return
+    if not isinstance(reqId, int) or reqId <= 0:
+        return
+    logger.info(f"Broker-Meldung zu Order {reqId}: {errorCode} {errorString}")
+    order_errors.append({
+        "order_id": reqId,
+        "error_code": int(errorCode),
+        "error_msg": str(errorString)[:500],
+        "mode": active_trading_mode,
     })
 
 def on_commission_report(trade, fill, report):
@@ -147,6 +284,7 @@ ib.disconnectedEvent += on_disconnected
 ib.execDetailsEvent += on_exec_details
 ib.orderStatusEvent += on_order_status
 ib.commissionReportEvent += on_commission_report
+ib.errorEvent += on_error
 
 
 # --- Helper Methods ---
@@ -198,7 +336,7 @@ def parse_contract(ticker: str, currency: str, notes: str) -> Contract:
 
 
 async def process_queued_events():
-    global fill_events, status_events, commission_events
+    global fill_events, status_events, commission_events, order_errors
     
     if fill_events:
         fills = fill_events[:]
@@ -230,13 +368,41 @@ async def process_queued_events():
         status_events = []
         for s in statuses:
             try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                # Order-Tabelle mitziehen (mode-scoped: dieselbe order_id kann in
+                # live UND paper existieren).
                 await asyncio.to_thread(
-                    lambda s=s: supabase.table("pta_ibkr_open_orders").update({
+                    lambda s=s, now_iso=now_iso: supabase.table("pta_ibkr_open_orders").update({
                         "status": s["status"],
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("order_id", s["order_id"]).execute()
+                        "filled": s.get("filled"),
+                        "remaining": s.get("remaining"),
+                        "updated_at": now_iso
+                    }).eq("order_id", s["order_id"]).eq("mode", s["mode"]).execute()
                 )
-                if s["status"] in ["Inactive", "Cancelled"]:
+
+                row_id = order_row_map.get((s["mode"], s["order_id"]))
+                if row_id:
+                    # Eigene Order: Broker-Status als Read-back an der
+                    # Auftragszeile verankern. place_trade wartet genau darauf
+                    # und kann damit "abgeschickt" von "vom Broker abgelehnt"
+                    # unterscheiden.
+                    await asyncio.to_thread(
+                        lambda row_id=row_id, s=s, now_iso=now_iso:
+                        supabase.table("pta_execution_log").update({
+                            "broker_status": s["status"],
+                            "broker_error_code": s.get("error_code"),
+                            "broker_error_msg": s.get("error_msg"),
+                            "broker_verified_at": now_iso
+                        }).eq("id", row_id).execute()
+                    )
+                    logger.info(
+                        f"Read-back Auftragszeile {row_id}: {s['status']}"
+                        + (f" | Fehler {s['error_code']}: {s['error_msg']}" if s.get("error_code") else "")
+                    )
+                elif s["status"] in ["Inactive", "Cancelled"]:
+                    # Fremde Order (TWS oder anderer API-Client): es gibt keine
+                    # eigene Auftragszeile, also weiterhin ein eigenes Event.
                     # p_take_profit + p_mode pin this call to exactly one overload: the
                     # one carrying p_take_profit + p_mode. With common args alone
                     # PostgREST cannot choose between the three pta_log_event overloads
@@ -255,6 +421,26 @@ async def process_queued_events():
                     )
             except Exception as e:
                 logger.error(f"Error processing status event: {e}")
+
+    if order_errors:
+        errs = order_errors[:]
+        order_errors = []
+        for e in errs:
+            try:
+                row_id = order_row_map.get((e["mode"], e["order_id"]))
+                if not row_id:
+                    # Zu einer fremden Order gibt es keine Auftragszeile.
+                    continue
+                await asyncio.to_thread(
+                    lambda row_id=row_id, e=e: supabase.table("pta_execution_log").update({
+                        "broker_error_code": e["error_code"],
+                        "broker_error_msg": e["error_msg"],
+                        "broker_verified_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("id", row_id).execute()
+                )
+                logger.info(f"Broker-Meldung an Auftragszeile {row_id} verankert ({e['error_code']}).")
+            except Exception as e2:
+                logger.error(f"Error processing order error event: {e2}")
 
     if commission_events:
         comms = commission_events[:]
@@ -402,8 +588,25 @@ async def write_portfolio_snapshot(reason: str) -> str:
 
         inserts = []
         if positions:
-            active_pos_data = await asyncio.to_thread(lambda: supabase.table("pta_active_positions").select("ticker, current_stop_loss").execute())
-            stop_losses = {row["ticker"]: row["current_stop_loss"] for row in active_pos_data.data if row.get("current_stop_loss") is not None} if active_pos_data.data else {}
+            # Mode-scoped lesen. Zuvor fehlte der Filter komplett: die Stop-Werte
+            # ALLER Konten wurden ueber den Ticker zugeordnet. Ein Paper-Stop
+            # konnte damit den Live-Heat/Core-Risk verfaelschen und umgekehrt.
+            # Bei mehreren Records je Ticker (Teilfills) gilt der konservativste
+            # (hoechste) dokumentierte Stop, nicht eine zufaellige Zeile.
+            active_pos_data = await asyncio.to_thread(
+                lambda: supabase.table("pta_active_positions")
+                .select("ticker, current_stop_loss")
+                .eq("mode", active_trading_mode)
+                .execute()
+            )
+            stop_losses = {}
+            for row in (active_pos_data.data or []):
+                if row.get("current_stop_loss") is None:
+                    continue
+                ticker_key = row["ticker"]
+                prev = stop_losses.get(ticker_key)
+                stop_losses[ticker_key] = float(row["current_stop_loss"]) if prev is None \
+                    else max(prev, float(row["current_stop_loss"]))
 
             for p in positions:
                 acc = p.account
@@ -445,12 +648,35 @@ async def write_portfolio_snapshot(reason: str) -> str:
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
             
-        trades = ib.openTrades()
+        # Order-Liste bestimmen.
+        #  * Eigene Orders (IB_CLIENT_ID) haelt die API selbst synchron -> immer uebernehmen.
+        #  * Fremde Orders nur, wenn sie in der letzten reqAllOpenOrders-Antwort
+        #    standen. Sonst bliebe eine bei einem anderen Client stornierte Order
+        #    fuer immer als "arbeitend" sichtbar — der Abgleich wuerde eine Order
+        #    melden, die es beim Broker nicht mehr gibt.
+        all_trades = ib.openTrades()
+        if _last_all_open_perm_ids is None:
+            trades = all_trades
+        else:
+            trades = [
+                t for t in all_trades
+                if t.order.clientId == IB_CLIENT_ID or t.order.permId in _last_all_open_perm_ids
+            ]
+        stale = len(all_trades) - len(trades)
+        if stale > 0:
+            logger.info(f"{stale} veraltete Fremd-Order(s) aus dem Cache gefiltert "
+                        f"(nicht mehr in der reqAllOpenOrders-Antwort).")
+
         order_inserts = []
+        # Frisch platzierte Orders tragen das Konto erst nach der Broker-
+        # Bestaetigung. Ohne diesen Fallback landete "UNKNOWN" in der Tabelle und
+        # das Unique-Constraint (account, perm_id) verlor seine Trennschaerfe.
+        known_accounts = list(usable_metrics.keys())
+        default_account = known_accounts[0] if len(known_accounts) == 1 else None
         if trades:
             for t in trades:
                 order_inserts.append({
-                    "account": t.order.account or "UNKNOWN",
+                    "account": t.order.account or default_account or "UNKNOWN",
                     "perm_id": t.order.permId,
                     "order_id": t.order.orderId,
                     "ticker": t.contract.symbol,
@@ -460,6 +686,16 @@ async def write_portfolio_snapshot(reason: str) -> str:
                     "limit_price": t.order.lmtPrice,
                     "stop_price": t.order.auxPrice,
                     "status": t.orderStatus.status,
+                    # Vollstaendiger Abgleich: ohne diese Felder war eine
+                    # Broker-Order nicht eindeutig einem Trade/Leg zuzuordnen
+                    # (order_ref) und nicht als Stop erkennbar, der noch
+                    # arbeitet (tif/filled/remaining).
+                    "order_ref": t.order.orderRef or None,
+                    "client_id": int(t.order.clientId) if getattr(t.order, "clientId", None) else None,
+                    "tif": t.order.tif or None,
+                    "filled": float(t.orderStatus.filled or 0),
+                    "remaining": float(t.orderStatus.remaining or 0),
+                    "parent_id": int(t.order.parentId) if getattr(t.order, "parentId", 0) else None,
                     "mode": active_trading_mode,
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
@@ -580,13 +816,62 @@ async def handle_orders():
             po_action = po.get("action")
             notes = po.get("notes") or ""
 
+            # Fail-safe gegen 0-Stueck-Orders. Zuvor wurde eine fehlende
+            # Stueckzahl als `quantity or 0` weitergereicht und landete als
+            # MarketOrder(..., 0) bei IB, das sie mit
+            #   Error 321: The size value cannot be zero
+            # verwarf — waehrend place_trade dem Aufrufer "Event logged
+            # successfully" meldete. Ein EXIT ohne quantity schloss die Position
+            # also nicht, und ein UPDATE ohne quantity bewirkte gar nichts.
+            try:
+                qty_num = abs(float(quantity)) if quantity is not None else 0.0
+            except (TypeError, ValueError):
+                qty_num = 0.0
+            if qty_num <= 0:
+                logger.error(f"Refusing order {po['id']} for {ticker}: quantity missing/zero ({quantity!r})")
+                await asyncio.to_thread(lambda id=po["id"]: supabase.table("pta_execution_log").update({
+                    "broker_order_id": "FAILED",
+                    "broker_status": "Rejected",
+                    "broker_error_code": -1,
+                    "broker_error_msg": "ORDER_REFUSED_BY_SYNC: quantity missing or zero — refusing to send a 0-size order to the broker",
+                    "broker_verified_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", id).execute())
+                continue
+
+            # Ein UPDATE ERSETZT die bisherige Order, statt eine zweite daneben zu
+            # stellen. Zuvor sammelten sich bei jedem Stop-Update weitere
+            # arbeitende Stop-Orders an: zwei Stops auf derselben Position
+            # verkaufen im Trigger-Fall die doppelte Stueckzahl und drehen die
+            # Position ins Short. Nur eigene Orders und nur Stop-Orders anfassen.
+            if po_action == "UPDATE" and stop_price:
+                replaced = 0
+                for t in list(ib.openTrades()):
+                    if t.contract.symbol != ticker:
+                        continue
+                    if "STP" not in (t.order.orderType or "").upper():
+                        continue
+                    if t.order.clientId != IB_CLIENT_ID:
+                        continue
+                    ib.cancelOrder(t.order)
+                    replaced += 1
+                if replaced:
+                    logger.info(f"UPDATE ersetzt {replaced} bestehende(n) Stop(s) fuer {ticker}.")
+
             is_bracket = (take_profit is not None or stop_price is not None) and po_action != "UPDATE"
             order_action = "BUY"
             if po_action in ["BUY", "SELL"]:
                 order_action = po_action
             elif po_action == "UPDATE":
-                pos_resp = await asyncio.to_thread(lambda t=ticker: supabase.table("pta_ibkr_positions").select("quantity").eq("ticker", t).execute())
-                if pos_resp.data and pos_resp.data[0].get("quantity", 0) < 0:
+                # Mode-scoped: zuvor fehlte der Filter und es wurde blind
+                # data[0] genommen — ein Paper-Bestand konnte die Richtung
+                # einer LIVE-Order bestimmen (und umgekehrt).
+                pos_resp = await asyncio.to_thread(
+                    lambda t=ticker: supabase.table("pta_ibkr_positions")
+                    .select("quantity").eq("ticker", t)
+                    .eq("mode", active_trading_mode).execute()
+                )
+                net_qty = sum(float(r.get("quantity") or 0) for r in (pos_resp.data or []))
+                if net_qty < 0:
                     order_action = "BUY"
                 else:
                     order_action = "SELL"
@@ -633,6 +918,8 @@ async def handle_orders():
                     sl.parentId = parent.orderId
                     sl.transmit = False
                     sl.orderRef = po.get("trade_id", "")
+                    # Schutz-Stop muss das Sessionende ueberleben (siehe apply_stop_tif).
+                    apply_stop_tif(sl, notes)
                     orders_to_place.append(sl)
 
                 # Ensure only the last leg transmits the whole bracket
@@ -663,6 +950,9 @@ async def handle_orders():
                         order.lmtPrice = stop_price
                     else:
                         order = StopOrder(order_action, quantity, stop_price)
+                    # Nur Stops: eine Limit-Entry darf am Tagesende verfallen,
+                    # ein Schutz-Stop nicht.
+                    apply_stop_tif(order, notes)
                 elif price:
                     order = LimitOrder(order_action, quantity, price)
                 else:
@@ -673,6 +963,10 @@ async def handle_orders():
                     order.outsideRth = True
                 ib.placeOrder(contract, order)
                 current_order_id = order.orderId
+
+            # Zuordnung fuer den Read-back merken: der naechste Statuswechsel
+            # zu dieser orderId wird an DIESE Auftragszeile geschrieben.
+            order_row_map[(active_trading_mode, current_order_id)] = po["id"]
 
             await asyncio.to_thread(lambda id=po["id"], oid=current_order_id: supabase.table("pta_execution_log").update({
                 "broker_order_id": str(oid)
@@ -719,6 +1013,56 @@ async def handle_cancels():
 
     except Exception as e:
         logger.error(f"Error handling cancels: {e}")
+
+async def handle_stop_removals():
+    """Verarbeitet STOP_REMOVED-Events: Stop im Ledger loeschen UND die
+    arbeitende(n) Stop-Order(s) beim Broker stornieren.
+
+    Warum ein eigener Pfad: es gab bisher ueberhaupt keine Moeglichkeit, einen
+    Stop loszuwerden. `stop_loss = 0` wurde im MCP-Tool durch `|| null` zu NULL,
+    NULL fiel in der View durch den Filter `stop_price IS NOT NULL`, und der
+    Daemon baute aus der leeren Order eine MarketOrder mit 0 Stueck, die IB mit
+    Error 321 verwarf. Ergebnis: der Stop stand ueberall unveraendert weiter —
+    im Ledger UND beim Broker — und place_trade meldete trotzdem Erfolg.
+    """
+    try:
+        # Mode isolation: ein PAPER-STOP_REMOVED darf niemals einen LIVE-Stop stornieren.
+        resp = await asyncio.to_thread(lambda: supabase.table("pta_execution_log")
+            .select("*")
+            .eq("event_type", "STOP_REMOVED")
+            .eq("mode", active_trading_mode)
+            .is_("broker_order_id", "null")
+            .execute())
+        reqs = resp.data
+        if not reqs:
+            return
+
+        for sr in reqs:
+            ticker = sr.get("ticker")
+            cancelled_count = 0
+            for t in ib.openTrades():
+                if t.contract.symbol != ticker:
+                    continue
+                # Nur echte Stop-Orders anfassen — eine Limit-Entry oder ein
+                # Take-Profit darf durch das Loeschen eines Stops nicht mit
+                # verschwinden.
+                if "STP" not in (t.order.orderType or "").upper():
+                    continue
+                ib.cancelOrder(t.order)
+                cancelled_count += 1
+
+            await asyncio.to_thread(lambda id=sr["id"], c=cancelled_count, t=ticker:
+                supabase.table("pta_execution_log").update({
+                    "broker_order_id": "STOP_CANCELLED",
+                    "broker_status": "Cancelled",
+                    "broker_verified_at": datetime.now(timezone.utc).isoformat(),
+                    "notes": f"Stop removal: {c} arbeitende Stop-Order(s) fuer {t} storniert",
+                }).eq("id", id).execute())
+
+            logger.info(f"Processed STOP_REMOVED for {ticker}: cancelled {cancelled_count} stop order(s).")
+
+    except Exception as e:
+        logger.error(f"Error handling stop removals: {e}")
 
 async def handle_quotes():
     try:
@@ -789,6 +1133,7 @@ async def start_http_server():
 
 async def sync_loop():
     global active_trading_mode, current_host, current_port, _last_snapshot_at
+    global _last_all_open_perm_ids
     
     await start_http_server()
     
@@ -807,6 +1152,8 @@ async def sync_loop():
                 active_trading_mode = new_mode
                 current_host = new_host
                 current_port = new_port
+                # Nach einem Moduswechsel ist die alte Order-Sicht wertlos.
+                _last_all_open_perm_ids = None
                 
                 if ib.isConnected():
                     ib.disconnect()
@@ -821,11 +1168,25 @@ async def sync_loop():
                     # Do NOT add ib.reqAccountUpdates() here: that call is unbounded-
                     # blocking and would freeze this loop permanently (see the note in
                     # handle_refresh_requests).
-                    ib.connect(current_host, current_port, clientId=10002)
+                    ib.connect(current_host, current_port, clientId=IB_CLIENT_ID)
                 except Exception as e:
                     logger.error(f"Connection failed: {e}")
                     await asyncio.sleep(5)
                     continue
+
+                # Order-Sicht vervollstaendigen. ib.connect() ruft intern nur
+                # reqOpenOrders() auf und liefert damit ausschliesslich Orders
+                # DIESER Client-ID (10002). Manuell in TWS platzierte Orders und
+                # Orders anderer API-Clients waren dadurch unsichtbar, obwohl
+                # sie beim Broker arbeiteten.
+                await refresh_open_orders()
+
+            # Order-Sicht zyklisch erneuern. reqAllOpenOrders() ist ein
+            # Snapshot ueber ALLE Clients und wird von IB nicht dauerhaft
+            # synchron gehalten — ohne Wiederholung wuerde eine fremde Order,
+            # die nach dem Verbindungsaufbau entsteht, nie sichtbar.
+            if time.monotonic() - _last_order_refresh_at >= SNAPSHOT_INTERVAL_SEC:
+                await refresh_open_orders()
 
             # Periodischer Portfolio-Snapshot: haelt die Depotwerte dauerhaft auf
             # Broker-Stand, unabhaengig davon, ob ein Agent danach fragt. Dadurch
@@ -843,6 +1204,7 @@ async def sync_loop():
             await handle_refresh_requests()
             await handle_orders()
             await handle_cancels()
+            await handle_stop_removals()
             await handle_quotes()
 
             await asyncio.sleep(2)

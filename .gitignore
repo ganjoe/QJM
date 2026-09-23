@@ -51,3 +51,6 @@ ibkr_csv_importer/trades.xml
 
 # Local pre-change DB backups (safety, never versioned)
 backups/
+
+# Powermeter runtime data (rolling Parquet time-series)
+powermeter/data/

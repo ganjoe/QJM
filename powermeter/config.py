@@ -35,3 +35,10 @@ POWERMETER_PORT = int(os.getenv("POWERMETER_PORT", "8800"))
 POWERMETER_HOST = os.getenv("POWERMETER_HOST", "0.0.0.0")
 
 PRICES_FILE = DATA_DIR / "electricity_prices.parquet"
+
+# Supabase (tägliche Aggregation)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "http://localhost:8001")
+SUPABASE_STATS_TABLE = os.getenv("SUPABASE_STATS_TABLE", "shelly_daily_stats")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+OPENBRAIN_ENV_FILE = os.getenv("OPENBRAIN_ENV_FILE", "/home/daniel/openBrain/.env")
+DAILY_SYNC_BACKFILL_DAYS = int(os.getenv("DAILY_SYNC_BACKFILL_DAYS", "7"))

@@ -4,6 +4,8 @@ import tempfile
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
+import pyarrow.parquet as pq
+
 # Setup temporary test directories
 test_dir = Path(tempfile.mkdtemp(prefix="powermeter_test_"))
 os.environ["POLL_INTERVAL_SEC"] = "1"
@@ -36,8 +38,12 @@ def run_tests():
     storage.rollup_1h_dir.mkdir(parents=True, exist_ok=True)
 
     test_handle = "test-server-plug"
-    target_date = "2026-09-20"
-    base_ts = datetime(2026, 9, 20, 10, 0, 0)
+    # Dynamische Daten, damit der History-Test nicht vom Kalendertag abhängt.
+    now = datetime.now().replace(microsecond=0)
+    target_date = now.date().isoformat()
+    month_str = target_date[:7]
+    year_str = target_date[:4]
+    base_ts = now
 
     # 120 Sekunden an synthetischen Messdaten generieren (2 volle Minuten)
     records = []
@@ -61,17 +67,21 @@ def run_tests():
     assert raw_file.exists(), f"Raw file {raw_file} not found!"
     print(f"  ✅ Parquet Raw Batch: 120 Sekunden erfolgreich nach {raw_file.name} geschrieben ({raw_file.stat().st_size} Bytes).")
 
-    # 3. Test 1-Minute Rollup
+    # 3. Test 1-Minute Rollup (muss idempotent sein)
     success_1m = storage.run_1m_rollup(test_handle, target_date)
     assert success_1m, "1m Rollup fehlgeschlagen!"
-    rollup_1m_file = storage.rollup_1m_dir / "2026-09" / f"{test_handle}.parquet"
+    rollup_1m_file = storage.rollup_1m_dir / month_str / f"{test_handle}.parquet"
     assert rollup_1m_file.exists(), f"Rollup 1m Datei {rollup_1m_file} not found!"
-    print(f"  ✅ Parquet 1m Rollup: Erfolgreich verdichtet ({rollup_1m_file.stat().st_size} Bytes).")
+    rows_first = pq.read_table(rollup_1m_file).num_rows
+    storage.run_1m_rollup(test_handle, target_date)  # zweiter Lauf darf nicht duplizieren
+    rows_second = pq.read_table(rollup_1m_file).num_rows
+    assert rows_first == rows_second, f"1m Rollup nicht idempotent: {rows_first} -> {rows_second}"
+    print(f"  ✅ Parquet 1m Rollup: Erfolgreich verdichtet und idempotent ({rollup_1m_file.stat().st_size} Bytes).")
 
     # 4. Test 1-Hour Permanent Rollup
-    success_1h = storage.run_1h_rollup(test_handle, "2026-09")
+    success_1h = storage.run_1h_rollup(test_handle, month_str)
     assert success_1h, "1h Rollup fehlgeschlagen!"
-    rollup_1h_file = storage.rollup_1h_dir / "2026" / f"{test_handle}.parquet"
+    rollup_1h_file = storage.rollup_1h_dir / year_str / f"{test_handle}.parquet"
     assert rollup_1h_file.exists(), f"Rollup 1h Datei {rollup_1h_file} not found!"
     print(f"  ✅ Parquet 1h Rollup: Erfolgreich für alle Ewigkeit archiviert ({rollup_1h_file.stat().st_size} Bytes).")
 

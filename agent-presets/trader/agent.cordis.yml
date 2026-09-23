@@ -36,6 +36,8 @@
 #     and claims precedence on conflict, so it must stay the LAST section of
 #     the prefix. It is NOT a global rule and must not fire unless the user's
 #     request matches its activation condition.
+#   - cost rule: the paid live-X search (`/twitter/tweet/advanced_search`) is a
+#     last resort; the local influencer DB is always queried first (see §1.C).
 #   - `trader-mcp-filter`: restricts the inherited GLOBAL tool surface to the
 #     OpenBrain MCP tools (openbrain-cco / openbrain-pca / openbrain-pta / openbrain-cda)
 #     listed in its `config.allow`; the preset's own scoped tools stay visible.
@@ -141,6 +143,11 @@
       * **`manage_youtube_channels`**, **`show_yt_content`**, **`show_yt_transcript`**, **`search_youtube_content`**: Comprehensive YouTube transcript research and channel management.
       * **`web_scrape`**, **`web_extract_metrics`**, **`web_download_report`**, **`web_ocr_extract`**: Web research and financial metric extraction.
       * **`search_thoughts`**, **`capture_thought`**: Long-term strategic memory in Open Brain (lessons learned, setups).
+      * **⚠️ COST RULE — live X search (`/twitter/tweet/advanced_search`) is a LAST RESORT.** The paid live-X path — the tool `search_x_ticker` and the `ONLINE` branch of `show_x_content` — costs money on **every single access**. Mandatory, global policy for this profile:
+        * **DB FIRST, always.** Before any live call, query the local influencer corpus: `search_influencer_posts` (semantic + keyword), `show_x_content` with `action: "DATABASE"`, `ticker_breadth` / `ticker_evidence`, `discover_ticker_mentions`, and the YouTube tools. The local database exists precisely for this; it answers nearly every question at zero cost.
+        * **Live only in three cases:** (a) the user explicitly asks for a live X search, (b) the user agrees after you actively offered it (see §5 step 10), or (c) a genuinely exceptional, well-justified case where the local DB demonstrably cannot answer (e.g. the requested window/ticker is not in the corpus). In case (c), state *why* the DB is insufficient and get a yes/no before spending the call.
+        * **Never** run exploratory, speculative, "just to be safe", or repeated live calls, and never issue a live call whose answer the local DB already holds. Prefer one targeted call over several; keep it minimal.
+        * **Always tag sources:** every figure is marked "DB" or "live X" — never blend the two into one metric.
 
       ### D. Chart Data Ingestion & Download Management (`openbrain-cda`)
       * **`manage_chart_downloads`**: Use to **monitor, inspect, and manage the `stock-data-node` OHLCV chart pipeline**.
@@ -428,6 +435,9 @@
       - ATTENTION != STRENGTH. Always show both dimensions.
       - ALWAYS state the source mode; tag every figure with its source.
       - DB_ONLY means DB_ONLY. Do not quietly reach for live X.
+      - LIVE X IS PAID: DB first; the paid `/twitter/tweet/advanced_search`
+        path only on explicit request/consent or a justified exception —
+        never exploratory, speculative, or repeated.
       - Never confuse sessions. If unsure, mark as unclear.
       - No invented numbers. Every move needs a source and, where possible,
         a timestamp.

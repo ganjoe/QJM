@@ -31,7 +31,10 @@ export function registerShellyTools(server: McpServer) {
   // Tool 1: Live-Metriken abrufen
   server.tool(
     "shelly_get_metrics",
-    "Liest die aktuellen Echtzeit-Messwerte (Leistung in Watt, Netzspannung in Volt, Stromstärke in Ampere, aufgelaufene kWh, Temperatur, Relais-Status) des Server-Plugs (oder eines angegebenen Handles) aus.",
+    "Liest die aktuellen Echtzeit-Messwerte (Leistung in Watt, Netzspannung in Volt, Stromstärke in Ampere, aufgelaufene kWh, Temperatur, Relais-Status) des Server-Plugs (oder eines angegebenen Handles) aus. " +
+      "💡 NÜTZLICH FÜR PRO-WATT-OPTIMIERUNG & DEBUGGING: Damit prüfst du, ob gerade starke Verbraucher aktiv sind (z. B. GPU-/LLM-Last) und wie viel der Server real aus der Steckdose zieht. " +
+      "Kombiniere es mit openbrain-cco 'get_system_metrics' (GPU-Auslastung/Watt) um Last und Wandverbrauch zu korrelieren — ideal, um ineffiziente Jobs zu erkennen. " +
+      "Bei ~0 W ist kein relevanter Verbraucher aktiv (Idle).",
     {
       handle: z.string().optional().describe(`Geräte-Handle (Standard: '${DEFAULT_HANDLE}')`),
     },
@@ -40,17 +43,22 @@ export function registerShellyTools(server: McpServer) {
       try {
         const data = await apiRequest(`/api/devices/${target}/live`);
         const m = data.metrics;
-        const text = [
+        const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+        const lines = [
           `🔌 Shelly Metriken für '${target}' (${data.device?.name || target}):`,
           `  • Status:        ${m.online ? "🟢 ONLINE" : "🔴 OFFLINE"}`,
           `  • Relais:        ${m.output ? "⚡ EINGESCHALTET" : "⚪ AUSGESCHALTET"}`,
-          `  • Leistung:      ${m.apower.toFixed(1)} W`,
-          `  • Netzspannung:  ${m.voltage.toFixed(1)} V`,
-          `  • Stromstärke:   ${m.current.toFixed(2)} A`,
-          `  • Gesamtenergie: ${(m.aenergy_total / 1000.0).toFixed(3)} kWh (${m.aenergy_total.toFixed(1)} Wh)`,
-          `  • Temperatur:    ${m.temp_c.toFixed(1)} °C`,
-          `  • Zeitstempel:   ${m.timestamp}`,
-        ].join("\n");
+          `  • Leistung:      ${num(m.apower).toFixed(1)} W`,
+          `  • Netzspannung:  ${num(m.voltage).toFixed(1)} V`,
+          `  • Stromstärke:   ${num(m.current).toFixed(2)} A`,
+          `  • Gesamtenergie: ${(num(m.aenergy_total) / 1000.0).toFixed(3)} kWh (${num(m.aenergy_total).toFixed(1)} Wh)`,
+          `  • Temperatur:    ${num(m.temp_c).toFixed(1)} °C`,
+          `  • Zeitstempel:   ${m.timestamp || m.ts || "unbekannt"}`,
+        ];
+        if (typeof m.kwh === "number" && typeof m.cost_eur === "number") {
+          lines.push(`  • Kosten (1h):   ${m.cost_eur.toFixed(4)} € für ${m.kwh.toFixed(3)} kWh`);
+        }
+        const text = lines.join("\n");
         return { content: [{ type: "text", text }] };
       } catch (err) {
         return { isError: true, content: [{ type: "text", text: String(err) }] };
@@ -196,10 +204,10 @@ export function registerShellyTools(server: McpServer) {
         for (const d of devices) {
           const isServer = d.is_server_plug ? " [SERVER-PLUG]" : "";
           const status = d.online ? "🟢 ONLINE" : "🔴 OFFLINE";
-          const p = d.latest?.apower ? `${d.latest.apower.toFixed(1)}W` : "---";
+          const p = typeof d.latest?.apower === "number" ? `${d.latest.apower.toFixed(1)}W` : "---";
           lines.push(`  • ${d.handle}: ${d.name} (${d.ip}) - ${status} (${p})${isServer}`);
         }
-        return { content: [{ type: "text", lines: lines.join("\n"), text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { isError: true, content: [{ type: "text", text: String(err) }] };
       }

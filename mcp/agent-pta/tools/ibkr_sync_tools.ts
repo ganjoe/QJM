@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { log, supabase } from "./shared.ts";
+import { log, supabase, getActiveTradingMode } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Docker Engine API — Unix Socket Client
@@ -122,6 +122,44 @@ export function registerIbkrSyncTools(server: McpServer) {
              pendingTradesInfo = `Fehler beim Abrufen der Trades: ${e.message}`;
           }
 
+          // Frische-Information. "Queue leer" ist KEIN Nachweis, dass ein
+          // Refresh verarbeitet wurde: ein Auftrag kann unbeantwortet bleiben,
+          // waehrend die Queue leer ist. Massgeblich ist der Snapshot-Zeitstempel.
+          const activeMode = await getActiveTradingMode();
+          let freshnessInfo = "Unbekannt";
+          let refreshInfo = "kein Refresh-Auftrag protokolliert";
+          try {
+            const { data: accRow } = await supabase
+              .from("pta_ibkr_account_summary")
+              .select("updated_at")
+              .eq("mode", activeMode)
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (accRow?.updated_at) {
+              const ageSec = (Date.now() - new Date(accRow.updated_at).getTime()) / 1000;
+              const fresh = ageSec <= 90;
+              freshnessInfo = accRow.updated_at + " (Alter " + ageSec.toFixed(1) + "s) — " +
+                (fresh ? "✅ frisch" : "⚠️ VERALTET (der Daemon schreibt den Snapshot nicht)");
+            } else {
+              freshnessInfo = "kein Snapshot für Modus " + activeMode.toUpperCase() + " vorhanden";
+            }
+
+            const { data: lastRefresh } = await supabase
+              .from("pta_execution_log")
+              .select("id, created_at, notes, mode")
+              .eq("event_type", "REFRESH_REQUESTED")
+              .eq("mode", activeMode)
+              .order("id", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (lastRefresh) {
+              refreshInfo = "#" + lastRefresh.id + " (" + lastRefresh.created_at + ") — Zustand: " + (lastRefresh.notes || "NULL");
+            }
+          } catch (e: any) {
+            freshnessInfo = "Fehler beim Abrufen des Snapshot-Alters: " + e.message;
+          }
+
           const lines = [
             `🔄 **IBKR Sync Daemon Status**`,
             ``,
@@ -130,7 +168,12 @@ export function registerIbkrSyncTools(server: McpServer) {
             state.startedAt ? `**Gestartet:** ${state.startedAt}` : "",
             state.error ? `⚠️ **Fehler:** ${state.error}` : "",
             ``,
-            pendingTradesInfo
+            `**Aktiver Modus:** ${activeMode.toUpperCase()}`,
+            `**Letzter Broker-Snapshot:** ${freshnessInfo}`,
+            `**Letzter Refresh-Auftrag:** ${refreshInfo}`,
+            ``,
+            `**Order-Queue:** ${pendingTradesInfo}`,
+            `ℹ️ Eine leere Queue belegt NICHT, dass ein Refresh verarbeitet wurde — dafür ist der Snapshot-Zeitstempel maßgeblich.`
           ].filter(Boolean);
 
           return { content: [{ type: "text", text: lines.join("\n") }] };

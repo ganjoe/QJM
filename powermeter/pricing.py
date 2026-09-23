@@ -56,16 +56,23 @@ class PricingManager:
             logger.error(f"Failed to save electricity prices to {self.file_path}: {e}")
 
     def get_price(self, target_date: Optional[str] = None) -> float:
-        """Gibt den Strompreis für ein bestimmtes Datum (YYYY-MM-DD) oder heute zurück."""
+        """Gibt den Strompreis für ein bestimmtes Datum (YYYY-MM-DD) oder heute zurück.
+
+        Für fehlende Tage gilt der zeitlich nächste *frühere* Preis (Gültigkeit nach
+        vorne), nicht der neueste Preis. Dadurch bleiben historische Kosten auch dann
+        korrekt, wenn später neue Preise gesetzt werden.
+        """
         if not target_date:
             target_date = date.today().isoformat()
         if target_date in self._cache:
             return self._cache[target_date]
-        
-        # Fallback auf neuesten hinterlegten Preis oder Default
+
+        earlier = [d for d in self._cache if d <= target_date]
+        if earlier:
+            return self._cache[max(earlier)]
         if self._cache:
-            latest_date = max(self._cache.keys())
-            return self._cache[latest_date]
+            # Datum liegt vor dem frühesten bekannten Preis -> ältester Preis
+            return self._cache[min(self._cache.keys())]
         return DEFAULT_ELECTRICITY_PRICE
 
     def set_price(self, price_eur_kwh: float, target_date: Optional[str] = None) -> float:

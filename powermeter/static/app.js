@@ -1,6 +1,6 @@
 // Shelly PowerMeter Dashboard Controller
 let currentHandle = "server-plug";
-let ws = null;
+let eventSource = null;
 let chartInstance = null;
 let currentRange = "live";
 let selectedPowerCycleSeconds = 5;
@@ -25,7 +25,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupRangeButtons();
   setupPowerCycleButtons();
   initChart();
-  connectWebSocket();
+  connectLiveStream();
   loadHistory(currentRange);
 });
 
@@ -45,8 +45,7 @@ async function loadDevices() {
 
     deviceSelect.addEventListener("change", (e) => {
       currentHandle = e.target.value;
-      if (ws) ws.close();
-      connectWebSocket();
+      connectLiveStream();
       loadHistory(currentRange);
     });
   } catch (err) {
@@ -54,39 +53,51 @@ async function loadDevices() {
   }
 }
 
-// WebSocket Live Stream
-function connectWebSocket() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/ws/live/${currentHandle}`;
-  ws = new WebSocket(wsUrl);
+// Live-Stream via Server-Sent Events. EventSource verbindet sich bei Abbrüchen
+// selbstständig neu und benötigt keine websockets-Bibliothek auf dem Server.
+function setStatus(online, text) {
+  statusPill.classList.toggle("offline", !online);
+  statusText.textContent = text;
+}
 
-  ws.onopen = () => {
-    statusPill.classList.remove("offline");
-    statusText.textContent = "ONLINE (1s Live)";
-  };
-
-  ws.onmessage = (event) => {
+function connectLiveStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  eventSource = new EventSource(`/api/devices/${currentHandle}/stream`);
+  eventSource.onopen = () => setStatus(true, "ONLINE (1s Live)");
+  eventSource.onmessage = (event) => {
     try {
-      const data = JSON.parse(event.data);
-      updateLiveMetrics(data);
+      updateLiveMetrics(JSON.parse(event.data));
     } catch (e) {
-      console.error("WS Parse Error:", e);
+      console.error("Stream Parse Error:", e);
     }
   };
-
-  ws.onclose = () => {
-    statusPill.classList.add("offline");
-    statusText.textContent = "OFFLINE";
-    setTimeout(connectWebSocket, 3000);
-  };
+  eventSource.onerror = () => setStatus(false, "SHELLY OFFLINE");
 }
 
 // Update Live UI
+function fmtNumber(value, digits) {
+  return (typeof value === "number" && isFinite(value)) ? value.toFixed(digits) : (0).toFixed(digits);
+}
+
 function updateLiveMetrics(data) {
-  valWatts.textContent = data.watts.toFixed(1);
-  valVoltage.textContent = data.voltage.toFixed(1);
-  valCurrent.textContent = data.current.toFixed(2);
-  valTemp.textContent = data.temp_c.toFixed(1);
+  valWatts.textContent = fmtNumber(data.watts, 1);
+  valVoltage.textContent = fmtNumber(data.voltage, 1);
+  valCurrent.textContent = fmtNumber(data.current, 2);
+  valTemp.textContent = fmtNumber(data.temp_c, 1);
+
+  // Gerätestatus kommt vom Shelly, nicht vom Stream selbst.
+  if (typeof data.online === "boolean") {
+    setStatus(data.online, data.online ? "ONLINE (1s Live)" : "SHELLY OFFLINE");
+  }
+
+  // Verbrauch/Kosten nur im Live-Modus aus dem Stream übernehmen.
+  if (currentRange === "live") {
+    if (typeof data.kwh === "number") valKwh.textContent = data.kwh.toFixed(2);
+    if (typeof data.cost_eur === "number") valCost.textContent = data.cost_eur.toFixed(2);
+  }
 
   // Relay Switch
   if (data.output) {
@@ -174,7 +185,11 @@ confirmPowerCycleBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ restart_delay_seconds: selectedPowerCycleSeconds })
     });
-    const result = await res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(`❌ Power-Cycle fehlgeschlagen (HTTP ${res.status}): ${result.detail || "Unbekannter Fehler"}`);
+      return;
+    }
     alert(`✅ ${result.message}`);
   } catch (err) {
     alert("Fehler beim Auslösen des Power-Cycles: " + err.message);
@@ -183,8 +198,13 @@ confirmPowerCycleBtn.addEventListener("click", async () => {
 
 // Chart.js Setup
 function initChart() {
+  if (typeof Chart === "undefined") {
+    console.warn("Chart.js konnte nicht geladen werden – Diagramm deaktiviert.");
+    chartInstance = null;
+    return;
+  }
   const ctx = document.getElementById("historyChart").getContext("2d");
-  
+
   const gradient = ctx.createLinearGradient(0, 0, 0, 300);
   gradient.addColorStop(0, "rgba(0, 229, 255, 0.35)");
   gradient.addColorStop(1, "rgba(0, 229, 255, 0.0)");
@@ -268,9 +288,11 @@ async function loadHistory(range) {
       values.push(pt.watts);
     });
 
-    chartInstance.data.labels = labels;
-    chartInstance.data.datasets[0].data = values;
-    chartInstance.update();
+    if (chartInstance) {
+      chartInstance.data.labels = labels;
+      chartInstance.data.datasets[0].data = values;
+      chartInstance.update();
+    }
   } catch (err) {
     console.error("Error loading history:", err);
   }
@@ -296,11 +318,47 @@ document.getElementById("btnSavePrice").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ price_eur_kwh: price })
     });
-    if (res.ok) alert("✅ Strompreis gespeichert!");
-    loadHistory(currentRange);
+    if (res.ok) {
+      alert("✅ Strompreis gespeichert!");
+      loadHistory(currentRange);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(`❌ Strompreis konnte nicht gespeichert werden (HTTP ${res.status}): ${err.detail || "Unbekannter Fehler"}`);
+    }
   } catch (err) {
     alert("Fehler: " + err.message);
   }
+});
+
+// Geordnetes Herunterfahren / Neustart des Servers
+async function sendSystemAction(action, minutes) {
+  try {
+    const res = await fetch(`/api/devices/${currentHandle}/system`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, power_on_after_seconds: Math.max(0, minutes) * 60 })
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(`❌ Fehlgeschlagen (HTTP ${res.status}): ${result.detail || "Unbekannter Fehler"}`);
+      return;
+    }
+    alert(`✅ ${result.message}`);
+  } catch (err) {
+    alert("Fehler: " + err.message);
+  }
+}
+
+document.getElementById("btnReboot").addEventListener("click", () => {
+  if (confirm("Server jetzt sauber neu starten (OS-Reboot)?")) sendSystemAction("reboot", 0);
+});
+
+document.getElementById("btnShutdown").addEventListener("click", () => {
+  const min = parseInt(document.getElementById("autoOnMinutes").value) || 0;
+  const info = min > 0
+    ? `Server jetzt herunterfahren?\n\nDer Shelly schaltet ihn in ${min} Minute(n) automatisch wieder ein.`
+    : "Server jetzt herunterfahren?\n\nACHTUNG: Ohne geplantes Wiedereinschalten (0 Min.) bleibt die Kiste aus und kann nur über die Shelly-App/Taster gestartet werden.";
+  if (confirm(info)) sendSystemAction("poweroff", min);
 });
 
 // Auto-On Failsafe Config
@@ -312,7 +370,12 @@ document.getElementById("btnSaveAutoOn").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ delay_seconds: sec })
     });
-    if (res.ok) alert(`✅ Hardware Auto-On Timer (${sec}s) im Shelly gespeichert!`);
+    if (res.ok) {
+      alert(`✅ Hardware Auto-On Timer (${sec}s) im Shelly gespeichert!`);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(`❌ Auto-On konnte nicht gesetzt werden (HTTP ${res.status}): ${err.detail || "Unbekannter Fehler"}`);
+    }
   } catch (err) {
     alert("Fehler: " + err.message);
   }

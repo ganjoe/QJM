@@ -30,13 +30,15 @@ function formatSearchResults(data: any[], returnMode: string) {
   } else if (returnMode === "full_text") {
     return data.map((t: any, i: number) => `[${i + 1}] ID: ${t.id} | Agent: ${t.agent_id} | Type: ${t.artifact_type} | Date: ${new Date(t.created_at).toLocaleDateString()}\nContent: ${t.content}\nMetadata: ${JSON.stringify(t.metadata)}`).join("\n\n");
   } else {
+    // "snippets" = kompakter Modus (voller Post-Text, ohne Metadata-JSON).
+    // Frueher wurde der Text hier auf 150 Zeichen gekuerzt; das hat bei 39 %
+    // der Posts Information (Cashtags/Level am Textende) verworfen und pro
+    // Aufruf nur ~35 Tokens/Post gespart. Kostensteuerung gehoert an
+    // `limit` und `return_mode: "ids_only"`, nicht an eine Textkuerzung.
     return data.map((t: any, i: number) => {
-      let snippet = t.content || "";
-      if (snippet.length > 150) {
-        snippet = snippet.substring(0, 150) + "...";
-      }
+      const content = t.content || "";
       const author = t.metadata?.author || "Unknown";
-      return `[${i + 1}] ID: ${t.id} | Date: ${new Date(t.created_at).toLocaleDateString()} | Author: ${author}\nSnippet: ${snippet}`;
+      return `[${i + 1}] ID: ${t.id} | Date: ${new Date(t.created_at).toLocaleDateString()} | Author: ${author}\nContent: ${content}`;
     }).join("\n\n");
   }
 }
@@ -405,7 +407,7 @@ export function registerXTools(server: McpServer) {
         threshold: z.number().optional().default(0.5).describe("Similarity threshold for semantic search (default: 0.5)"),
         artifact_type: z.string().optional().default("x_post").describe("Filter by artifact type (default: 'x_post')"),
         days_back: z.number().optional().describe("Filter posts from the last X days"),
-        return_mode: z.enum(["ids_only", "snippets", "full_text"]).optional().default("snippets").describe("Return format for READ (default: snippets)"),
+        return_mode: z.enum(["ids_only", "snippets", "full_text"]).optional().default("snippets").describe("Return format for READ (default: snippets = full post text without metadata)"),
         ids: z.array(z.string()).optional().describe("Array of post IDs (for READ_IDS only)"),
         authors: z.array(z.string()).optional().describe("Filter to specific influencers/authors (e.g. ['@serenity'])"),
         ...(GLOBAL_BRAIN_ACCESS ? { owner: z.string().optional().describe("Filter by agent ID.") } : {}),

@@ -5,7 +5,8 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { registerShellyTools } from "./tools/shelly.ts";
 
-const PORT = parseInt(Deno.env.get("SHELLEY_MCP_PORT") || "8797");
+// 8797 ist auf diesem Host bereits belegt (web-scraper) -> freier Default-Port.
+const PORT = parseInt(Deno.env.get("SHELLEY_MCP_PORT") || "8799");
 const MCP_ACCESS_KEY = Deno.env.get("MCP_ACCESS_KEY") || "";
 
 const server = new McpServer({

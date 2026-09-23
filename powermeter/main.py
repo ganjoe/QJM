@@ -1,17 +1,19 @@
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import (
     POWERMETER_PORT, POWERMETER_HOST, SERVER_PLUG_HANDLE,
-    DEFAULT_POWERCYCLE_DELAY_SEC, AUTO_ON_FALLBACK_SEC
+    DEFAULT_POWERCYCLE_DELAY_SEC, AUTO_ON_FALLBACK_SEC, DAILY_SYNC_BACKFILL_DAYS
 )
 from poller import poller
 from shelly_client import shelly_client
@@ -38,10 +40,10 @@ class SwitchRequest(BaseModel):
     on: bool
 
 class PowerCycleRequest(BaseModel):
-    restart_delay_seconds: int = Field(DEFAULT_POWERCYCLE_DELAY_SEC, description="Wartezeit bis zum automatischen Wiedereinschalten in Sekunden (z. B. 5 für schnellen Reboot oder 28800 für 8h)")
+    restart_delay_seconds: int = Field(DEFAULT_POWERCYCLE_DELAY_SEC, ge=1, le=86400, description="Wartezeit bis zum automatischen Wiedereinschalten in Sekunden (z. B. 5 für schnellen Reboot oder 28800 für 8h)")
 
 class AutoOnConfigRequest(BaseModel):
-    delay_seconds: int = Field(AUTO_ON_FALLBACK_SEC, description="Hardware-Notfall-Wiedereinschaltverzögerung auf dem Shelly")
+    delay_seconds: int = Field(AUTO_ON_FALLBACK_SEC, ge=1, le=3600, description="Hardware-Notfall-Wiedereinschaltverzögerung auf dem Shelly")
 
 class LedConfigRequest(BaseModel):
     mode: str = Field("power", description="'power' (Verbrauchsfarbe), 'switch' (Relaisstatus) oder 'off'")
@@ -51,6 +53,11 @@ class PriceUpdateRequest(BaseModel):
     price_eur_kwh: float = Field(..., gt=0.0)
     date: Optional[str] = Field(None, description="YYYY-MM-DD; falls leer, wird das heutige Datum verwendet")
 
+class SystemActionRequest(BaseModel):
+    action: str = Field("reboot", pattern="^(reboot|poweroff)$", description="'reboot' (OS-Neustart) oder 'poweroff' (OS herunterfahren)")
+    delay_seconds: int = Field(3, ge=0, le=300, description="Wartezeit vor der OS-Aktion (Antwort geht vorher raus)")
+    power_on_after_seconds: int = Field(0, ge=0, le=604800, description="Nur bei poweroff: 0 = aus bleiben, >0 = nach so vielen Sekunden autonom per Shelly wieder einschalten")
+
 # ---------------------------------------------------------------------------
 # FastAPI Lifespan
 # ---------------------------------------------------------------------------
@@ -58,6 +65,21 @@ class PriceUpdateRequest(BaseModel):
 async def lifespan(app: FastAPI):
     logger.info("Starte Shelly PowerMeter Service & Background Poller...")
     task = asyncio.create_task(poller.run_loop())
+
+    async def _cleanup_schedules():
+        for dev in poller.devices.values():
+            ip = dev.get("ip")
+            if ip:
+                await shelly_client.cleanup_scheduled_power_cycles(ip)
+
+    # Übrig gebliebene Auto-Power-On-Jobs vom Shelly entfernen (nach dem Boot).
+    asyncio.create_task(_cleanup_schedules())
+
+    async def _startup_daily_sync():
+        await asyncio.sleep(10)  # Poller/Netz kurz Zeit geben
+        await poller.backfill_daily_stats(DAILY_SYNC_BACKFILL_DAYS)
+
+    asyncio.create_task(_startup_daily_sync())
     yield
     logger.info("Beende Shelly PowerMeter Service...")
     poller.stop()
@@ -66,6 +88,7 @@ async def lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
+    await shelly_client.aclose()
 
 app = FastAPI(
     title="Shelly PowerMeter & Control Hub",
@@ -73,6 +96,36 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+# ---------------------------------------------------------------------------
+# Live-Projektion (REST & SSE teilen sich dieselbe Berechnung)
+# ---------------------------------------------------------------------------
+def _live_payload(handle: str) -> Optional[Dict[str, Any]]:
+    """Aktueller Messwert inkl. Verbrauch/Kosten des RAM-Fensters (letzte ~1h)."""
+    reading = poller.get_latest(handle)
+    if not reading:
+        return None
+    totals = storage.summarize_live_buffer(poller.get_live_buffer(handle))
+    ts = reading.get("timestamp")
+    # Naive lokale Zeit mit UTC-Offset versehen, damit auch Remote-Browser korrekt parsen.
+    ts_iso = ts.astimezone().isoformat() if hasattr(ts, "astimezone") else str(ts)
+    apower = float(reading.get("apower", 0.0) or 0.0)
+    return {
+        "ts": ts_iso,
+        # Aliase für bestehende Consumer (MCP-Tool, ältere Clients)
+        "timestamp": ts_iso,
+        "watts": apower,
+        "apower": apower,
+        "voltage": float(reading.get("voltage", 0.0) or 0.0),
+        "current": float(reading.get("current", 0.0) or 0.0),
+        "aenergy_total": float(reading.get("aenergy_total", 0.0) or 0.0),
+        "kwh": totals["total_kwh"],
+        "cost_eur": totals["total_cost_eur"],
+        "price_eur_kwh": pricing_manager.get_price(),
+        "temp_c": float(reading.get("temp_c", 0.0) or 0.0),
+        "output": bool(reading.get("output", False)),
+        "online": bool(reading.get("online", False)),
+    }
 
 # ---------------------------------------------------------------------------
 # API Routes: Devices & Control
@@ -83,13 +136,15 @@ async def list_devices():
 
 @app.post("/api/devices")
 async def save_device(dev: DeviceCreateOrUpdate):
+    existing = poller.devices.get(dev.handle, {})
     poller.devices[dev.handle] = {
         "handle": dev.handle,
         "name": dev.name,
         "ip": dev.ip,
         "is_server_plug": dev.is_server_plug,
         "model": "Shelly Plus Plug S",
-        "enabled": dev.enabled
+        "enabled": dev.enabled,
+        "auto_on_delay": int(existing.get("auto_on_delay", AUTO_ON_FALLBACK_SEC)),
     }
     if dev.handle not in poller.live_buffers:
         from collections import deque
@@ -109,24 +164,50 @@ async def delete_device(handle: str):
 
 @app.get("/api/devices/{handle}/live")
 async def get_device_live(handle: str):
-    reading = poller.get_latest(handle)
-    if not reading:
+    payload = _live_payload(handle)
+    if not payload:
         raise HTTPException(status_code=404, detail=f"No data for device '{handle}'")
     return {
         "handle": handle,
         "device": poller.devices.get(handle, {}),
-        "metrics": reading
+        "metrics": payload
     }
+
+@app.get("/api/devices/{handle}/stream")
+async def stream_device(handle: str):
+    """
+    Server-Sent-Events-Stream (1 Hz). Bewusst als SSE umgesetzt, damit der
+    Live-Stream auch ohne die optionale websockets/wsproto-Abhängigkeit von
+    uvicorn funktioniert.
+    """
+    if handle not in poller.devices:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    async def event_generator():
+        last_ts: Optional[str] = None
+        while True:
+            payload = _live_payload(handle)
+            if payload and payload["ts"] != last_ts:
+                last_ts = payload["ts"]
+                yield f"data: {json.dumps(payload)}\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 @app.post("/api/devices/{handle}/switch")
 async def set_switch(handle: str, req: SwitchRequest):
     dev = poller.devices.get(handle)
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
-    success = await shelly_client.set_switch(dev["ip"], req.on)
+    delay = int(dev.get("auto_on_delay", AUTO_ON_FALLBACK_SEC))
+    success = await shelly_client.set_switch_with_failsafe(dev["ip"], req.on, auto_on_delay=delay)
     if not success:
         raise HTTPException(status_code=502, detail=f"Failed to communicate with Shelly at {dev['ip']}")
-    return {"status": "success", "handle": handle, "output": req.on}
+    return {"status": "success", "handle": handle, "output": req.on, "auto_on_delay": delay}
 
 @app.post("/api/devices/{handle}/power-cycle")
 async def power_cycle(handle: str, req: PowerCycleRequest):
@@ -158,9 +239,11 @@ async def configure_auto_on(handle: str, req: AutoOnConfigRequest):
     dev = poller.devices.get(handle)
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
-    success = await shelly_client.configure_auto_on(dev["ip"], req.delay_seconds)
+    success = await shelly_client.configure_auto_on(dev["ip"], req.delay_seconds, enabled=True)
     if not success:
         raise HTTPException(status_code=502, detail=f"Failed to configure Auto-On on Shelly at {dev['ip']}")
+    dev["auto_on_delay"] = req.delay_seconds
+    poller.save_devices()
     return {"status": "configured", "handle": handle, "auto_on_delay_seconds": req.delay_seconds}
 
 @app.post("/api/devices/{handle}/config/led")
@@ -174,6 +257,79 @@ async def configure_led(handle: str, req: LedConfigRequest):
     return {"status": "configured", "handle": handle, "mode": req.mode}
 
 # ---------------------------------------------------------------------------
+# API Routes: Geordnetes Herunterfahren / Neustart des Servers
+# ---------------------------------------------------------------------------
+async def _sudo_available(action: str) -> bool:
+    """Prüft, ob die OS-Aktion ohne Passwort (sudoers) ausgeführt werden darf."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/bin/sudo", "-n", "-l", "/usr/bin/systemctl", action,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        return (await proc.wait()) == 0
+    except Exception:
+        return False
+
+async def _run_system_action(action: str, delay_seconds: int):
+    """Führt nach Ablauf der Verzögerung die OS-Aktion aus (Antwort ist bereits raus)."""
+    await asyncio.sleep(delay_seconds)
+    try:
+        poller.flush_all()
+    except Exception as e:
+        logger.error(f"Parquet-Flush vor '{action}' fehlgeschlagen: {e}")
+    cmd = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", action]
+    logger.warning(f"Führe geordnete Systemaktion aus: {' '.join(cmd)}")
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd)
+        rc = await proc.wait()
+        if rc != 0:
+            logger.error(f"Systemaktion '{action}' fehlgeschlagen (exit {rc})")
+    except Exception as e:
+        logger.error(f"Systemaktion '{action}' konnte nicht ausgeführt werden: {e}")
+
+@app.post("/api/devices/{handle}/system")
+async def system_action(handle: str, req: SystemActionRequest):
+    """
+    Fährt das Betriebssystem geordnet herunter oder startet es neu.
+    Bei action='poweroff' kann mit power_on_after_seconds ein autonomer Power-On
+    direkt im Shelly geplant werden (der Dienst ist danach ja offline).
+    Benötigt eine sudoers-Regel für /usr/bin/systemctl reboot|poweroff.
+    """
+    dev = poller.devices.get(handle)
+    if not dev:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    # Vorab prüfen, damit der Button nicht still ins Leere läuft.
+    if not await _sudo_available(req.action):
+        raise HTTPException(
+            status_code=500,
+            detail=("sudoers-Regel fehlt. Bitte einmalig anlegen: "
+                    "'daniel ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff' "
+                    "in /etc/sudoers.d/powermeter (chmod 0440)."),
+        )
+
+    power_on_at: Optional[str] = None
+    if req.action == "poweroff" and req.power_on_after_seconds > 0:
+        when = datetime.now() + timedelta(seconds=req.power_on_after_seconds)
+        job_id = await shelly_client.schedule_power_cycle(dev["ip"], when)
+        if job_id is None:
+            raise HTTPException(status_code=502, detail="Konnte den Power-On im Shelly nicht planen")
+        power_on_at = when.isoformat()
+
+    asyncio.create_task(_run_system_action(req.action, req.delay_seconds))
+    message = f"OS-Aktion '{req.action}' wird in {req.delay_seconds}s ausgeführt."
+    if power_on_at:
+        message += f" Wiedereinschalten geplant für {power_on_at}."
+    return {
+        "status": "accepted",
+        "handle": handle,
+        "action": req.action,
+        "delay_seconds": req.delay_seconds,
+        "power_on_at": power_on_at,
+        "message": message,
+    }
+
+# ---------------------------------------------------------------------------
 # API Routes: History & Analytics (Parquet)
 # ---------------------------------------------------------------------------
 @app.get("/api/devices/{handle}/history")
@@ -183,6 +339,26 @@ async def get_history(handle: str, range: str = "24h"):
     """
     live_buf = poller.get_live_buffer(handle)
     return storage.query_history(handle=handle, range_type=range, live_buffer=live_buf)
+
+# ---------------------------------------------------------------------------
+# API Routes: Tägliche Supabase-Aggregation
+# ---------------------------------------------------------------------------
+class DailySyncRequest(BaseModel):
+    date: Optional[str] = Field(None, description="YYYY-MM-DD; Standard: gestern")
+    days: Optional[int] = Field(None, ge=1, le=60, description="Optional: N Tage rückwirkend synchronisieren")
+
+@app.post("/api/sync/daily")
+async def sync_daily(req: Optional[DailySyncRequest] = None):
+    """Aggregiert Tageswerte (min/avg/max, Energie, Preis) und schreibt sie nach Supabase."""
+    if req and req.days:
+        await poller.backfill_daily_stats(req.days)
+        return {"status": "ok", "mode": "backfill", "days": req.days}
+    day = req.date if req and req.date else (datetime.now().date() - timedelta(days=1)).isoformat()
+    results = {}
+    for handle, dev in poller.devices.items():
+        if dev.get("enabled", True):
+            results[handle] = await poller.sync_daily_stats(handle, day)
+    return {"status": "ok", "day": day, "results": results}
 
 # ---------------------------------------------------------------------------
 # API Routes: Electricity Pricing
@@ -200,34 +376,6 @@ async def set_pricing(req: PriceUpdateRequest):
     return {"status": "updated", "date": req.date or "today", "price_eur_kwh": updated_price}
 
 # ---------------------------------------------------------------------------
-# WebSockets: Real-time Live Stream
-# ---------------------------------------------------------------------------
-@app.websocket("/ws/live/{handle}")
-async def websocket_live(websocket: WebSocket, handle: str):
-    await websocket.accept()
-    try:
-        while True:
-            reading = poller.get_latest(handle)
-            if reading:
-                # Schnelle JSON-Projektion
-                payload = {
-                    "ts": reading["timestamp"].isoformat() if hasattr(reading["timestamp"], "isoformat") else str(reading["timestamp"]),
-                    "watts": reading["apower"],
-                    "voltage": reading["voltage"],
-                    "current": reading["current"],
-                    "aenergy_total": reading["aenergy_total"],
-                    "temp_c": reading["temp_c"],
-                    "output": reading["output"],
-                    "online": reading["online"]
-                }
-                await websocket.send_json(payload)
-            await asyncio.sleep(1.0)
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        logger.debug(f"WebSocket closed: {e}")
-
-# ---------------------------------------------------------------------------
 # Static Web Dashboard Mount
 # ---------------------------------------------------------------------------
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -241,4 +389,12 @@ async def serve_dashboard():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=POWERMETER_HOST, port=POWERMETER_PORT, reload=False)
+    # Ohne dieses Timeout blockieren offene SSE-Streams den Shutdown, bis systemd
+    # den Prozess nach TimeoutStopSec (Standard 90s) hart killt.
+    uvicorn.run(
+        "main:app",
+        host=POWERMETER_HOST,
+        port=POWERMETER_PORT,
+        reload=False,
+        timeout_graceful_shutdown=5,
+    )
