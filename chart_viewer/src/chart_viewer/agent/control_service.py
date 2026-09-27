@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from chart_viewer import chart_spec
 from chart_viewer.agent.supabase import SupabaseError, extract_url_error_msg, supabase_count, supabase_get
 from chart_viewer.models.envelope import MessageKind, make_envelope
 from chart_viewer.models.validation import sanitize_pane_scales
@@ -131,9 +132,55 @@ class ControlService:
             "mutate_watchlist": self._op_mutate_watchlist,
             "list_presets": self._op_list_presets,
             "apply_preset": self._op_apply_preset,
+            "list_panes": self._op_list_panes,
+            "list_charts": self._op_list_charts,
+            "get_chart_state": self._op_get_chart_state,
+            "compose_chart": self._op_compose_chart,
+            "apply_chart": self._op_apply_chart,
+            "save_chart": self._op_save_chart,
+            "diff_chart": self._op_diff_chart,
+            "list_topbar_metrics": self._op_list_topbar_metrics,
+            "list_windows": self._op_list_windows,
         }
 
     # ── dispatch ───────────────────────────────────────────────────────────
+
+    def execute(self, op: str, params: Any) -> Dict[str, Any]:
+        """Synchroner Fassadeneinstieg (HTTP/MCP) mit denselben Handlern wie handle().
+
+        Damit gibt es genau eine Implementierung der Chart-Lifecycle-Logik: der
+        WebSocket-Pfad des Control Panels und der /api/command-Pfad des MCP
+        teilen sie sich.
+        """
+        clean_params = params if isinstance(params, dict) else {}
+        handler = self._ops.get(op)
+        if handler is None:
+            return {
+                "ok": False,
+                "error": {"code": "invalid_request", "message": f"Unknown control op '{op}'"},
+            }
+        try:
+            data = handler(clean_params)
+        except Exception as exc:  # noqa: BLE001 - bewusst dieselbe Abbildung wie im WS-Pfad
+            code, message = self._error_mapping(exc, op)
+            return {"ok": False, "error": {"code": code, "message": message}}
+        return {"ok": True, "data": data}
+
+    @staticmethod
+    def _error_mapping(exc: BaseException, op: str) -> Tuple[str, str]:
+        """Exception -> (code, message). Gemeinsam fuer WS- und HTTP-Pfad."""
+        if isinstance(exc, ControlError):
+            return exc.code, str(exc)
+        if isinstance(exc, SupabaseError):
+            return "backend_unreachable", str(exc)
+        if isinstance(exc, TimeoutError):
+            return "timeout", str(exc) or "request timed out"
+        if isinstance(exc, urllib.error.URLError):
+            return "backend_unreachable", extract_url_error_msg(exc)
+        if isinstance(exc, OSError):
+            return "backend_unreachable", str(exc)
+        logger.exception("control op '%s' failed", op)
+        return "internal", str(exc)
 
     def handle(self, request_id: str, op: str, params: Any) -> None:
         """Handle one `control.request`. Search is answered inline (ordering!),
@@ -157,19 +204,9 @@ class ControlService:
         started = time.time()
         try:
             data = handler(params)
-        except ControlError as e:
-            self._respond_error(request_id, op, e.code, str(e))
-        except SupabaseError as e:
-            self._respond_error(request_id, op, "backend_unreachable", str(e))
-        except TimeoutError as e:
-            self._respond_error(request_id, op, "timeout", str(e) or "request timed out")
-        except urllib.error.URLError as e:
-            self._respond_error(request_id, op, "backend_unreachable", extract_url_error_msg(e))
-        except OSError as e:  # socket errors (connection refused, reset, ...)
-            self._respond_error(request_id, op, "backend_unreachable", str(e))
-        except Exception as e:  # pragma: no cover - defensive
-            logger.exception("control op '%s' failed", op)
-            self._respond_error(request_id, op, "internal", str(e))
+        except Exception as e:  # noqa: BLE001 - Abbildung passiert in _error_mapping
+            code, message = self._error_mapping(e, op)
+            self._respond_error(request_id, op, code, message)
         else:
             self._respond_ok(request_id, op, data, started)
 
@@ -564,6 +601,363 @@ class ControlService:
             "color_flag": color_flag,
             "applied": applied,
             "skipped": skipped,
+        }
+
+    # ── Pane-/Chart-Ebene (Chart-Builder) ──────────────────────────────────
+
+    def _ledger_chart(self, window_id: str) -> Dict[str, Any]:
+        """Ledger-Eintrag eines Chartfensters oder ein sauberer Fehler."""
+        ledger = getattr(self.agent, "layout_ledger", {}) or {}
+        info = ledger.get(window_id)
+        if not isinstance(info, dict) or "list_id" in info:
+            raise ControlError("unknown_window", f"Kein Chartfenster '{window_id}' offen.")
+        return info
+
+    def _window_timeframe(self, info: Dict[str, Any]) -> str:
+        tf = info.get("timeframe")
+        if isinstance(tf, dict):
+            return f"{tf.get('multiplier', 1)}{tf.get('unit', 'D')}"
+        return str(tf or "1D")
+
+    def _clean_pane_specs(self, raw: Any) -> list:
+        specs = []
+        if not isinstance(raw, list):
+            return specs
+        for idx, entry in enumerate(raw):
+            entry = entry if isinstance(entry, dict) else {}
+            preset_id = str(entry.get("pane_preset_id") or entry.get("preset_id") or "").strip()
+            if not preset_id:
+                continue
+            spec = {"pane_preset_id": preset_id}
+            pane_id = str(entry.get("pane_id") or "").strip()
+            if pane_id:
+                spec["pane_id"] = pane_id
+            if entry.get("scale"):
+                spec["scale"] = str(entry["scale"]).strip().lower()
+            try:
+                weight = int(entry.get("weight") or 0)
+            except (TypeError, ValueError):
+                weight = 0
+            if weight > 0:
+                spec["weight"] = weight
+            if isinstance(entry.get("overrides"), dict) and entry["overrides"]:
+                spec["overrides"] = entry["overrides"]
+            specs.append(spec)
+        return specs
+
+    def _render_window(self, window_id: str, extra: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """Fenster mit einer Chart-Definition/Pane-Liste neu rendern (DISPLAY_STOCK)."""
+        info = self._ledger_chart(window_id)
+        command: Dict[str, Any] = {
+            "action": "DISPLAY_STOCK",
+            "window_id": window_id,
+            "symbol": info.get("symbol") or "CHART",
+            "timeframe_str": self._window_timeframe(info),
+            "limit": 2000,
+        }
+        if info.get("position"):
+            command["position"] = info.get("position")
+        if info.get("size"):
+            command["size"] = info.get("size")
+        command.update({k: v for k, v in extra.items() if v is not None})
+        return self._http_json(
+            "POST", f"{self.config.control_api_url.rstrip('/')}/api/command", command, timeout=timeout
+        )
+
+    def _op_list_panes(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        res = self._pca_json("GET", "/api/panes")
+        raw = res.get("panes") if isinstance(res, dict) else None
+        panes = []
+        for pane in raw or []:
+            if not isinstance(pane, dict):
+                continue
+            panes.append(
+                {
+                    "id": str(pane.get("id") or ""),
+                    "display_name": str(pane.get("display_name") or pane.get("id") or ""),
+                    "description": str(pane.get("description") or ""),
+                    "role": str(pane.get("role") or "any"),
+                    "kind": str(pane.get("kind") or "indicator"),
+                    "default_scale": str(pane.get("default_scale") or "linear"),
+                    "summary": str(pane.get("summary") or ""),
+                    "member_count": int(pane.get("member_count") or 0),
+                    "zone_count": int(pane.get("zone_count") or 0),
+                    "ref_count": int(pane.get("ref_count") or 0),
+                }
+            )
+        # Preispane-Kandidaten zuerst, danach alphabetisch - das Dropdown soll
+        # ohne Sortierklick benutzbar sein.
+        panes.sort(key=lambda p: (0 if p["role"] in ("price", "any") else 1, p["display_name"].lower()))
+        return {"panes": panes, "count": len(panes)}
+
+    def _op_list_charts(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        res = self._pca_json("GET", "/api/charts")
+        raw = res.get("charts") if isinstance(res, dict) else None
+        charts = []
+        for chart in raw or []:
+            if not isinstance(chart, dict):
+                continue
+            charts.append(
+                {
+                    "id": str(chart.get("id") or ""),
+                    "display_name": str(chart.get("display_name") or chart.get("id") or ""),
+                    "description": str(chart.get("description") or ""),
+                    "pane_count": int(chart.get("pane_count") or 0),
+                    "summary": str(chart.get("summary") or ""),
+                }
+            )
+        charts.sort(key=lambda c: c["display_name"].lower())
+        return {"charts": charts, "count": len(charts)}
+
+    def _op_get_chart_state(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        window_id = str(params.get("window_id") or "").strip()
+        if not window_id:
+            raise ControlError("invalid_request", "window_id is required")
+        info = self._ledger_chart(window_id)
+        chart = info.get("chart") or {}
+        panes = []
+        for pane in chart.get("panes") or []:
+            if not isinstance(pane, dict):
+                continue
+            panes.append(
+                {
+                    "pane_id": str(pane.get("pane_id") or ""),
+                    "pane_preset_id": str(pane.get("pane_preset_id") or ""),
+                    "scale": str(pane.get("scale") or "linear"),
+                    "weight": int(pane.get("weight") or 0) or 2,
+                    "overrides": pane.get("overrides") or {},
+                }
+            )
+        return {
+            "window_id": window_id,
+            "symbol": str(info.get("symbol") or ""),
+            "timeframe": self._window_timeframe(info),
+            "chart_id": chart.get("id"),
+            "display_name": str(chart.get("display_name") or ""),
+            "draft": bool(chart.get("draft")) or not chart.get("id"),
+            "topbar_metrics": chart.get("topbar_metrics") or [],
+            "x_axis_pane": chart.get("x_axis_pane"),
+            "panes": panes,
+        }
+
+    def _op_list_topbar_metrics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Verfuegbare Topbar-Metriken (Feature-Spalten) auflisten.
+
+        Eine Topbar-Metrik ist eine Feature-Spalte (z.B. ibd_rs, adr_20_pct);
+        optional wird geprueft, ob das angegebene Symbol Daten dafuer hat.
+        """
+        symbol = sanitize_ticker(params.get("symbol"))
+        registry = self._pca_json("GET", "/api/features/registry")
+        metrics = []
+        for feature in registry.get("features") or []:
+            if not isinstance(feature, dict):
+                continue
+            canonical = str(feature.get("canonical_id") or "").strip()
+            if not canonical:
+                continue
+            metrics.append(
+                {
+                    "id": canonical,
+                    "alias": str(feature.get("alias") or ""),
+                    "display_name": str(feature.get("display_name") or canonical),
+                    "calc_type": feature.get("calc_type"),
+                    "has_data_for_symbol": None,
+                }
+            )
+        metrics.sort(key=lambda m: m["display_name"].lower())
+
+        if symbol and metrics:
+            columns: set = set()
+            try:
+                data = self._pca_json(
+                    "GET",
+                    f"/api/chartdata?symbol={urllib.parse.quote(symbol, safe='')}"
+                    "&timeframe=1D&limit=1&features=true",
+                )
+                columns = {str(c) for c in (data.get("columns") or [])}
+            except ControlError:
+                columns = set()
+            for metric in metrics:
+                candidates = {metric["id"], metric["alias"]} - {""}
+                metric["has_data_for_symbol"] = bool(candidates & columns)
+
+        return {"symbol": symbol or None, "metrics": metrics, "count": len(metrics)}
+
+    def _op_list_windows(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Alle offenen Fenster mit Inhalt (Chart/Symbol/Timeframe) auflisten."""
+        ledger = getattr(self.agent, "layout_ledger", {}) or {}
+        windows = []
+        for window_id, info in ledger.items():
+            if not isinstance(info, dict):
+                continue
+            if "list_id" in info:  # Watchlist-Fenster (kein Chartfenster)
+                windows.append(
+                    {
+                        "window_id": str(window_id),
+                        "kind": "watchlist",
+                        "list_id": str(info.get("list_id") or ""),
+                        "display_name": str(info.get("display_name") or info.get("list_id") or ""),
+                        "symbol": "",
+                        "timeframe": "",
+                        "chart_id": None,
+                        "draft": False,
+                        "pane_count": 0,
+                        "topbar_metric_count": 0,
+                    }
+                )
+                continue
+            chart = info.get("chart") or {}
+            panes = [p for p in (chart.get("panes") or []) if isinstance(p, dict)]
+            windows.append(
+                {
+                    "window_id": str(window_id),
+                    "kind": "chart",
+                    "symbol": str(info.get("symbol") or ""),
+                    "timeframe": self._window_timeframe(info),
+                    "chart_id": chart.get("id"),
+                    "display_name": str(chart.get("display_name") or ""),
+                    "draft": bool(chart.get("draft")) or not chart.get("id"),
+                    "pane_count": len(panes),
+                    "topbar_metric_count": len(chart.get("topbar_metrics") or []),
+                }
+            )
+        # Chartfenster zuerst, danach stabil nach window_id.
+        windows.sort(key=lambda w: (w["kind"] != "chart", w["window_id"]))
+        return {"windows": windows, "count": len(windows)}
+
+    def _op_compose_chart(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Ad-hoc-Zusammenstellung rendern (Builder-Draft, noch nicht gespeichert)."""
+        window_id = str(params.get("window_id") or "").strip()
+        if not window_id:
+            raise ControlError("invalid_request", "window_id is required")
+        info = self._ledger_chart(window_id)
+        specs = self._clean_pane_specs(params.get("panes"))
+        if not specs:
+            raise ControlError("invalid_request", "panes darf nicht leer sein")
+
+        base_id = str(params.get("base_chart_id") or "").strip()
+        base: Dict[str, Any] = {}
+        if base_id:
+            try:
+                base = self._pca_json("GET", f'/api/charts/{urllib.parse.quote(base_id, safe="")}')
+            except ControlError:
+                base = {}
+        else:
+            # Kein Basis-Chart angegeben: Chart-Metadaten des Fensters erben, damit
+            # ein Pane-Edit den Topbar-Streifen nicht stillschweigend leert.
+            base = info.get("chart") or {}
+
+        topbar = params.get("topbar_metrics")
+        if topbar is None:
+            topbar = base.get("topbar_metrics") or []
+        x_axis = params.get("x_axis_pane")
+        if x_axis is None:
+            x_axis = base.get("x_axis_pane")
+
+        render = self._render_window(
+            window_id,
+            {
+                "panes": specs,
+                "chart_meta": {
+                    "id": base_id or None,
+                    "display_name": str(params.get("display_name") or (base.get("display_name") if base_id else "") or "• unbenannt"),
+                    "draft": True,
+                    "topbar_metrics": list(topbar or []),
+                    "x_axis_pane": x_axis,
+                },
+            },
+            timeout=45.0,
+        )
+        return {"window_id": window_id, "draft": True, "panes": specs, "render": render}
+
+    def _op_apply_chart(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Gespeichertes Chart auf ein Fenster anwenden."""
+        window_id = str(params.get("window_id") or "").strip()
+        chart_id = str(params.get("chart_id") or "").strip()
+        if not window_id or not chart_id:
+            raise ControlError("invalid_request", "window_id und chart_id sind Pflicht")
+        self._ledger_chart(window_id)
+        render = self._render_window(window_id, {"chart": chart_id}, timeout=45.0)
+        return {"window_id": window_id, "chart_id": chart_id, "render": render}
+
+    def _op_diff_chart(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fensterinhalt gegen eine gespeicherte Chart-Definition vergleichen.
+
+        Rendert nichts: der Vergleich ist ein Mengen-/Reihenfolge-/Feldervergleich
+        der Pane-Slots (chart_spec.diff_chart_specs).
+        """
+        window_id = str(params.get("window_id") or "").strip()
+        chart_id = str(params.get("chart_id") or "").strip()
+        if not window_id or not chart_id:
+            raise ControlError("invalid_request", "window_id und chart_id sind Pflicht")
+        info = self._ledger_chart(window_id)
+        current = info.get("chart") or {}
+        target = self._pca_json("GET", f'/api/charts/{urllib.parse.quote(chart_id, safe="")}')
+        diff = chart_spec.diff_chart_specs(
+            current.get("panes"),
+            target.get("panes"),
+            {"topbar_metrics": current.get("topbar_metrics"), "x_axis_pane": current.get("x_axis_pane")},
+            {"topbar_metrics": target.get("topbar_metrics"), "x_axis_pane": target.get("x_axis_pane")},
+        )
+        return {
+            "window_id": window_id,
+            "chart_id": chart_id,
+            "window_chart_id": current.get("id"),
+            "draft": bool(current.get("draft")) or not current.get("id"),
+            **diff,
+        }
+
+    def _op_save_chart(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Aktuelle Zusammensetzung des Fensters als Chart speichern."""
+        window_id = str(params.get("window_id") or "").strip()
+        chart_id = str(params.get("chart_id") or "").strip()
+        if not window_id or not chart_id:
+            raise ControlError("invalid_request", "window_id und chart_id sind Pflicht")
+        info = self._ledger_chart(window_id)
+        chart = info.get("chart") or {}
+        panes = self._clean_pane_specs(chart.get("panes"))
+        if not panes:
+            raise ControlError("invalid_request", "Das Fenster hat keine Panes zum Speichern")
+
+        payload = {
+            "id": chart_id,
+            "display_name": str(params.get("display_name") or chart_id),
+            "description": str(params.get("description") or ""),
+            "topbar_metrics": chart.get("topbar_metrics") or [],
+            "x_axis_pane": chart.get("x_axis_pane"),
+            "panes": panes,
+        }
+        # overwrite=false schuetzt vor stillem Ueberschreiben (Default: heutiges Verhalten).
+        overwrite = params.get("overwrite")
+        overwrite = True if overwrite is None else bool(overwrite)
+
+        exists = True
+        try:
+            self._pca_json("GET", f'/api/charts/{urllib.parse.quote(chart_id, safe="")}')
+        except ControlError:
+            exists = False
+        if exists and not overwrite:
+            raise ControlError(
+                "already_exists",
+                f"Chart '{chart_id}' existiert bereits (overwrite=false).",
+            )
+        if exists:
+            result = self._pca_json("PUT", f'/api/charts/{urllib.parse.quote(chart_id, safe="")}', payload)
+        else:
+            result = self._pca_json("POST", "/api/charts", payload)
+
+        # Fenster auf den gespeicherten Stand ziehen (Draft-Markierung faellt weg).
+        try:
+            self._render_window(window_id, {"chart": chart_id}, timeout=45.0)
+        except Exception as exc:  # noqa: BLE001 - Speichern ist schon durch
+            logger.warning("Chart '%s' gespeichert, Re-Render fehlgeschlagen: %s", chart_id, exc)
+
+        return {
+            "window_id": window_id,
+            "chart_id": chart_id,
+            "saved": True,
+            "created": not exists,
+            "backend": result,
         }
 
     # ── pane scales (viewer LOG/LIN buttons) ───────────────────────────────

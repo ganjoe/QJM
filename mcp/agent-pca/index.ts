@@ -7,6 +7,7 @@ import { registerFeatureTools } from "./tools/features.ts";
 import { registerAnalysisTools } from "./tools/analysis.ts";
 import { registerChartViewerTools } from "./tools/chart_viewer.ts";
 import { registerPresetTools } from "./tools/presets.ts";
+import { registerPaneTools } from "./tools/panes.ts";
 
 // --- MCP Server Setup ---
 const server = new McpServer({
@@ -20,6 +21,7 @@ registerFeatureTools(server);
 registerAnalysisTools(server);
 registerChartViewerTools(server);
 registerPresetTools(server);
+registerPaneTools(server);
 
 // --- Hono App ---
 const app = new Hono();

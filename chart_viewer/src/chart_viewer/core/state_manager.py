@@ -55,6 +55,11 @@ class WindowData:
         self.y_axis_mode: str = "auto"
         # Y-Achsen-Skalierung je Pane aus dem Preset: {"main": "log", ...}
         self.pane_scales: dict = {}
+        # Chart-Definition (Vertrag docs/architecture/chart-presets.md, Abschnitt 3):
+        # geordnete Pane-Slots, Fenster-Metadaten und das Pane mit der X-Achse.
+        self.panes: List[dict] = []
+        self.chart: dict = {}
+        self.x_axis_pane: Optional[str] = None
         self.sync_group_id: Optional[str] = None
         self.style_defaults: dict = {}
 
@@ -152,6 +157,14 @@ class StateManager:
             # Der Snapshot ist die Wahrheit: ein Preset ohne pane_scales setzt
             # die Panes bewusst zurueck auf linear (Schluessel vorhanden = replace).
             win_data.pane_scales = sanitize_pane_scales(payload.get("pane_scales"))
+
+        # Chart-Definition (Vertrag Abschnitt 3). snapshot.full ersetzt den
+        # kompletten Fensterinhalt; ein Altsnapshot ohne diese Schluessel faellt
+        # daher auf das bisherige Verhalten zurueck (Pane-Liste aus den Overlays).
+        win_data.panes = list(payload.get("panes") or [])
+        win_data.chart = dict(payload.get("chart") or {})
+        win_data.x_axis_pane = payload.get("x_axis_pane") or None
+
         if "sync_group_id" in payload:
             win_data.sync_group_id = payload["sync_group_id"]
         if "style_defaults" in payload:
@@ -213,8 +226,10 @@ class StateManager:
                         values.append(
                             OverlayPoint(
                                 t=int(val["t"]),
-                                value=float(val["value"]),
+                                value=float(val["value"]) if val.get("value") is not None else None,
                                 value2=float(val["value2"]) if val.get("value2") is not None else None,
+                                t2=int(val["t2"]) if val.get("t2") is not None else None,
+                                color_override=val.get("color_override"),
                             )
                         )
                 ov_obj = Overlay(
@@ -225,6 +240,7 @@ class StateManager:
                     style=ov.get("style", {}),
                     pane=ov.get("pane", "main"),
                     origin=ov.get("origin", "bottom"),
+                    rules=ov.get("rules", {}) or {},
                 )
                 win_data.overlays[ov_obj.overlay_id] = ov_obj
 

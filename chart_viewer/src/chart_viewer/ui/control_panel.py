@@ -8,6 +8,7 @@ envelopes; the panel never talks to the database directly.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -17,15 +18,19 @@ from PySide6.QtCore import QEvent, Qt, QSettings, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QCompleter,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -44,7 +49,7 @@ from chart_viewer.ui.color_flag import ColorFlagButton
 # escaped, and one missed escape turns into a KeyError at import time).
 PANEL_STYLESHEET = (
     """
-QMainWindow, QWidget#panelRoot {
+QMainWindow, QWidget#panelRoot, QScrollArea, QScrollArea > QWidget > QWidget {
     background-color: """
     + theme.BG_WINDOW
     + """;
@@ -68,11 +73,39 @@ QLabel#statusLabel[error="true"] {
     + theme.ERROR
     + """;
 }
+/* Eigenstaendig dunkel: das Panel darf nicht davon abhaengen, dass die
+   Anwendungspalette (apply_dark_theme) installiert wurde - sonst werden
+   Listen/Eingaben hell und die gedaempften Texte unlesbar. Werte entsprechen
+   theme.DIALOG_STYLESHEET. */
+QListWidget, QComboBox, QLineEdit {
+    background-color: """ + theme.BG_WINDOW + """;
+    color: """ + theme.TEXT + """;
+    border: 1px solid """ + theme.BORDER + """;
+}
 QListWidget {
     font-size: 12px;
 }
 QListWidget::item {
     padding: 2px 4px;
+}
+QListWidget::item:selected {
+    background-color: """ + theme.BORDER + """;
+    color: """ + theme.TEXT + """;
+}
+QCheckBox, QLabel {
+    color: """ + theme.TEXT + """;
+}
+QLabel:disabled, QCheckBox:disabled {
+    color: """ + theme.DISABLED_TEXT + """;
+}
+QPushButton {
+    background-color: """ + theme.BG_SURFACE + """;
+    color: """ + theme.TEXT + """;
+    border: 1px solid """ + theme.BORDER + """;
+}
+QPushButton:disabled {
+    color: """ + theme.DISABLED_TEXT + """;
+    border: 1px solid """ + theme.DISABLED_BORDER + """;
 }
 QPushButton#pinButton[pinned="true"] {
     border: 1px solid #FFCA28;
@@ -81,6 +114,25 @@ QPushButton#pinButton[pinned="true"] {
 }
 """
 )
+
+# Virtual panes without a database row (contract: docs/architecture/chart-presets.md §1).
+BUILTIN_PANE_NAMES = {"builtin:volume": "Volumen"}
+
+
+def derive_chart_id(raw: str) -> str:
+    """Turn a typed chart name into a valid chart id ('Mein Chart' -> 'mein_chart').
+
+    An input that already looks like an id is kept verbatim; everything else is
+    slugified (lower case, spaces to underscores, unknown characters dropped).
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", text):
+        return text
+    slug = re.sub(r"\s+", "_", text.lower())
+    slug = re.sub(r"[^a-z0-9_.-]", "", slug)
+    return slug.strip("._-")
 
 
 class ControlPanelWindow(QMainWindow):
@@ -106,6 +158,16 @@ class ControlPanelWindow(QMainWindow):
         self._suppress_selection_activation = False
         self._preset_id: str = ""
         self._chart_windows: List[Dict[str, Any]] = []
+        # Chart builder (pane presets + chart definition of the focused window).
+        # The target window is sticky: only a real window activation or an
+        # explicit set_target_window() moves it - never the panel's own refresh.
+        self._builder_target: str = ""
+        self._chart_symbols: Dict[str, str] = {}
+        self._pane_catalog: List[Dict[str, Any]] = []
+        self._chart_catalog: List[Dict[str, Any]] = []
+        self._builder_panes: List[Dict[str, Any]] = []
+        self._chart_state: Dict[str, Any] = {}
+        self._builder_draft = False
         self._populating = False
         self._settings = QSettings("QJM", "ChartViewer")
         self._shutting_down = False
@@ -132,9 +194,17 @@ class ControlPanelWindow(QMainWindow):
     # ── UI construction ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = QWidget(self)
+        root = QWidget()
         root.setObjectName("panelRoot")
-        self.setCentralWidget(root)
+        # Der Builder braucht mehr Hoehe, als das Panel konfiguriert ist. Ein
+        # Scrollbereich haelt alle Sektionen auch auf kleinen Bildschirmen
+        # erreichbar, statt sie unten abzuschneiden.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 6)
         layout.setSpacing(6)
@@ -255,8 +325,136 @@ class ControlPanelWindow(QMainWindow):
         wl_buttons.addWidget(self.watchlist_info)
         layout.addLayout(wl_buttons)
 
-        # Preset
-        layout.addWidget(self._section_label("CHART-PRESET"))
+        # Chart builder: pane presets + chart definition of the focused chart window.
+        builder_header = QHBoxLayout()
+        builder_header.setSpacing(6)
+        builder_header.addWidget(self._section_label("CHART-BUILDER"))
+        builder_header.addStretch(1)
+        self.builder_reload_btn = QPushButton("⟳", root)
+        self.builder_reload_btn.setFixedWidth(28)
+        self.builder_reload_btn.setToolTip("Pane- und Chart-Katalog neu laden")
+        self.builder_reload_btn.clicked.connect(self.refresh_catalog)
+        builder_header.addWidget(self.builder_reload_btn)
+        layout.addLayout(builder_header)
+
+        self.builder_target_label = QLabel("Ziel: kein Chartfenster", root)
+        self.builder_target_label.setToolTip(
+            "Fokussiertes Chartfenster (klebrig – bleibt stehen, auch wenn das Panel den Fokus hat)"
+        )
+        layout.addWidget(self.builder_target_label)
+
+        self.builder_draft_label = QLabel("", root)
+        self.builder_draft_label.setObjectName("statusLabel")
+        self.builder_draft_label.setToolTip("Noch nicht gespeicherter Entwurf")
+        layout.addWidget(self.builder_draft_label)
+
+        price_row = QHBoxLayout()
+        price_row.setSpacing(6)
+        price_row.addWidget(QLabel("Preispane", root))
+        self.price_pane_combo = QComboBox(root)
+        self.price_pane_combo.setToolTip("Pane-Preset für das Preispane (pane_id 'main')")
+        self.price_pane_combo.activated.connect(self._on_price_pane_activated)
+        price_row.addWidget(self.price_pane_combo, 1)
+        layout.addLayout(price_row)
+
+        self.builder_pane_list = QListWidget(root)
+        self.builder_pane_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Shrinkable: the panel is only 360x560 by default and the builder must not
+        # push its minimum height through the roof.
+        self.builder_pane_list.setMinimumHeight(56)
+        self.builder_pane_list.setMaximumHeight(140)
+        self.builder_pane_list.setToolTip("Panes dieses Charts in Reihenfolge (eine Zeile je Pane)")
+        layout.addWidget(self.builder_pane_list, 1)
+
+        add_pane_row = QHBoxLayout()
+        add_pane_row.setSpacing(6)
+        self.add_pane_combo = QComboBox(root)
+        self.add_pane_combo.setEditable(True)
+        self.add_pane_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.add_pane_combo.setToolTip("Pane-Preset wählen und mit ＋ ans Ende anhängen")
+        add_completer = self.add_pane_combo.completer()
+        if add_completer is not None:
+            add_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            add_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            add_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        add_pane_row.addWidget(self.add_pane_combo, 1)
+        self.add_pane_btn = QPushButton("＋", root)
+        self.add_pane_btn.setFixedWidth(28)
+        self.add_pane_btn.setToolTip("Pane ans Ende anhängen")
+        self.add_pane_btn.clicked.connect(self._on_add_pane_clicked)
+        add_pane_row.addWidget(self.add_pane_btn)
+        layout.addLayout(add_pane_row)
+
+        pane_actions = QHBoxLayout()
+        pane_actions.setSpacing(6)
+        self.remove_pane_btn = QPushButton("− Pane", root)
+        self.remove_pane_btn.setToolTip("Markierte Pane entfernen (das Preispane bleibt)")
+        self.remove_pane_btn.clicked.connect(self._on_remove_pane_clicked)
+        pane_actions.addWidget(self.remove_pane_btn)
+        self.pane_up_btn = QPushButton("▲", root)
+        self.pane_up_btn.setFixedWidth(28)
+        self.pane_up_btn.setToolTip("Markierte Pane nach oben")
+        self.pane_up_btn.clicked.connect(lambda: self._move_selected_pane(-1))
+        pane_actions.addWidget(self.pane_up_btn)
+        self.pane_down_btn = QPushButton("▼", root)
+        self.pane_down_btn.setFixedWidth(28)
+        self.pane_down_btn.setToolTip("Markierte Pane nach unten")
+        self.pane_down_btn.clicked.connect(lambda: self._move_selected_pane(1))
+        pane_actions.addWidget(self.pane_down_btn)
+        self.scale_toggle_btn = QPushButton("LIN/LOG", root)
+        self.scale_toggle_btn.setToolTip("Y-Skala der markierten Pane umschalten")
+        self.scale_toggle_btn.clicked.connect(self._toggle_selected_pane_scale)
+        pane_actions.addWidget(self.scale_toggle_btn)
+        self.duplicate_pane_btn = QPushButton("⧉ Pane", root)
+        self.duplicate_pane_btn.setToolTip("Markierte Pane duplizieren (eigener Slot, gleiche Einstellungen)")
+        self.duplicate_pane_btn.clicked.connect(self._on_duplicate_pane_clicked)
+        pane_actions.addWidget(self.duplicate_pane_btn)
+        self.volume_check = QCheckBox("≡ Volumen", root)
+        self.volume_check.setToolTip("Eingebautes Volumen-Pane hinzufügen/entfernen")
+        self.volume_check.toggled.connect(self._on_volume_toggled)
+        pane_actions.addWidget(self.volume_check)
+        pane_actions.addStretch(1)
+        layout.addLayout(pane_actions)
+
+        # Pane-Editor: Hoehe (Gewicht) und Titel der markierten Pane. Der Titel
+        # landet als Override in diesem Chart - das geteilte Preset bleibt sauber.
+        pane_edit_row = QHBoxLayout()
+        pane_edit_row.setSpacing(6)
+        pane_edit_row.addWidget(QLabel("Höhe", root))
+        self.pane_weight_spin = QSpinBox(root)
+        self.pane_weight_spin.setRange(1, 20)
+        self.pane_weight_spin.setFixedWidth(52)
+        self.pane_weight_spin.setToolTip("Gewicht der markierten Pane (sofort angewendet)")
+        self.pane_weight_spin.editingFinished.connect(self._on_pane_weight_changed)
+        pane_edit_row.addWidget(self.pane_weight_spin)
+        pane_edit_row.addWidget(QLabel("Titel", root))
+        self.pane_title_edit = QLineEdit(root)
+        self.pane_title_edit.setToolTip("Titel der markierten Pane (Override nur in diesem Chart)")
+        self.pane_title_edit.editingFinished.connect(self._on_pane_title_changed)
+        pane_edit_row.addWidget(self.pane_title_edit, 1)
+        layout.addLayout(pane_edit_row)
+
+        self.builder_pane_list.itemSelectionChanged.connect(self._on_pane_selection_changed)
+
+        save_chart_row = QHBoxLayout()
+        save_chart_row.setSpacing(6)
+        self.save_chart_btn = QPushButton("Speichern unter…", root)
+        self.save_chart_btn.setToolTip("Entwurf als Chart-Definition speichern")
+        self.save_chart_btn.clicked.connect(self._save_chart_as)
+        save_chart_row.addWidget(self.save_chart_btn)
+        self.save_inplace_btn = QPushButton("Speichern", root)
+        self.save_inplace_btn.setToolTip("Entwurf im aktuellen Chart speichern (ohne Namensdialog)")
+        self.save_inplace_btn.clicked.connect(self._save_chart_in_place)
+        save_chart_row.addWidget(self.save_inplace_btn)
+        self.discard_chart_btn = QPushButton("Verwerfen", root)
+        self.discard_chart_btn.setToolTip("Änderungen verwerfen und letzten gespeicherten Stand rendern")
+        self.discard_chart_btn.clicked.connect(self._discard_builder)
+        save_chart_row.addWidget(self.discard_chart_btn)
+        save_chart_row.addStretch(1)
+        layout.addLayout(save_chart_row)
+
+        # Keep the stored-chart combo of the old CHART-PRESET section.
+        layout.addWidget(self._section_label("GESPEICHERTES CHART ANWENDEN"))
         self.preset_combo = QComboBox(root)
         self.preset_combo.setEditable(True)
         self.preset_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -319,7 +517,10 @@ class ControlPanelWindow(QMainWindow):
             self._search_inflight = None
         if not ok:
             message = str(error.get("message") or "unbekannter Fehler")
-            self._set_status(f"⚠ {op}: {message}", error=True)
+            # A failed compose/apply must never disable the builder: the local
+            # preview stays, "Verwerfen" resynchronises it with the server.
+            hint = " (Verwerfen lädt den Serverstand)" if op in ("compose_chart", "apply_chart") else ""
+            self._set_status(f"⚠ {op}: {message}{hint}", error=True)
             if op == "search_symbols":
                 self._search_inflight = None
             self._update_buttons()
@@ -337,11 +538,34 @@ class ControlPanelWindow(QMainWindow):
             self._on_presets_response(data)
         elif op == "apply_preset":
             self._on_apply_preset_response(data)
+        elif op == "list_panes":
+            self._on_panes_response(data)
+        elif op == "list_charts":
+            self._on_charts_response(data)
+        elif op == "get_chart_state":
+            self._on_chart_state_response(data, meta)
+        elif op == "compose_chart":
+            self._on_compose_response(meta, data)
+        elif op == "apply_chart":
+            self._on_apply_chart_response(meta, data)
+        elif op == "save_chart":
+            self._on_save_chart_response(meta, data)
         self._update_buttons()
 
     def set_chart_windows(self, windows: List[Dict[str, Any]]) -> None:
-        """Called by ViewerApp whenever chart windows open/close/change flag."""
+        """Called by ViewerApp whenever chart windows open/close/change flag.
+
+        Keeps the symbol map for the builder target line. The target itself stays
+        sticky: an existing target survives every refresh as long as its window is
+        open; only an empty target is filled (first window) and only a closed
+        window clears it.
+        """
         self._chart_windows = list(windows or [])
+        self._chart_symbols = {
+            str(w.get("window_id") or ""): str(w.get("symbol") or "?")
+            for w in self._chart_windows
+            if str(w.get("window_id") or "")
+        }
         flag = self.flag_btn.get_flag()
         symbols = [
             str(w.get("symbol") or "?")
@@ -350,9 +574,47 @@ class ControlPanelWindow(QMainWindow):
         ]
         self.charts_label.setText(f"Charts (Flag {flag}): {', '.join(symbols) if symbols else '–'}")
 
+        target_changed = False
+        if self._builder_target and self._builder_target not in self._chart_symbols:
+            # The focused window is gone: forget its draft and start clean.
+            self._builder_target = ""
+            self._chart_state = {}
+            self._builder_panes = []
+            self._builder_draft = False
+            target_changed = True
+        if not self._builder_target and self._chart_symbols:
+            self._builder_target = next(iter(self._chart_symbols))
+            target_changed = True
+        self._rebuild_builder_widgets()
+        if target_changed and self._connected:
+            self._refresh_chart_state()
+
+    def set_target_window(self, window_id: str) -> None:
+        """Sticky builder target: only an activated chart window moves it.
+
+        Called by ViewerApp when a chart window reports activation (it also stays
+        on target while the panel itself holds the focus). Unknown windows are
+        ignored so a late signal cannot point the builder at a closed window.
+        """
+        window_id = str(window_id or "")
+        if not window_id or window_id == self._builder_target:
+            return
+        # Reject stale signals for a window that is no longer open - but accept the
+        # very first activation, when the panel has no window list yet.
+        if self._chart_symbols and window_id not in self._chart_symbols:
+            return
+        self._builder_target = window_id
+        self._chart_state = {}
+        self._builder_panes = []
+        self._builder_draft = False
+        self._rebuild_builder_widgets()
+        if self._connected:
+            self._refresh_chart_state()
+
     def refresh_all(self) -> None:
         self.refresh_watchlists()
         self.refresh_presets()
+        self.refresh_catalog()
 
     def refresh_watchlists(self, select: str = "") -> None:
         """Reload the list of watchlists; optionally select one afterwards."""
@@ -366,6 +628,18 @@ class ControlPanelWindow(QMainWindow):
         if not self._connected:
             return
         self._request("list_presets", {})
+
+    def refresh_catalog(self) -> None:
+        """Load the pane/chart catalog once - dropdowns never re-request it."""
+        if not self._connected:
+            return
+        self._request("list_panes", {})
+        self._request("list_charts", {})
+
+    def refresh_charts(self) -> None:
+        if not self._connected:
+            return
+        self._request("list_charts", {})
 
     def shutdown(self) -> None:
         """Stop timers so a torn-down viewer leaves no Qt events behind.
@@ -961,6 +1235,621 @@ class ControlPanelWindow(QMainWindow):
                 f"Preset {preset_id} gemerkt – kein Chart mit Flag {self.flag_btn.get_flag()} offen{reason}"
             )
 
+    # ── chart builder ──────────────────────────────────────────────────────
+
+    def _refresh_chart_state(self) -> None:
+        """Re-read the server-side chart state (single source of truth)."""
+        target = self._builder_target
+        if not target or not self._connected:
+            return
+        self._request("get_chart_state", {"window_id": target}, {"window_id": target})
+
+    def _on_panes_response(self, data: Dict[str, Any]) -> None:
+        panes: List[Dict[str, Any]] = []
+        for raw in data.get("panes") or []:
+            if not isinstance(raw, dict):
+                continue
+            pane_id = str(raw.get("id") or "")
+            if not pane_id:
+                continue
+            panes.append(dict(raw))
+        self._pane_catalog = panes
+        self._populate_add_pane_combo()
+        self._rebuild_builder_widgets()
+
+    def _on_charts_response(self, data: Dict[str, Any]) -> None:
+        self._chart_catalog = [
+            dict(c)
+            for c in (data.get("charts") or [])
+            if isinstance(c, dict) and str(c.get("id") or "")
+        ]
+
+    def _on_chart_state_response(self, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
+        window_id = str(data.get("window_id") or meta.get("window_id") or "")
+        if window_id != self._builder_target:
+            return  # stale: the builder target moved on
+        self._chart_state = dict(data)
+        symbol = str(data.get("symbol") or "")
+        if symbol:
+            self._chart_symbols[window_id] = symbol
+        if "draft" in data:
+            self._builder_draft = bool(data.get("draft"))
+        if isinstance(data.get("panes"), list):
+            self._builder_panes = [
+                self._normalize_pane(pane)
+                for pane in data.get("panes") or []
+                if isinstance(pane, dict)
+            ]
+        self._rebuild_builder_widgets()
+
+        if str(meta.get("intent") or "") == "discard":
+            chart_id = str(self._chart_state.get("chart_id") or "")
+            if chart_id:
+                self._request(
+                    "apply_chart",
+                    {"window_id": window_id, "chart_id": chart_id},
+                    {"window_id": window_id, "chart_id": chart_id},
+                )
+            else:
+                self._set_status("verworfen – dieses Chart ist noch nicht gespeichert")
+
+    @staticmethod
+    def _warning_suffix(data: Dict[str, Any]) -> str:
+        """Warnungen/Uebersprungenes als Statusanhang (Plan Phase 4)."""
+        warnings = data.get("warnings") or []
+        skipped = data.get("skipped") or []
+        parts = []
+        if skipped:
+            parts.append(
+                "übersprungen: "
+                + ", ".join(str(s.get("pane_preset_id") or s.get("symbol") or "?") for s in skipped)
+            )
+        if warnings:
+            parts.append(
+                "Warnungen: "
+                + ", ".join(
+                    str(w.get("detail") or w.get("code") or "?") for w in warnings[:4]
+                )
+            )
+        return (" · ⚠ " + "; ".join(parts)) if parts else ""
+
+    def _on_compose_response(self, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+        panes = data.get("panes") if isinstance(data.get("panes"), list) else self._builder_panes
+        self._set_status(
+            f"Vorschau aktualisiert ({len(panes)} Panes){self._warning_suffix(data)}"
+        )
+        self._refresh_chart_state()
+
+    def _on_apply_chart_response(self, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+        chart_id = str(meta.get("chart_id") or data.get("chart_id") or "")
+        self._set_status(f"Chart {chart_id} geladen{self._warning_suffix(data)}")
+        self._refresh_chart_state()
+
+    def _on_save_chart_response(self, meta: Dict[str, Any], data: Dict[str, Any]) -> None:
+        chart_id = str(meta.get("chart_id") or data.get("chart_id") or "")
+        display = str(meta.get("display_name") or data.get("display_name") or "")
+        label = display or chart_id
+        self._set_status(f"✓ Chart '{label}' gespeichert ({chart_id})")
+        self.refresh_charts()
+        self._refresh_chart_state()
+
+    def _compose(self, panes: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Render the current pane list immediately (preview/draft)."""
+        target = self._builder_target
+        if not target:
+            self._set_status("⚠ kein Chartfenster als Ziel", error=True)
+            return
+        if not self._connected:
+            self._set_status("⚠ nicht verbunden", error=True)
+            return
+        params: Dict[str, Any] = {
+            "window_id": target,
+            "panes": self._compose_panes(panes),
+            "draft": True,
+        }
+        base = str(self._chart_state.get("chart_id") or "")
+        if base:
+            params["base_chart_id"] = base
+        self._request("compose_chart", params, {"window_id": target})
+
+    def _compose_panes(self, panes: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        rows = panes if panes is not None else self._builder_panes
+        payload: List[Dict[str, Any]] = []
+        for pane in rows:
+            entry: Dict[str, Any] = {
+                "pane_id": str(pane.get("pane_id") or ""),
+                "pane_preset_id": str(pane.get("pane_preset_id") or ""),
+                "scale": str(pane.get("scale") or "linear"),
+                "weight": int(pane.get("weight") or 2),
+            }
+            # Pane-Overrides (Titel, Serien-Stil, ...) reisen mit: sie gehoeren zur
+            # Chart-Ebene und nicht ins geteilte Pane-Preset.
+            if isinstance(pane.get("overrides"), dict) and pane["overrides"]:
+                entry["overrides"] = dict(pane["overrides"])
+            payload.append(entry)
+        return payload
+
+    def _on_price_pane_activated(self, index: int) -> None:
+        if self._populating or index < 0:
+            return
+        pane_preset_id = str(self.price_pane_combo.itemData(index) or "")
+        if not pane_preset_id or pane_preset_id == self._main_preset_id():
+            return
+        preset = self._pane_preset(pane_preset_id)
+        panes = [dict(pane) for pane in self._builder_panes]
+        for pane in panes:
+            if str(pane.get("pane_id")) == "main":
+                pane["pane_preset_id"] = pane_preset_id
+                break
+        else:
+            # No price pane yet (old chart): the price pane is always "main".
+            panes.insert(
+                0,
+                {
+                    "pane_id": "main",
+                    "pane_preset_id": pane_preset_id,
+                    "title": str(preset.get("display_name") or pane_preset_id),
+                    "role": "price",
+                    "scale": "linear",
+                    "weight": 4,
+                },
+            )
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._compose()
+
+    def _on_add_pane_clicked(self) -> None:
+        pane_preset_id = self._resolve_add_pane_id()
+        if not pane_preset_id:
+            self._set_status("⚠ Pane-Preset wählen", error=True)
+            return
+        preset = self._pane_preset(pane_preset_id)
+        scale = str(preset.get("default_scale") or "linear").strip().lower()
+        if scale not in ("linear", "log"):
+            scale = "linear"
+        pane = {
+            "pane_id": self._unique_pane_id(pane_preset_id),
+            "pane_preset_id": pane_preset_id,
+            "title": str(preset.get("display_name") or pane_preset_id),
+            "role": str(preset.get("role") or "any"),
+            "scale": scale,
+            "weight": 2,
+        }
+        self._builder_panes = [dict(p) for p in self._builder_panes] + [pane]
+        self.add_pane_combo.setCurrentIndex(-1)
+        self.add_pane_combo.setEditText("")
+        self._rebuild_builder_widgets()
+        self._select_pane_row(len(self._builder_panes) - 1)
+        self._compose()
+
+    def _on_remove_pane_clicked(self) -> None:
+        row = self._selected_pane_index()
+        if row < 0:
+            self._set_status("⚠ keine Pane markiert", error=True)
+            return
+        pane = self._builder_panes[row]
+        if str(pane.get("pane_id")) == "main" or str(pane.get("role")) == "price":
+            self._set_status("⚠ das Preispane kann nicht entfernt werden", error=True)
+            return
+        self._builder_panes = [
+            dict(p) for index, p in enumerate(self._builder_panes) if index != row
+        ]
+        self._rebuild_builder_widgets()
+        self._select_pane_row(min(row, len(self._builder_panes) - 1))
+        self._compose()
+
+    def _move_selected_pane(self, delta: int) -> None:
+        row = self._selected_pane_index()
+        destination = row + delta
+        if row < 0 or destination < 0 or destination >= len(self._builder_panes):
+            return
+        panes = [dict(p) for p in self._builder_panes]
+        panes[row], panes[destination] = panes[destination], panes[row]
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._select_pane_row(destination)
+        self._compose()
+
+    def _toggle_selected_pane_scale(self) -> None:
+        row = self._selected_pane_index()
+        if row < 0:
+            self._set_status("⚠ keine Pane markiert", error=True)
+            return
+        panes = [dict(p) for p in self._builder_panes]
+        pane = panes[row]
+        pane["scale"] = "linear" if str(pane.get("scale")) == "log" else "log"
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._select_pane_row(row)
+        self._compose()
+
+    def _selected_pane(self) -> Optional[Dict[str, Any]]:
+        row = self._selected_pane_index()
+        if row < 0 or row >= len(self._builder_panes):
+            return None
+        return self._builder_panes[row]
+
+    def _on_pane_selection_changed(self) -> None:
+        self._sync_pane_editor()
+
+    def _sync_pane_editor(self) -> None:
+        """Hoehe/Titel/Duplizieren an die markierte Pane anpassen."""
+        if not hasattr(self, "pane_weight_spin"):
+            return
+        pane = self._selected_pane()
+        editable = bool(self._connected) and bool(self._builder_target)
+        previous = self._populating
+        self._populating = True
+        try:
+            if pane is None:
+                self.pane_weight_spin.setValue(2)
+                self.pane_title_edit.setText("")
+                self.pane_weight_spin.setEnabled(False)
+                self.pane_title_edit.setEnabled(False)
+                self.duplicate_pane_btn.setEnabled(False)
+                return
+            self.pane_weight_spin.setValue(int(pane.get("weight") or 2))
+            self.pane_title_edit.setText(str(pane.get("title") or ""))
+            is_price = str(pane.get("role")) == "price" or str(pane.get("pane_id")) == "main"
+            self.pane_weight_spin.setEnabled(editable)
+            self.pane_title_edit.setEnabled(editable)
+            self.duplicate_pane_btn.setEnabled(editable and not is_price)
+        finally:
+            self._populating = previous
+
+    def _on_pane_weight_changed(self) -> None:
+        if self._populating:
+            return
+        row = self._selected_pane_index()
+        if row < 0:
+            return
+        weight = int(self.pane_weight_spin.value())
+        if int(self._builder_panes[row].get("weight") or 0) == weight:
+            return
+        panes = [dict(pane) for pane in self._builder_panes]
+        panes[row]["weight"] = weight
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._compose()
+
+    def _on_pane_title_changed(self) -> None:
+        if self._populating:
+            return
+        row = self._selected_pane_index()
+        if row < 0:
+            return
+        title = str(self.pane_title_edit.text() or "").strip()
+        panes = [dict(pane) for pane in self._builder_panes]
+        pane = panes[row]
+        if str(pane.get("title") or "") == title and not title:
+            return
+        overrides = dict(pane.get("overrides") or {})
+        if title:
+            overrides["title"] = title
+        else:
+            overrides.pop("title", None)
+        pane["title"] = title
+        if overrides:
+            pane["overrides"] = overrides
+        else:
+            pane.pop("overrides", None)
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._compose()
+
+    def _on_duplicate_pane_clicked(self) -> None:
+        pane = self._selected_pane()
+        if pane is None:
+            self._set_status("⚠ keine Pane markiert", error=True)
+            return
+        if str(pane.get("role")) == "price" or str(pane.get("pane_id")) == "main":
+            self._set_status("⚠ das Preispane kann nicht dupliziert werden", error=True)
+            return
+        copy = dict(pane)
+        copy["pane_id"] = self._unique_pane_id(str(pane.get("pane_preset_id") or "pane"))
+        overrides = dict(pane.get("overrides") or {})
+        if str(pane.get("title") or ""):
+            overrides["title"] = str(pane["title"])
+        if overrides:
+            copy["overrides"] = overrides
+        panes = [dict(p) for p in self._builder_panes] + [copy]
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._select_pane_row(len(panes) - 1)
+        self._compose()
+
+    def _on_volume_toggled(self, checked: bool) -> None:
+        if self._populating:
+            return
+        panes = [dict(p) for p in self._builder_panes]
+        has_volume = any(str(p.get("pane_preset_id")) == "builtin:volume" for p in panes)
+        if checked and not has_volume:
+            panes.append(
+                {
+                    "pane_id": self._unique_pane_id("volume"),
+                    "pane_preset_id": "builtin:volume",
+                    "title": BUILTIN_PANE_NAMES["builtin:volume"],
+                    "role": "volume",
+                    "scale": "linear",
+                    "weight": 2,
+                }
+            )
+        elif not checked and has_volume:
+            panes = [p for p in panes if str(p.get("pane_preset_id")) != "builtin:volume"]
+        else:
+            return
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._compose()
+
+    def _save_chart_as(self) -> None:
+        target = self._builder_target
+        if not target:
+            self._set_status("⚠ kein Chartfenster als Ziel", error=True)
+            return
+        if not self._connected:
+            self._set_status("⚠ nicht verbunden", error=True)
+            return
+        default = str(self._chart_state.get("chart_id") or "")
+        if not default:
+            default = f"{str(self._chart_symbols.get(target) or 'chart').lower()}_chart"
+        raw = self._ask_chart_name(default)
+        if not raw:
+            return
+        chart_id = derive_chart_id(raw)
+        if not chart_id:
+            self._set_status(f"⚠ '{raw}' ergibt keine gültige Chart-ID", error=True)
+            return
+        params: Dict[str, Any] = {"window_id": target, "chart_id": chart_id}
+        if raw != chart_id:
+            params["display_name"] = raw
+        self._set_status(f"speichere Chart {chart_id}…")
+        self._request(
+            "save_chart",
+            params,
+            {"window_id": target, "chart_id": chart_id, "display_name": raw},
+        )
+
+    def _save_chart_in_place(self) -> None:
+        """Entwurf im aktuellen Chart speichern - ohne Namensdialog (Plan Phase 7)."""
+        target = self._builder_target
+        if not target:
+            self._set_status("⚠ kein Chartfenster als Ziel", error=True)
+            return
+        if not self._connected:
+            self._set_status("⚠ nicht verbunden", error=True)
+            return
+        chart_id = str(self._chart_state.get("chart_id") or "")
+        if not chart_id:
+            self._save_chart_as()
+            return
+        display = str(self._chart_state.get("display_name") or "")
+        params: Dict[str, Any] = {"window_id": target, "chart_id": chart_id}
+        if display and display != chart_id:
+            params["display_name"] = display
+        self._set_status(f"speichere Chart {chart_id}…")
+        self._request(
+            "save_chart",
+            params,
+            {"window_id": target, "chart_id": chart_id, "display_name": display},
+        )
+
+    def _ask_chart_name(self, default: str) -> str:
+        """Ask for a chart id (or a name to derive one from). Patched in tests."""
+        text, ok = QInputDialog.getText(self, "Chart speichern", "Chart-ID oder Name:", text=default)
+        if not ok:
+            return ""
+        return str(text or "").strip()
+
+    def _discard_builder(self) -> None:
+        """Reload the server state and render the last saved chart."""
+        target = self._builder_target
+        if not target:
+            self._set_status("⚠ kein Chartfenster als Ziel", error=True)
+            return
+        if not self._connected:
+            self._set_status("⚠ nicht verbunden", error=True)
+            return
+        self._set_status("verwerfe Änderungen…")
+        self._request(
+            "get_chart_state",
+            {"window_id": target},
+            {"window_id": target, "intent": "discard"},
+        )
+
+    def _pane_preset(self, pane_preset_id: str) -> Dict[str, Any]:
+        for pane in self._pane_catalog:
+            if str(pane.get("id") or "") == pane_preset_id:
+                return pane
+        return {}
+
+    def _main_preset_id(self) -> str:
+        for pane in self._builder_panes:
+            if str(pane.get("pane_id")) == "main":
+                return str(pane.get("pane_preset_id") or "")
+        return ""
+
+    def _pane_display_name(self, pane: Dict[str, Any]) -> str:
+        pane_preset_id = str(pane.get("pane_preset_id") or "")
+        if pane_preset_id in BUILTIN_PANE_NAMES:
+            return BUILTIN_PANE_NAMES[pane_preset_id]
+        preset = self._pane_preset(pane_preset_id)
+        if preset:
+            return str(preset.get("display_name") or pane_preset_id)
+        return str(pane.get("title") or pane_preset_id or pane.get("pane_id") or "?")
+
+    def _pane_row_text(self, pane: Dict[str, Any]) -> str:
+        scale = "LOG" if str(pane.get("scale")) == "log" else "LIN"
+        return (
+            f"{pane.get('pane_id')} · {self._pane_display_name(pane)} · {scale}"
+            f" · Gewicht {pane.get('weight', 2)}"
+        )
+
+    def _normalize_pane(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        pane_preset_id = str(raw.get("pane_preset_id") or raw.get("pane_id") or "")
+        pane_id = str(raw.get("pane_id") or pane_preset_id)
+        scale = str(raw.get("scale") or "linear").strip().lower()
+        if scale not in ("linear", "log"):
+            scale = "linear"
+        weight = raw.get("weight")
+        try:
+            weight = int(weight) if weight is not None else 2
+        except (TypeError, ValueError):
+            weight = 2
+        return {
+            "pane_id": pane_id,
+            "pane_preset_id": pane_preset_id,
+            "title": str(raw.get("title") or ""),
+            "role": str(raw.get("role") or ""),
+            "scale": scale,
+            "weight": weight,
+        }
+
+    def _unique_pane_id(self, base: str) -> str:
+        """pane_id = pane-preset id; collisions get the '_2' suffix (contract §1)."""
+        used = {str(pane.get("pane_id") or "") for pane in self._builder_panes}
+        if base not in used:
+            return base
+        suffix = 2
+        while f"{base}_{suffix}" in used:
+            suffix += 1
+        return f"{base}_{suffix}"
+
+    def _selected_pane_index(self) -> int:
+        row = self.builder_pane_list.currentRow()
+        if row < 0 or row >= len(self._builder_panes):
+            return -1
+        return row
+
+    def _select_pane_row(self, row: int) -> None:
+        if 0 <= row < self.builder_pane_list.count():
+            self.builder_pane_list.setCurrentRow(row)
+
+    @staticmethod
+    def _pane_choice_label(pane: Dict[str, Any]) -> str:
+        name = str(pane.get("display_name") or pane.get("id") or "")
+        summary = str(pane.get("summary") or "").strip()
+        return f"{name} — {summary}" if summary else name
+
+    def _populate_add_pane_combo(self) -> None:
+        if not hasattr(self, "add_pane_combo"):
+            return
+        previous = self._populating
+        self._populating = True
+        try:
+            self.add_pane_combo.clear()
+            for pane in sorted(
+                self._pane_catalog,
+                key=lambda p: str(p.get("display_name") or p.get("id") or "").lower(),
+            ):
+                pane_id = str(pane.get("id") or "")
+                if not pane_id:
+                    continue
+                self.add_pane_combo.addItem(self._pane_choice_label(pane), pane_id)
+            self.add_pane_combo.setCurrentIndex(-1)
+            self.add_pane_combo.setEditText("")
+        finally:
+            self._populating = previous
+
+    def _resolve_add_pane_id(self) -> str:
+        """Resolve the add-combo selection, also for typed (editable) text."""
+        index = self.add_pane_combo.currentIndex()
+        if index >= 0:
+            pane_id = str(self.add_pane_combo.itemData(index) or "")
+            if pane_id and self.add_pane_combo.currentText().strip() == self.add_pane_combo.itemText(index).strip():
+                return pane_id
+        text = self.add_pane_combo.currentText().strip().split(" — ")[0].strip().lower()
+        if not text:
+            return ""
+        for pane in self._pane_catalog:
+            if str(pane.get("display_name") or "").strip().lower() == text:
+                return str(pane.get("id") or "")
+        for pane in self._pane_catalog:
+            if text in str(pane.get("display_name") or "").strip().lower():
+                return str(pane.get("id") or "")
+        found = self.add_pane_combo.findData(self.add_pane_combo.currentText().strip())
+        if found >= 0:
+            return str(self.add_pane_combo.itemData(found) or "")
+        return ""
+
+    def _rebuild_builder_widgets(self) -> None:
+        if not hasattr(self, "builder_pane_list"):
+            return
+        selected = ""
+        item = self.builder_pane_list.currentItem()
+        if item is not None:
+            selected = str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+        previous = self._populating
+        self._populating = True
+        try:
+            if self._builder_target and self._builder_target in self._chart_symbols:
+                symbol = self._chart_symbols.get(self._builder_target) or "?"
+                self.builder_target_label.setText(f"Ziel: {self._builder_target} · {symbol}")
+            else:
+                self.builder_target_label.setText("Ziel: kein Chartfenster")
+            self.builder_draft_label.setText("• unbenannt" if self._builder_draft else "")
+
+            current_price = self._main_preset_id()
+            self.price_pane_combo.clear()
+            for pane in self._pane_catalog:
+                role = str(pane.get("role") or "any").strip().lower()
+                if role not in ("price", "any"):
+                    continue
+                pane_id = str(pane.get("id") or "")
+                if not pane_id:
+                    continue
+                self.price_pane_combo.addItem(str(pane.get("display_name") or pane_id), pane_id)
+            if current_price:
+                index = self.price_pane_combo.findData(current_price)
+                if index < 0:
+                    self.price_pane_combo.addItem(current_price, current_price)
+                    index = self.price_pane_combo.count() - 1
+                self.price_pane_combo.setCurrentIndex(index)
+
+            self.builder_pane_list.clear()
+            for pane in self._builder_panes:
+                row = QListWidgetItem(self._pane_row_text(pane))
+                row.setData(Qt.ItemDataRole.UserRole, str(pane.get("pane_id") or ""))
+                self.builder_pane_list.addItem(row)
+            if selected:
+                for index in range(self.builder_pane_list.count()):
+                    if str(self.builder_pane_list.item(index).data(Qt.ItemDataRole.UserRole)) == selected:
+                        self.builder_pane_list.setCurrentRow(index)
+                        break
+            self.volume_check.setChecked(
+                any(str(pane.get("pane_preset_id")) == "builtin:volume" for pane in self._builder_panes)
+            )
+        finally:
+            self._populating = previous
+        self._update_builder_enabled()
+        self._sync_pane_editor()
+
+    def _update_builder_enabled(self) -> None:
+        if not hasattr(self, "builder_pane_list"):
+            return
+        has_target = bool(self._builder_target) and self._builder_target in self._chart_symbols
+        enabled = bool(self._connected) and has_target
+        for widget in (
+            self.builder_pane_list,
+            self.price_pane_combo,
+            self.add_pane_combo,
+            self.add_pane_btn,
+            self.remove_pane_btn,
+            self.pane_up_btn,
+            self.pane_down_btn,
+            self.scale_toggle_btn,
+            self.volume_check,
+            self.save_chart_btn,
+            self.save_inplace_btn,
+            self.pane_weight_spin,
+            self.pane_title_edit,
+            self.duplicate_pane_btn,
+            self.discard_chart_btn,
+        ):
+            widget.setEnabled(enabled)
+        self.builder_reload_btn.setEnabled(bool(self._connected))
+
     # ── flag / pin / buttons ───────────────────────────────────────────────
 
     def _on_flag_changed(self, flag: int) -> None:
@@ -1027,6 +1916,7 @@ class ControlPanelWindow(QMainWindow):
         self.move_btn.setEnabled(can_edit_row)
         self.new_watchlist_btn.setEnabled(self._connected)
         self.delete_watchlist_btn.setEnabled(self._connected and bool(self._watchlists))
+        self._update_builder_enabled()
 
     def _set_status(self, text: str, error: bool = False) -> None:
         self.status_label.setText(text)

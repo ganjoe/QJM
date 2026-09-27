@@ -269,6 +269,12 @@ class ViewerApp(QObject):
             win.symbol_change_requested.connect(self._on_symbol_change_requested)
             win.pane_scale_changed.connect(self._on_pane_scale_changed)
             win.panel_focus_requested.connect(self._on_panel_focus_requested)
+            # The chart window reports its own activation; that window becomes the
+            # sticky chart-builder target. getattr() keeps the app runnable against
+            # a ChartWindow without the signal (it is added by the window strand).
+            window_activated = getattr(win, "window_activated", None)
+            if window_activated is not None:
+                window_activated.connect(self._on_chart_window_activated)
             
             # Register for EventHub symbol routing
             self.event_hub.register_for_flag(win.color_flag, win.request_symbol_change)
@@ -485,13 +491,23 @@ class ViewerApp(QObject):
             self._send_viewer_ready()
 
     def _refresh_panel_chart_windows(self) -> None:
-        """Keep the control panel's chart list (and preset target) up to date."""
+        """Keep the control panel's chart list, symbols and builder target in sync.
+
+        The panel receives window_id + symbol per chart window and decides the
+        builder target itself: an open target survives every refresh, a closed one
+        is dropped, and with no chart window at all the target is cleared.
+        """
         if self.control_panel is None:
             return
         self.control_panel.set_chart_windows([
             {"window_id": win_id, "symbol": win.symbol, "color_flag": win.color_flag}
             for win_id, win in self.windows.items()
         ])
+
+    def _on_chart_window_activated(self, window_id: str) -> None:
+        """A chart window got the focus - it becomes the sticky builder target."""
+        if self.control_panel is not None:
+            self.control_panel.set_target_window(str(window_id or ""))
 
     def _on_panel_focus_requested(self) -> None:
         """Ctrl+Shift+P in any chart window brings the control panel to the front."""

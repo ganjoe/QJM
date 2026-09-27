@@ -18,6 +18,7 @@ class ChartWindow(QMainWindow):
     """Native desktop window for a single chart view."""
 
     window_closed_signal = Signal(str)  # window_id
+    window_activated = Signal(str)  # window_id, emitted when this window gains focus
     geometry_changed_signal = Signal(str, dict)  # window_id, {x, y, w, h}
     symbol_change_requested = Signal(str, str, object)  # window_id, new_symbol, preset|None
     pane_scale_changed = Signal(str, object)     # window_id, {pane_id: "linear"|"log"}
@@ -35,6 +36,7 @@ class ChartWindow(QMainWindow):
         self.config = config
         self.symbol: str = ""
         self.color_flag: int = 0
+        self._was_active: bool = False
 
         self.setWindowTitle(f"Chart Viewer — {window_id}")
         self.resize(1000, 700)
@@ -119,9 +121,15 @@ class ChartWindow(QMainWindow):
             QEvent.Type.WindowActivate,
             QEvent.Type.WindowDeactivate,
         ):
+            active = self.isActiveWindow()
             canvas = getattr(self, "canvas", None)
             if canvas is not None:
-                canvas.set_window_active(self.isActiveWindow())
+                canvas.set_window_active(active)
+            # Focus gained: report it (the "sticky" chart window is owned by the
+            # control panel; this signal only announces the event).
+            if active and not self._was_active:
+                self.window_activated.emit(self.window_id)
+            self._was_active = active
         super().changeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:

@@ -9,10 +9,12 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
+from chart_viewer import chart_spec
 from chart_viewer.formatting import compact_number as _compact_number
 from chart_viewer.formatting import de_num as _de_num
 from chart_viewer.fundamentals import fundamental_topbar_parts
@@ -83,6 +85,72 @@ def _pca_post(path: str, payload: dict) -> Dict[str, Any]:
 def resolve_preset(preset_name: str) -> Dict[str, Any]:
     """Fetch a named preset from PCA-Service."""
     return _pca_get(f"/api/presets/{preset_name}")
+
+
+def _pca_get_soft(path: str) -> Optional[Dict[str, Any]]:
+    """GET auf den PCA-Service, das bei 404/Netzfehler None liefert.
+
+    Damit bleibt der Altpfad (flache Presets) benutzbar, wenn die neue
+    Chart-Ebene einen Namen nicht kennt oder der Service noch alt ist.
+    """
+    url = f"{PCA_SERVICE_URL}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001 - Fallback ist gewollt
+        logger.info("PCA GET %s nicht verfuegbar (%s) - Fallback.", url, exc)
+        return None
+
+
+def load_chart_spec(chart_id: str) -> Optional[Dict[str, Any]]:
+    """Chart-Definition (Panes + Pane-Presets) vom PCA-Service holen."""
+    payload = _pca_get_soft(f"/api/charts/{urllib.parse.quote(str(chart_id), safe='')}")
+    if not payload or "panes" not in payload:
+        return None
+    return chart_spec.normalize_chart_spec(payload)
+
+
+def build_inline_chart_spec(
+    panes: List[Dict[str, Any]],
+    topbar_metrics: Optional[List[str]] = None,
+    chart_meta: Optional[Dict[str, Any]] = None,
+    skipped: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Ad-hoc-Zusammenstellung (Builder-Draft) in eine Chart-Definition uebersetzen.
+
+    Unbekannte Pane-Presets werden uebersprungen und - wenn eine Liste
+    hereingereicht wird - als 'skipped' gemeldet, statt nur im Log zu landen.
+    """
+    resolved = []
+    for entry in panes or []:
+        preset_id = str((entry or {}).get("pane_preset_id") or "").strip()
+        if not preset_id:
+            continue
+        preset = chart_spec.builtin_preset(preset_id) or _pca_get_soft(
+            f"/api/panes/{urllib.parse.quote(preset_id, safe='')}"
+        )
+        if not preset:
+            logger.warning("Pane-Preset '%s' unbekannt - uebersprungen.", preset_id)
+            if skipped is not None:
+                skipped.append({"pane_preset_id": preset_id, "reason": "unknown_preset"})
+            continue
+        resolved.append(
+            {
+                "pane_id": (entry or {}).get("pane_id"),
+                "pane_preset_id": preset_id,
+                "scale": (entry or {}).get("scale") or preset.get("default_scale") or "linear",
+                "weight": (entry or {}).get("weight"),
+                "overrides": (entry or {}).get("overrides") or {},
+                "preset": preset,
+            }
+        )
+    meta = dict(chart_meta or {})
+    meta["panes"] = resolved
+    meta.setdefault("id", None)
+    meta.setdefault("display_name", "Draft")
+    if topbar_metrics is not None:
+        meta["topbar_metrics"] = topbar_metrics
+    return chart_spec.normalize_chart_spec(meta, draft=bool(meta.get("draft", True)))
 
 
 def fetch_chart_data(symbol: str, timeframe: str = "1D", limit: int = DEFAULT_CHART_LIMIT) -> Dict[str, Any]:
@@ -174,6 +242,9 @@ def build_display_stock(
     size: Optional[Dict[str, int]] = None,
     topbar_metrics: Optional[List[str]] = None,
     window_id: Optional[str] = None,
+    chart: Optional[str] = None,
+    panes: Optional[List[Dict[str, Any]]] = None,
+    chart_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a complete OPEN_WINDOW + snapshot payload for a stock.
 
@@ -189,9 +260,31 @@ def build_display_stock(
     """
     symbol = symbol.upper()
 
-    # 1. Resolve preset if given
+    # 1. Chart-Definition (Pane-Ebene) aufloesen. Ist sie vorhanden, kommen
+    #    Panes, Skalen und Topbar ausschliesslich aus ihr; der flache Altpfad
+    #    (Preset -> Indikatorliste) wird stillgelegt.
     pane_scales: Dict[str, str] = {}
-    if preset and not indicators:
+    spec: Optional[Dict[str, Any]] = None
+    skipped: List[Dict[str, Any]] = []
+    if panes is not None:
+        spec = build_inline_chart_spec(
+            panes,
+            topbar_metrics=topbar_metrics,
+            chart_meta=chart_meta,
+            skipped=skipped,
+        )
+        topbar_metrics = spec.get("topbar_metrics") or []
+    elif chart:
+        spec = load_chart_spec(chart)
+    elif preset and not indicators:
+        # Explizit mitgeschickte Indikatoren haben weiter Vorrang vor einem Preset.
+        spec = load_chart_spec(preset)
+
+    if spec is not None:
+        indicators = []
+        if topbar_metrics is None:
+            topbar_metrics = spec.get("topbar_metrics") or []
+    elif preset and not indicators:
         preset_data = resolve_preset(preset)
         indicators = preset_data.get("indicators", [])
         # Y-Skalierung je Pane (linear/log) aus dem Preset uebernehmen
@@ -351,24 +444,25 @@ def build_display_stock(
                 "origin": ind.get("origin", "bottom"),
             })
         else:
-            # Column not in Parquet -> queue for on-the-fly calculation
-            spec = _column_to_indicator_spec(col)
-            if spec:
-                if spec["indicator_type"] == "SMA":
-                    otf_sma_periods.append(spec["period"])
-                    otf_sma_styles[spec["result_col"]] = style
-                    otf_panes[spec["result_col"]] = pane_target
-                elif spec["indicator_type"] == "EMA":
-                    otf_ema_periods.append(spec["period"])
-                    otf_ema_styles[spec["result_col"]] = style
-                    otf_panes[spec["result_col"]] = pane_target
-                elif spec["indicator_type"] == "BOLLINGER":
-                    otf_bb_periods.append(spec["period"])
-                    otf_bb_styles[spec["period"]] = style
-                elif spec["indicator_type"] == "ADR_PCT":
-                    otf_adr_pct_periods.append(spec["period"])
-                    otf_adr_pct_styles[spec["result_col"]] = style
-                    otf_panes[spec["result_col"]] = pane_target
+            # Column not in Parquet -> queue for on-the-fly calculation.
+            # Achtung: eigener Name, 'spec' gehoert der Chart-Ebene.
+            otf_spec = _column_to_indicator_spec(col)
+            if otf_spec:
+                if otf_spec["indicator_type"] == "SMA":
+                    otf_sma_periods.append(otf_spec["period"])
+                    otf_sma_styles[otf_spec["result_col"]] = style
+                    otf_panes[otf_spec["result_col"]] = pane_target
+                elif otf_spec["indicator_type"] == "EMA":
+                    otf_ema_periods.append(otf_spec["period"])
+                    otf_ema_styles[otf_spec["result_col"]] = style
+                    otf_panes[otf_spec["result_col"]] = pane_target
+                elif otf_spec["indicator_type"] == "BOLLINGER":
+                    otf_bb_periods.append(otf_spec["period"])
+                    otf_bb_styles[otf_spec["period"]] = style
+                elif otf_spec["indicator_type"] == "ADR_PCT":
+                    otf_adr_pct_periods.append(otf_spec["period"])
+                    otf_adr_pct_styles[otf_spec["result_col"]] = style
+                    otf_panes[otf_spec["result_col"]] = pane_target
             else:
                 logger.warning("Indicator column '%s' not in Parquet and not calculable on-the-fly, skipping.", col)
 
@@ -446,6 +540,37 @@ def build_display_stock(
         except Exception as e:
             logger.error("On-the-fly Bollinger calculation failed: %s", e)
 
+    # 5b. Pane-Ebene: Overlays/Gewichte/Skalen aus der Chart-Definition
+    chart_panes: List[Dict[str, Any]] = []
+    chart_info: Dict[str, Any] = {}
+    x_axis_pane: Optional[str] = None
+    pane_notice = ""
+    warnings: List[Dict[str, Any]] = []
+    if spec is not None:
+        built = chart_spec.build_overlays(
+            spec,
+            bars,
+            rows,
+            col_idx,
+            resolve_column,
+            calculate_indicators_on_the_fly,
+            symbol,
+            timeframe,
+            limit,
+        )
+        overlays = built["overlays"]
+        pane_scales = built["pane_scales"]
+        chart_panes = built["panes"]
+        x_axis_pane = spec.get("x_axis_pane")
+        chart_info = {
+            "id": spec.get("id"),
+            "display_name": spec.get("display_name"),
+            "draft": bool(spec.get("draft")),
+        }
+        warnings = built.get("warnings") or []
+        if built.get("missing"):
+            pane_notice = " | ⚠ fehlt: " + ", ".join(dict.fromkeys(built["missing"]))
+
     # 6. Build topbar content from metric columns
     topbar_parts = []
     last_row = rows[-1] if rows else []
@@ -491,6 +616,8 @@ def build_display_stock(
     # "Bars" schliesst die Zeile ab; die Overlay-Anzahl stand hier frueher auch,
     # ist fuer die Chartarbeit aber ohne Aussage und hat die Zeile nur verlaengert.
     topbar_content += f" | Bars: {len(bars)}"
+    if pane_notice:
+        topbar_content += pane_notice
 
     # Add staleness notice if applicable
     if chart_data.get("features_stale") and chart_data.get("notice"):
@@ -512,10 +639,21 @@ def build_display_stock(
         # Linear/Log je Pane; der Viewer wendet das beim Snapshot an und
         # meldet Aenderungen (LOG/LIN-Taste) ins Preset zurueck.
         "pane_scales": pane_scales,
+        # Pane-Ebene (Vertrag docs/architecture/chart-presets.md): Rolle, Titel,
+        # Gewicht und Skala je Pane; chart = Name/Draft-Status des Fensterinhalts.
+        "panes": chart_panes,
+        "chart": chart_info,
+        "x_axis_pane": x_axis_pane,
+        # Aufgeloeste Topbar-Metriken (der Server legt sie im Ledger ab, damit ein
+        # Symbolwechsel die Chart-Definition ohne Preset-Abruf neu rendern kann).
+        "topbar_metrics": list(topbar_metrics or []),
         "topbar": {
             "block_id": "info_block",
             "content": topbar_content,
         },
+        # Warnkanal (Plan Phase 4): sichtbar machen, was fehlt oder uebersprungen wurde.
+        "warnings": warnings,
+        "skipped": skipped,
     }
 
     logger.info(

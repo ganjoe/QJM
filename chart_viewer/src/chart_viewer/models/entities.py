@@ -66,18 +66,22 @@ class Series(msgspec.Struct):
 
 class OverlayPoint(msgspec.Struct):
     t: int
-    value: float
+    # None is only meaningful for zones: value/value2 null = full pane height.
+    value: float | None = None
     value2: float | None = None  # Second value for bands (e.g. upper/lower band)
+    t2: int | None = None        # End timestamp for zones (span t..t2)
+    color_override: str | None = None  # Per-point colour (line segments, histogram bars)
 
 
 class Overlay(msgspec.Struct):
     overlay_id: str
-    type: Literal["line", "band", "histogram", "marker"]
+    type: Literal["line", "band", "histogram", "marker", "zone", "level"]
     series_id: str
     values: list[OverlayPoint]
     style: dict = {}
     pane: str = "main"                                      # Pane this overlay belongs to
     origin: Literal["bottom", "center"] = "bottom"          # Histogram origin mode
+    rules: dict = {}                                        # Threshold rules (informational)
 
 
 class Anchor(msgspec.Struct):

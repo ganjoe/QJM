@@ -73,7 +73,10 @@ class ChartCanvas(QWidget):
 
         # Pane registry: pane_id → ChartPane
         self._panes: Dict[str, ChartPane] = {}
-        self._pane_order: List[str] = []  # Ordered pane IDs (main first)
+        self._pane_order: List[str] = []  # Ordered pane IDs (price pane first)
+        # (pane_id, weight) signature of the last applied splitter layout, so a
+        # live snapshot does not reset a drag in progress.
+        self._applied_weight_signature: Optional[tuple] = None
 
         # Reference data
         self.window_data: Optional[WindowData] = None
@@ -116,19 +119,18 @@ class ChartCanvas(QWidget):
         self._key_zoom_timer.timeout.connect(self._on_smooth_zoom_tick)
 
     def set_window_data(self, win_data: WindowData) -> None:
-        """Bind window data and rebuild panes as needed."""
+        """Bind window data and adjust the panes (diff, no blind rebuild)."""
         self.window_data = win_data
 
-        # Determine required panes
         pane_overlays = win_data.get_panes()  # {pane_id: [overlays]}
-        required_pane_ids = ["main"]  # Main always exists
-        for pane_id in pane_overlays:
-            if pane_id != "main" and pane_id not in required_pane_ids:
-                required_pane_ids.append(pane_id)
 
-        # Rebuild panes if pane set changed
-        if required_pane_ids != self._pane_order:
-            self._rebuild_panes(required_pane_ids)
+        # Chart definition (contract section 3): the "panes" list is the source
+        # of order/role/title/weight. Old snapshots without it keep the previous
+        # overlay-derived layout.
+        specs = self._resolve_pane_specs(win_data, pane_overlays)
+        structure_changed = self._sync_panes(specs)
+        self._apply_x_axis_pane(specs, getattr(win_data, "x_axis_pane", None))
+        self._apply_splitter_weights(specs, structure_changed)
 
         # Time base
         base_ts = win_data.bars[0].t_open if win_data.bars else 0
@@ -136,24 +138,27 @@ class ChartCanvas(QWidget):
         if win_data.timeframe:
             duration = win_data.timeframe.to_seconds()
 
-        # Distribute data to panes
-        main_pane = self._panes.get("main")
-        if main_pane:
-            main_overlays = {ov.overlay_id: ov for ov in pane_overlays.get("main", [])}
-            main_pane.set_data(win_data.bars, main_overlays, win_data.style_defaults)
-            main_pane.set_annotations(win_data.annotations)
-            main_pane.watermark_text = f"{win_data.symbol}"
+        # Distribute data to panes (price pane: candles + annotations + watermark)
+        price_pane = self._price_pane()
+        if price_pane is not None:
+            price_overlays = {
+                ov.overlay_id: ov for ov in pane_overlays.get(price_pane.pane_id, [])
+            }
+            price_pane.set_data(win_data.bars, price_overlays, win_data.style_defaults)
+            price_pane.set_annotations(win_data.annotations)
+            price_pane.watermark_text = f"{win_data.symbol}"
             if win_data.timeframe:
-                main_pane.watermark_text += f" • {win_data.timeframe.to_string()}"
-            main_pane.base_timestamp = base_ts
-            main_pane.bar_duration = duration
+                price_pane.watermark_text += f" • {win_data.timeframe.to_string()}"
+            price_pane.base_timestamp = base_ts
+            price_pane.bar_duration = duration
 
-        for pane_id, overlays in pane_overlays.items():
-            if pane_id == "main":
+        for spec in specs:
+            pane_id = spec["pane_id"]
+            if price_pane is not None and pane_id == price_pane.pane_id:
                 continue
             pane = self._panes.get(pane_id)
             if pane:
-                ov_dict = {ov.overlay_id: ov for ov in overlays}
+                ov_dict = {ov.overlay_id: ov for ov in pane_overlays.get(pane_id, [])}
                 pane.set_data(win_data.bars, ov_dict)
                 pane.base_timestamp = base_ts
                 pane.bar_duration = duration
@@ -176,50 +181,188 @@ class ChartCanvas(QWidget):
         self.apply_pane_scales(getattr(win_data, "pane_scales", None))
         self.mark_layers_dirty()
 
-    def _rebuild_panes(self, pane_ids: List[str]) -> None:
-        """Tear down old panes and create new ones for the given pane IDs."""
-        # Remove old panes
-        for pane_id in list(self._panes.keys()):
-            pane = self._panes.pop(pane_id)
-            self._splitter.widget(0)  # force layout
-            pane.setParent(None)
-            pane.deleteLater()
+    # ── Pane layout (chart definition) ────────────────────
 
-        # Remove all widgets from splitter
-        while self._splitter.count() > 0:
-            w = self._splitter.widget(0)
-            w.setParent(None)
+    def _resolve_pane_specs(self, win_data: WindowData, pane_overlays) -> List[dict]:
+        """Ordered pane specs of a window (contract docs/architecture/chart-presets.md 3).
 
-        self._pane_order = pane_ids
-
-        # Create panes
-        for i, pane_id in enumerate(pane_ids):
-            is_main = (pane_id == "main")
-            pane = ChartPane(
-                pane_id=pane_id,
-                x_trans=self.x_trans,
-                config=self.config,
-                is_main=is_main,
-                parent=self._splitter,
-            )
-            # Rule: X-axis date/time legend belongs in the pane UNDER the chart (index 1),
-            # or in the main chart pane if single pane!
-            if len(pane_ids) > 1:
-                pane.draw_x_axis = (i == 1)
+        A snapshot carrying "panes" defines order, role, title and weight
+        explicitly. Without it the previous behaviour applies: "main" first,
+        then every overlay pane in appearance order.
+        """
+        specs: List[dict] = []
+        seen = set()
+        for index, entry in enumerate(getattr(win_data, "panes", None) or []):
+            if isinstance(entry, str):
+                pane_id, role, title, weight = entry, "", "", None
+            elif isinstance(entry, dict):
+                pane_id = entry.get("pane_id") or entry.get("preset_id") or f"pane_{index}"
+                role = str(entry.get("role") or "").strip().lower()
+                title = entry.get("title") or ""
+                weight = entry.get("weight")
             else:
-                pane.draw_x_axis = is_main
+                continue
+            pane_id = str(pane_id).strip()
+            if not pane_id or pane_id in seen:
+                continue
+            seen.add(pane_id)
+            specs.append({
+                "pane_id": pane_id,
+                "role": role if role in ("price", "value", "volume") else "",
+                "title": str(title),
+                "weight": self._coerce_weight(weight),
+            })
 
-            self._panes[pane_id] = pane
-            self._splitter.addWidget(pane)
-            stretch = 7 if is_main else 2
-            self._splitter.setStretchFactor(i, stretch)
-            # Connect crosshair distribution and X-pan
-            pane.crosshair_moved_signal.connect(self._on_pane_crosshair_moved)
-            pane.x_pan_requested.connect(self._on_x_pan)
-            pane.y_scale_type_changed.connect(self._on_pane_scale_type_changed)
+        if not specs:
+            # Old snapshot: derive the panes from the overlays as before.
+            pane_ids = ["main"]
+            for pane_id in pane_overlays:
+                normalized = str(pane_id or "main")
+                if normalized not in pane_ids:
+                    pane_ids.append(normalized)
+            specs = [
+                {"pane_id": pane_id, "role": "", "title": "", "weight": None}
+                for pane_id in pane_ids
+            ]
 
-        # Restore or set default splitter sizes
-        self._restore_splitter_sizes(len(pane_ids))
+        return self._finalize_pane_specs(specs)
+
+    @staticmethod
+    def _coerce_weight(weight) -> Optional[int]:
+        """Pane weight from the snapshot; None when the snapshot carries none."""
+        if weight is None:
+            return None
+        try:
+            value = int(weight)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _finalize_pane_specs(specs: List[dict]) -> List[dict]:
+        """Assign the single price pane and the effective weights.
+
+        Contract: exactly one pane has role=price (and the id "main"); without
+        one the "main" pane, otherwise the first pane becomes the price pane
+        (compatibility with old data). Panes without an explicit weight keep the
+        historical 7 (price) / 2 (others) stretch.
+        """
+        main_index = None
+        for index, spec in enumerate(specs):
+            if spec["role"] == "price":
+                main_index = index
+                break
+        if main_index is None:
+            for index, spec in enumerate(specs):
+                if spec["pane_id"] == "main":
+                    main_index = index
+                    break
+        if main_index is None:
+            main_index = 0
+        for index, spec in enumerate(specs):
+            spec["is_main"] = (index == main_index)
+            if not spec["role"]:
+                spec["role"] = "price" if index == main_index else "value"
+            spec["has_weight"] = spec["weight"] is not None
+            if spec["weight"] is None:
+                spec["weight"] = 7 if index == main_index else 2
+        return specs
+
+    def _sync_panes(self, specs: List[dict]) -> bool:
+        """Create/move/remove pane widgets so the splitter matches "specs".
+
+        Panes are keyed by pane_id: an existing widget is reused (crosshair,
+        Y-scale and signal connections survive), only new ids are created and
+        vanished ids are deleted. Returns True when the pane set or order
+        changed, so the caller only re-lays out the splitter when needed.
+        """
+        desired = [spec["pane_id"] for spec in specs]
+
+        for pane_id in list(self._panes.keys()):
+            if pane_id not in desired:
+                pane = self._panes.pop(pane_id)
+                pane.setParent(None)
+                pane.deleteLater()
+
+        for index, spec in enumerate(specs):
+            pane = self._panes.get(spec["pane_id"])
+            if pane is None:
+                pane = ChartPane(
+                    pane_id=spec["pane_id"],
+                    x_trans=self.x_trans,
+                    config=self.config,
+                    is_main=spec["is_main"],
+                    role=spec["role"],
+                    title=spec["title"],
+                    weight=spec["weight"],
+                    parent=self._splitter,
+                )
+                # Connect crosshair distribution and X-pan
+                pane.crosshair_moved_signal.connect(self._on_pane_crosshair_moved)
+                pane.x_pan_requested.connect(self._on_x_pan)
+                pane.y_scale_type_changed.connect(self._on_pane_scale_type_changed)
+                self._panes[spec["pane_id"]] = pane
+            else:
+                pane.is_main = spec["is_main"]
+                pane.role = spec["role"]
+                if pane.title != spec["title"]:
+                    pane.title = spec["title"]
+                    pane.mark_dirty()
+                pane.weight = spec["weight"]
+            # insertWidget MOVES an existing widget to the new position instead
+            # of rebuilding it — a reorder never deletes the running panes.
+            self._splitter.insertWidget(index, pane)
+
+        changed = desired != self._pane_order
+        self._pane_order = desired
+        return changed
+
+    def _apply_x_axis_pane(self, specs: List[dict], x_axis_pane) -> None:
+        """Exactly one pane draws the X-axis: the configured pane, else the bottom one."""
+        pane_ids = [spec["pane_id"] for spec in specs]
+        target = str(x_axis_pane) if x_axis_pane else ""
+        if target not in pane_ids:
+            target = pane_ids[-1] if pane_ids else ""
+        for pane_id in pane_ids:
+            pane = self._panes.get(pane_id)
+            if pane is not None:
+                pane.draw_x_axis = (pane_id == target)
+
+    def _apply_splitter_weights(self, specs: List[dict], structure_changed: bool) -> None:
+        """Give every pane its stretch factor and split height.
+
+        Weights from the snapshot win. Without them (old snapshots) the local
+        splitter prefs file fallback applies, as before. Sizes are recomputed
+        only when the layout actually changed, so a user's running splitter drag
+        survives live snapshot updates.
+        """
+        signature = tuple((spec["pane_id"], spec["weight"]) for spec in specs)
+        if not structure_changed and signature == self._applied_weight_signature:
+            return
+
+        for index, spec in enumerate(specs):
+            self._splitter.setStretchFactor(index, max(1, int(spec["weight"])))
+
+        if any(spec["has_weight"] for spec in specs):
+            total = self._splitter.height() or 700
+            weights = [max(1, int(spec["weight"])) for spec in specs]
+            weight_sum = sum(weights) or 1
+            self._splitter.setSizes([max(1, int(total * w / weight_sum)) for w in weights])
+        else:
+            self._restore_splitter_sizes(len(specs))
+
+        self._applied_weight_signature = signature
+
+    def _rebuild_panes(self, pane_ids: List[str]) -> None:
+        """Compatibility entry point: sync the panes from a plain list of pane IDs."""
+        specs = self._finalize_pane_specs([
+            {"pane_id": str(pane_id), "role": "", "title": "", "weight": None}
+            for pane_id in pane_ids
+        ])
+        structure_changed = self._sync_panes(specs)
+        self._apply_x_axis_pane(specs, None)
+        self._apply_splitter_weights(specs, structure_changed)
+        self.mark_layers_dirty()
 
     def _restore_splitter_sizes(self, pane_count: int) -> None:
         """Load saved splitter sizes for this pane count, or use defaults."""
@@ -270,6 +413,13 @@ class ChartCanvas(QWidget):
         """Update Y-range for all panes."""
         for pane in self._panes.values():
             pane.update_y_range()
+
+    def _price_pane(self) -> Optional[ChartPane]:
+        """The pane with role=price; falls back to the legacy id "main"."""
+        for pane in self._panes.values():
+            if pane.is_main:
+                return pane
+        return self._panes.get("main")
 
     # -- Y-scale per pane (linear/log) ------------------------------------
 
@@ -380,9 +530,9 @@ class ChartCanvas(QWidget):
         viewport the way set_window_data() does (that pins the X-axis to the right
         edge and would jerk the chart on every drawing update).
         """
-        main_pane = self._panes.get("main")
-        if main_pane:
-            main_pane.set_annotations(annotations)
+        price_pane = self._price_pane()
+        if price_pane:
+            price_pane.set_annotations(annotations)
 
     def mark_layers_dirty(self) -> None:
         """Mark all panes dirty for repaint."""

@@ -3,18 +3,33 @@
 from __future__ import annotations
 import html
 from typing import Dict
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtWidgets import QWidget, QGridLayout, QLabel, QSizePolicy
 from chart_viewer.models.entities import TopBarBlock
+
+
+class _ClippingLabel(QLabel):
+    """Label, das den Text bei zu wenig Platz beschneidet statt zu blockieren.
+
+    Ein normales QLabel meldet ohne Wortumbruch seine volle Textbreite als
+    minimumSizeHint. Lange Info-Zeilen erzwangen damit eine Fenster-
+    Mindestbreite von rund 1000 px - das Fenster liess sich nicht mehr
+    verkleinern. Hier bleibt die bevorzugte Breite (sizeHint) unveraendert,
+    nur die Mindestbreite faellt auf 0: bei genug Platz steht der Text
+    vollstaendig da, bei knappem Platz wird er einfach verdeckt.
+    """
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
 
 
 class TopBarWidget(QWidget):
     """Freeform grid widget displaying sanitized metadata and status blocks with optional TTL."""
 
-    # Info-Zeile: 22 px bold statt der alten 11 px. Die feste Hoehe waechst im
-    # selben Verhaeltnis mit, sonst schneidet das Label den groesseren Text ab.
-    FONT_SIZE_PX = 22
-    ROW_HEIGHT_PX = 68
+    # Info-Zeile: kompakter 13-px-Font (vorher 22 px). Die feste Hoehe waechst
+    # im selben Verhaeltnis mit, sonst schneidet das Label den Text vertikal ab.
+    FONT_SIZE_PX = 13
+    ROW_HEIGHT_PX = 40
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -62,10 +77,17 @@ class TopBarWidget(QWidget):
             label = self._blocks[block_id]
             label.setText(sanitized_text)
         else:
-            label = QLabel(self)
+            label = _ClippingLabel(self)
+            # Shrinkable: Text wird bei knappem Platz beschnitten statt das
+            # Fenster in die Breite zu zwingen (siehe _ClippingLabel).
+            label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            label.setMinimumWidth(0)
             label.setText(sanitized_text)
             self.layout.addWidget(label, row, col)
             self._blocks[block_id] = label
+
+        # Voller Text bleibt per Tooltip erreichbar, wenn die Zeile beschnitten ist.
+        label.setToolTip(sanitized_text)
 
         # TTL auto-expiration handling
         if ttl_ms and ttl_ms > 0:

@@ -266,6 +266,12 @@ class ChartAgent:
             "position": position or {"x": 100, "y": 100},
             "size": size or {"width": 900, "height": 600},
         }
+        # Farbe und Chart-Definition ueberleben ein Neu-Rendern desselben Fensters
+        # (Symbolwechsel): sie gehoeren zum Fenster, nicht zum Datenabruf.
+        previous = self.layout_ledger.get(window_id) or {}
+        for key in ("color_flag", "chart", "preset"):
+            if key in previous:
+                win_info[key] = previous[key]
         self.layout_ledger[window_id] = win_info
 
         env = make_envelope(
@@ -361,12 +367,14 @@ class ChartAgent:
             tf_mult = win_info.get("multiplier", 1)
         tf_str = f"{tf_mult}{tf_unit}"
         
+        chart_info = win_info.get("chart") or {}
         if preset:
             win_info["preset"] = preset
+            chart_info = {}
             self.layout_ledger[window_id] = win_info
-        else:
+        elif not chart_info:
             preset = win_info.get("preset")
-        if not preset:
+        if not chart_info and not preset:
             try:
                 import json
                 with open("/tmp/last_chart_state.json", "r") as f:
@@ -386,8 +394,26 @@ class ChartAgent:
                 "window_id": window_id,
                 "symbol": new_symbol,
                 "timeframe_str": tf_str,
-                "preset": preset,
             }
+            # Die Chart-Definition des Fensters hat Vorrang: sie ist die Source of
+            # Truth und wird beim Symbolwechsel mit denselben Panes neu gerendert.
+            if chart_info:
+                if chart_info.get("draft") or not chart_info.get("id"):
+                    payload["panes"] = [
+                        {k: v for k, v in pane.items() if k != "overrides" or v}
+                        for pane in (chart_info.get("panes") or [])
+                    ]
+                    payload["chart_meta"] = {
+                        "id": chart_info.get("id"),
+                        "display_name": chart_info.get("display_name"),
+                        "draft": True,
+                        "topbar_metrics": chart_info.get("topbar_metrics") or [],
+                        "x_axis_pane": chart_info.get("x_axis_pane"),
+                    }
+                else:
+                    payload["chart"] = chart_info.get("id")
+            else:
+                payload["preset"] = preset
             if "position" in win_info:
                 payload["position"] = win_info["position"]
             if "size" in win_info:
@@ -562,7 +588,7 @@ class ChartAgent:
                         monitor = mi
                         break
 
-            windows_list.append({
+            entry = {
                 "window_id": win_id,
                 "window_type": win_type,
                 "position": {
@@ -575,7 +601,25 @@ class ChartAgent:
                 },
                 "color_flag": win_info.get("color_flag", 0),
                 "monitor": monitor,
-            })
+            }
+            # Setup v2: das Setup merkt sich, WAS im Fenster lag (Chart-Definition,
+            # Symbol, Timeframe) - sonst ist ein Restore nicht reproduzierbar.
+            chart_info = win_info.get("chart") or {}
+            if chart_info:
+                entry["chart_id"] = chart_info.get("id")
+                entry["chart_name"] = chart_info.get("display_name")
+                if chart_info.get("draft") or not chart_info.get("id"):
+                    entry["chart_panes"] = chart_info.get("panes") or []
+                if chart_info.get("topbar_metrics"):
+                    entry["topbar_metrics"] = chart_info.get("topbar_metrics")
+                if chart_info.get("x_axis_pane"):
+                    entry["x_axis_pane"] = chart_info.get("x_axis_pane")
+            if win_info.get("symbol"):
+                entry["symbol"] = win_info.get("symbol")
+            tf = win_info.get("timeframe")
+            if isinstance(tf, dict):
+                entry["timeframe"] = f"{tf.get('multiplier', 1)}{tf.get('unit', 'D')}"
+            windows_list.append(entry)
 
         current_hash = self._build_geometry_snapshot(geometries, effective_monitors)
 
@@ -613,6 +657,93 @@ class ChartAgent:
             msg = _extract_url_error_msg(e)
             logger.error("Failed to save setup '%s': %s", setup_name, msg)
             raise RuntimeError(f"Failed to save setup: {msg}") from e
+
+    def assign_setup_slot(
+        self,
+        setup_name: str,
+        monitor_count: int | None = None,
+        window_id: str | None = None,
+        slot: int | None = None,
+        chart_id: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+    ) -> dict:
+        """Chart/Symbol/Timeframe eines gespeicherten Setup-Slots setzen.
+
+        Aendert nur die genannten Felder des Ziel-Fensters in der gespeicherten
+        Variante - ohne Fenster zu oeffnen oder zu schliessen. Ziel ist entweder
+        ein Fenster per window_id oder ein Slot per 1-basierter Nummer.
+        chart_id="" entfernt die Chart-Bindung (das Fenster oeffnet dann leer).
+        """
+        if not setup_name:
+            raise ValueError("setup_name is required")
+        if not window_id and slot is None:
+            raise ValueError("window_id oder slot ist erforderlich")
+
+        encoded_name = urllib.parse.quote(setup_name)
+        try:
+            rows = _supabase_get(f"/pca_window_setups?setup_name=eq.{encoded_name}&order=monitor_count.asc")
+        except Exception as e:
+            raise RuntimeError(f"Failed to query setups: {e}") from e
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(f"Setup '{setup_name}' not found")
+
+        row = None
+        if monitor_count is not None:
+            row = next((r for r in rows if r.get("monitor_count") == monitor_count), None)
+        if row is None:
+            target = monitor_count if monitor_count is not None else (len(self.screens) or 1)
+            row = min(rows, key=lambda r: abs((r.get("monitor_count") or 1) - target))
+
+        windows = list(row.get("windows") or [])
+        index = None
+        if window_id:
+            index = next((i for i, w in enumerate(windows) if w.get("window_id") == window_id), None)
+            if index is None:
+                raise RuntimeError(f"Fenster '{window_id}' gibt es im Setup '{setup_name}' nicht")
+        else:
+            if slot is None or slot < 1 or slot > len(windows):
+                raise RuntimeError(f"Slot {slot} gibt es im Setup '{setup_name}' nicht (1..{len(windows)})")
+            index = int(slot) - 1
+
+        entry = dict(windows[index])
+        changed: dict = {}
+        if chart_id is not None:
+            if str(chart_id).strip():
+                entry["chart_id"] = str(chart_id).strip()
+                entry.pop("chart_panes", None)
+                changed["chart_id"] = entry["chart_id"]
+            else:
+                for key in ("chart_id", "chart_name", "chart_panes"):
+                    entry.pop(key, None)
+                changed["chart_id"] = None
+        if symbol is not None:
+            entry["symbol"] = str(symbol).strip().upper()
+            changed["symbol"] = entry["symbol"]
+        if timeframe is not None:
+            entry["timeframe"] = str(timeframe).strip()
+            changed["timeframe"] = entry["timeframe"]
+
+        windows[index] = entry
+        try:
+            _supabase_patch(
+                f"/pca_window_setups?id=eq.{row.get('id')}",
+                {"windows": windows, "updated_at": datetime.now(timezone.utc).isoformat()},
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to update setup slot: {e}") from e
+
+        logger.info(
+            "Setup '%s' Slot %s aktualisiert: %s", setup_name, entry.get("window_id"), changed
+        )
+        return {
+            "status": "ok",
+            "setup_name": setup_name,
+            "monitor_count": row.get("monitor_count"),
+            "window_id": entry.get("window_id"),
+            "slot": index + 1,
+            "changed": changed,
+        }
 
     def autosave_default(self, geometries: dict | None = None, monitor_infos: list[dict] | None = None) -> None:
         """Trigger autosave to 'default' setup — only when current_setup_name is None or 'default'."""
@@ -695,13 +826,20 @@ class ChartAgent:
                         pos = {"x": pos.get("x", 100) + cascade_x,
                                "y": pos.get("y", 100) + cascade_y}
 
-            windows_to_open.append({
+            entry = {
                 "window_id": w.get("window_id", f"win_setup_{i}"),
                 "window_type": w.get("window_type", "chart"),
                 "position": pos,
                 "size": size,
                 "color_flag": w.get("color_flag", 0),
-            })
+            }
+            # Setup v2: Inhalt mitliefern, damit der Server das Fenster korrekt
+            # aufbauen kann (Alt-Setups ohne diese Felder bleiben Geometrie-only).
+            for key in ("chart_id", "chart_name", "chart_panes", "topbar_metrics",
+                        "x_axis_pane", "symbol", "timeframe"):
+                if w.get(key):
+                    entry[key] = w.get(key)
+            windows_to_open.append(entry)
 
         logger.info(
             "Setup '%s' loaded: %d windows (source_monitors=%d, current=%d, diff=%d)",
@@ -733,11 +871,24 @@ class ChartAgent:
         groups: dict[str, list[dict]] = {}
         for row in rows:
             name = row.get("setup_name", "unknown")
+            windows = [w for w in (row.get("windows") or []) if isinstance(w, dict)]
             groups.setdefault(name, []).append({
                 "id": row.get("id", ""),
                 "monitor_count": row.get("monitor_count", 1),
-                "window_count": len(row.get("windows", [])),
+                "window_count": len(windows),
                 "updated_at": row.get("updated_at", ""),
+                # Bindungen mitliefern: daran haengt der DELETE_CHART-Schutz
+                # ("Chart wird von Setup X referenziert") und die Slot-Pflege.
+                # Ohne diese Felder kann keine Referenzpruefung greifen.
+                "windows": [
+                    {
+                        "window_id": w.get("window_id"),
+                        "chart_id": w.get("chart_id"),
+                        "symbol": w.get("symbol"),
+                        "timeframe": w.get("timeframe"),
+                    }
+                    for w in windows
+                ],
             })
 
         return [{"setup_name": name, "variants": variants} for name, variants in sorted(groups.items())]

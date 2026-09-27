@@ -270,8 +270,10 @@ def test_window_forwards_the_complete_pane_map(qapp):
 
 
 def test_orchestrator_carries_pane_scales_from_the_preset(monkeypatch):
+    """Altpfad: ohne Chart-Definition kommen die Skalen aus dem flachen Preset."""
     import chart_viewer.orchestrator as orch
 
+    monkeypatch.setattr(orch, "load_chart_spec", lambda chart_id: None)
     monkeypatch.setattr(
         orch,
         "resolve_preset",
@@ -296,6 +298,48 @@ def test_orchestrator_carries_pane_scales_from_the_preset(monkeypatch):
     cmd = orch.build_display_stock("TEST", preset="qmaggi", window_id="w1")
 
     assert cmd["pane_scales"] == {"main": "log", "volume": "log", "rs": "linear"}
+    assert cmd["panes"] == []  # Altpfad: der Viewer leitet die Panes aus den Overlays ab
+
+
+def test_orchestrator_prefers_the_chart_definition(monkeypatch):
+    """Neue Ebene: eine Chart-Definition liefert Panes, Rollen und Skalen."""
+    import chart_viewer.orchestrator as orch
+    from chart_viewer import chart_spec
+
+    spec = chart_spec.normalize_chart_spec(
+        {
+            "id": "demo",
+            "display_name": "Demo",
+            "topbar_metrics": [],
+            "panes": [
+                {"pane_id": "main", "pane_preset_id": "p1", "scale": "log", "weight": 7,
+                 "preset": {"id": "p1", "display_name": "Chart", "role": "price", "series": [
+                     {"canonical_id": "close", "column": "close", "feature_id": "close",
+                      "display_name": "Close", "plot_type": "overlay_line",
+                      "style": {"color": "#FFF"}, "rules": {}}]}},
+            ],
+        }
+    )
+    monkeypatch.setattr(orch, "load_chart_spec", lambda chart_id: spec)
+    monkeypatch.setattr(
+        orch,
+        "fetch_chart_data",
+        lambda symbol, timeframe="1D", limit=2000: {
+            "status": "ok",
+            "columns": ["timestamp", "open", "high", "low", "close", "volume"],
+            "data": [[T0, 100.0, 101.0, 99.0, 100.5, 1_000_000.0]],
+            "features_stale": False,
+        },
+    )
+    monkeypatch.setattr(orch, "_pca_get", lambda path: {"features": []})
+
+    cmd = orch.build_display_stock("TEST", chart="demo", window_id="w1")
+
+    assert cmd["chart"] == {"id": "demo", "display_name": "Demo", "draft": False}
+    assert [p["pane_id"] for p in cmd["panes"]] == ["main", "volume"]
+    assert cmd["panes"][0]["role"] == "price" and cmd["panes"][0]["weight"] == 7
+    assert cmd["pane_scales"] == {"main": "log", "volume": "linear"}
+    assert all(ov["pane"] in ("main", "volume") for ov in cmd["overlays"])
 
 
 def test_orchestrator_without_preset_has_no_pane_scales(monkeypatch):

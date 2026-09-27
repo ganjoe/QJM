@@ -566,3 +566,294 @@ def test_set_pane_scales_requires_a_preset_id():
         service.set_pane_scales("  ", {"main": "log"})
     assert err.value.code == "invalid_request"
 
+
+# ── pane-/chart layer (chart builder) ────────────────────────────────────
+
+
+def _ledger_window(agent, window_id="win_1", symbol="NVDA", panes=None, chart_id=None, draft=False, **extra):
+    agent.layout_ledger[window_id] = {
+        "window_id": window_id,
+        "symbol": symbol,
+        "timeframe": {"unit": "D", "multiplier": 1},
+        "position": {"x": 10, "y": 20},
+        "size": {"width": 900, "height": 600},
+        "chart": {
+            "id": chart_id,
+            "display_name": "Demo" if chart_id else "• unbenannt",
+            "draft": draft or not chart_id,
+            "panes": panes if panes is not None else [
+                {"pane_id": "main", "pane_preset_id": "chart_main", "scale": "log", "weight": 7, "overrides": {}},
+                {"pane_id": "rs", "pane_preset_id": "rs_monitor", "scale": "linear", "weight": 3, "overrides": {}},
+            ],
+            "topbar_metrics": ["ibd_rs"],
+            "x_axis_pane": None,
+            **extra,
+        },
+    }
+    return agent.layout_ledger[window_id]
+
+
+def test_list_panes_returns_sorted_catalog():
+    service, agent = make_service()
+    service._pca_json = lambda method, path, payload=None: {
+        "panes": [
+            {"id": "rs_monitor", "display_name": "RS-Monitor", "role": "value", "summary": "RS"},
+            {"id": "chart_main", "display_name": "Chart · SMA", "role": "price", "summary": "SMA"},
+            {"id": "builtin:volume", "display_name": "Volumen", "role": "volume", "kind": "builtin"},
+        ]
+    }
+    service.handle("req-p1", "list_panes", {})
+    data = wait_for_response(agent).payload["data"]
+    assert data["count"] == 3
+    assert [p["display_name"] for p in data["panes"]] == ["Chart · SMA", "RS-Monitor", "Volumen"]
+    assert data["panes"][2]["kind"] == "builtin"
+
+
+def test_get_chart_state_reads_the_ledger():
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="rs_monitor_chart", draft=False)
+    service.handle("req-p2", "get_chart_state", {"window_id": "win_1"})
+    data = wait_for_response(agent).payload["data"]
+    assert data["chart_id"] == "rs_monitor_chart"
+    assert data["draft"] is False
+    assert data["symbol"] == "NVDA"
+    assert data["timeframe"] == "1D"
+    assert [p["pane_id"] for p in data["panes"]] == ["main", "rs"]
+    assert data["panes"][0]["scale"] == "log" and data["panes"][0]["weight"] == 7
+
+
+def test_get_chart_state_rejects_unknown_window():
+    service, agent = make_service()
+    service.handle("req-p3", "get_chart_state", {"window_id": "nope"})
+    payload = wait_for_response(agent).payload
+    assert payload["ok"] is False and payload["error"]["code"] == "unknown_window"
+
+
+def test_compose_chart_renders_a_draft(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent)
+    posted = []
+
+    def fake_http(method, url, payload=None, **kw):
+        posted.append((method, url, payload))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(service, "_http_json", fake_http)
+    service.handle(
+        "req-p4",
+        "compose_chart",
+        {
+            "window_id": "win_1",
+            "panes": [
+                {"pane_id": "main", "pane_preset_id": "chart_main", "scale": "log", "weight": 7},
+                {"pane_preset_id": "rs_monitor"},
+            ],
+        },
+    )
+    data = wait_for_response(agent).payload["data"]
+
+    method, url, payload = posted[0]
+    assert (method, url) == ("POST", "http://control.test:8766/api/command")
+    assert payload["action"] == "DISPLAY_STOCK"
+    assert payload["window_id"] == "win_1" and payload["symbol"] == "NVDA"
+    assert payload["timeframe_str"] == "1D"
+    assert payload["chart_meta"]["draft"] is True
+    assert [p["pane_preset_id"] for p in payload["panes"]] == ["chart_main", "rs_monitor"]
+    assert "pane_id" not in payload["panes"][1]  # Slot vergibt der Server eindeutig
+    assert data["draft"] is True
+
+
+def test_compose_chart_inherits_the_base_chart(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent)
+    service._pca_json = lambda method, path, payload=None: {
+        "id": "base", "display_name": "Basis", "topbar_metrics": ["ibd_rs", "adr_20"], "x_axis_pane": "rs"
+    }
+    posted = []
+    monkeypatch.setattr(service, "_http_json", lambda method, url, payload=None, **kw: posted.append(payload) or {})
+    service.handle(
+        "req-p5",
+        "compose_chart",
+        {"window_id": "win_1", "base_chart_id": "base", "panes": [{"pane_preset_id": "rs_monitor"}]},
+    )
+    wait_for_response(agent)
+    meta = posted[0]["chart_meta"]
+    assert meta["topbar_metrics"] == ["ibd_rs", "adr_20"]
+    assert meta["x_axis_pane"] == "rs"
+    assert meta["id"] == "base"
+
+
+def test_compose_chart_needs_panes():
+    service, agent = make_service()
+    _ledger_window(agent)
+    service.handle("req-p6", "compose_chart", {"window_id": "win_1", "panes": []})
+    payload = wait_for_response(agent).payload
+    assert payload["ok"] is False and payload["error"]["code"] == "invalid_request"
+
+
+def test_apply_chart_renders_the_saved_chart(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent)
+    posted = []
+    monkeypatch.setattr(service, "_http_json", lambda method, url, payload=None, **kw: posted.append(payload) or {})
+    service.handle("req-p7", "apply_chart", {"window_id": "win_1", "chart_id": "rs_monitor_chart"})
+    wait_for_response(agent)
+    assert posted[0]["chart"] == "rs_monitor_chart"
+    assert "panes" not in posted[0]
+
+
+def test_save_chart_creates_when_missing(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent)
+    calls = []
+    posted = []
+
+    def fake_pca(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET":
+            raise ControlError("not_found", "404")
+        return {"status": "success"}
+
+    monkeypatch.setattr(service, "_pca_json", fake_pca)
+    monkeypatch.setattr(service, "_http_json", lambda method, url, payload=None, **kw: posted.append(payload) or {})
+
+    service.handle("req-p8", "save_chart", {"window_id": "win_1", "chart_id": "mein_chart", "display_name": "Mein Chart"})
+    data = wait_for_response(agent).payload["data"]
+
+    assert data["saved"] is True
+    create = [c for c in calls if c[0] == "POST"]
+    assert create and create[0][1] == "/api/charts"
+    assert create[0][2]["id"] == "mein_chart" and create[0][2]["display_name"] == "Mein Chart"
+    assert [p["pane_id"] for p in create[0][2]["panes"]] == ["main", "rs"]
+    # Nach dem Speichern wird das Fenster auf den gespeicherten Stand gezogen
+    assert posted and posted[0]["chart"] == "mein_chart"
+
+
+def test_save_chart_updates_when_present(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="mein_chart", draft=False)
+    calls = []
+    monkeypatch.setattr(service, "_pca_json", lambda method, path, payload=None: calls.append((method, path)) or {})
+    monkeypatch.setattr(service, "_http_json", lambda *a, **k: {})
+    service.handle("req-p9", "save_chart", {"window_id": "win_1", "chart_id": "mein_chart"})
+    wait_for_response(agent)
+    assert ("GET", "/api/charts/mein_chart") in calls
+    assert ("PUT", "/api/charts/mein_chart") in calls
+
+
+def test_save_chart_requires_panes():
+    service, agent = make_service()
+    _ledger_window(agent, panes=[])
+    service.handle("req-p10", "save_chart", {"window_id": "win_1", "chart_id": "leer"})
+    payload = wait_for_response(agent).payload
+    assert payload["ok"] is False and payload["error"]["code"] == "invalid_request"
+
+
+# ── Lifecycle-Bruecke (ControlService.execute) ───────────────────────────
+
+
+def test_diff_chart_compares_window_and_chart():
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="mein_chart", draft=False)
+    service._pca_json = lambda method, path, payload=None: {
+        "id": "ziel",
+        "topbar_metrics": ["adr_20"],
+        "panes": [
+            {"pane_id": "main", "pane_preset_id": "chart_main", "scale": "log", "weight": 7},
+            {"pane_id": "neu", "pane_preset_id": "adr_pane", "scale": "linear", "weight": 2},
+        ],
+    }
+    data = service.execute("diff_chart", {"window_id": "win_1", "chart_id": "ziel"})["data"]
+    assert data["window_chart_id"] == "mein_chart" and data["chart_id"] == "ziel"
+    assert data["same"] is False
+    assert [p["pane_id"] for p in data["added"]] == ["neu"]
+    assert [p["pane_id"] for p in data["removed"]] == ["rs"]
+    assert data["topbar_metrics"] == {"window": ["ibd_rs"], "chart": ["adr_20"]}
+
+
+def test_diff_chart_requires_both_ids():
+    service, agent = make_service()
+    result = service.execute("diff_chart", {"window_id": "win_1"})
+    assert result["ok"] is False and result["error"]["code"] == "invalid_request"
+
+
+def test_execute_returns_ok_with_data():
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="rs_monitor_chart", draft=False)
+    result = service.execute("get_chart_state", {"window_id": "win_1"})
+    assert result["ok"] is True
+    assert result["data"]["chart_id"] == "rs_monitor_chart"
+    assert result["data"]["symbol"] == "NVDA"
+
+
+def test_execute_maps_control_error_to_code():
+    service, agent = make_service()
+    result = service.execute("get_chart_state", {"window_id": "nope"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "unknown_window"
+    assert "nope" in result["error"]["message"]
+
+
+def test_execute_rejects_unknown_op():
+    service, agent = make_service()
+    result = service.execute("does_not_exist", {})
+    assert result["ok"] is False and result["error"]["code"] == "invalid_request"
+    assert "does_not_exist" in result["error"]["message"]
+
+
+def test_list_windows_shows_chart_and_watchlist_windows():
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="rs_monitor_chart", draft=False)
+    agent.layout_ledger["wl_fav"] = {"list_id": "10_favorite", "display_name": "10_favorite"}
+
+    data = service.execute("list_windows", {})["data"]
+
+    assert data["count"] == 2
+    assert data["windows"][0]["kind"] == "chart"  # Chartfenster zuerst
+    chart = data["windows"][0]
+    assert chart["chart_id"] == "rs_monitor_chart" and chart["draft"] is False
+    assert chart["symbol"] == "NVDA" and chart["timeframe"] == "1D"
+    assert chart["pane_count"] == 2 and chart["topbar_metric_count"] == 1
+    watchlist = data["windows"][1]
+    assert watchlist["kind"] == "watchlist" and watchlist["list_id"] == "10_favorite"
+    assert watchlist["chart_id"] is None and watchlist["pane_count"] == 0
+
+
+def test_list_windows_marks_drafts_and_empty_ledger():
+    service, agent = make_service()
+    assert service.execute("list_windows", {})["data"] == {"windows": [], "count": 0}
+    _ledger_window(agent)  # ohne chart_id
+    window = service.execute("list_windows", {})["data"]["windows"][0]
+    assert window["draft"] is True and window["chart_id"] is None
+
+
+def test_save_chart_overwrite_false_protects_an_existing_chart(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent, chart_id="mein_chart", draft=False)
+    calls = []
+    monkeypatch.setattr(service, "_pca_json", lambda method, path, payload=None: calls.append((method, path)) or {})
+    monkeypatch.setattr(service, "_http_json", lambda *a, **k: {})
+
+    result = service.execute("save_chart", {"window_id": "win_1", "chart_id": "mein_chart", "overwrite": False})
+
+    assert result["ok"] is False and result["error"]["code"] == "already_exists"
+    assert ("PUT", "/api/charts/mein_chart") not in calls
+
+
+def test_save_chart_reports_whether_it_created_the_chart(monkeypatch):
+    service, agent = make_service()
+    _ledger_window(agent)
+
+    def fake_pca(method, path, payload=None):
+        if method == "GET":
+            raise ControlError("not_found", "404")
+        return {}
+
+    monkeypatch.setattr(service, "_pca_json", fake_pca)
+    monkeypatch.setattr(service, "_http_json", lambda *a, **k: {})
+
+    data = service.execute("save_chart", {"window_id": "win_1", "chart_id": "neu"})["data"]
+
+    assert data["created"] is True and data["saved"] is True
+
+

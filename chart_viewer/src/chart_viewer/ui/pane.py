@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import bisect
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, NamedTuple, Optional
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import (
@@ -46,6 +46,23 @@ VALUE_BOX_BG = "#1E222D"
 VALUE_BOX_TEXT = "#FFFFFF"
 VALUE_BOX_SECONDARY = "#9CA3AF"
 VALUE_BOX_PRICE_COLOR = "#D1D4DC"
+
+# Painting order of the overlay primitives per pane (contract section 3).
+OVERLAY_DRAW_ORDER = ("zone", "band", "histogram", "level", "line", "marker")
+# Decoration that must never reach the Y autoscale or the crosshair value boxes.
+DECOR_OVERLAY_TYPES = frozenset({"zone", "level"})
+# Overlays without a curve -> no crosshair value box.
+NON_CURVE_OVERLAY_TYPES = frozenset({"marker", "zone", "level"})
+
+
+class IndexedOverlayPoint(NamedTuple):
+    """One overlay point resolved to bar indices (built once in set_data)."""
+
+    idx: float                     # bar index of t
+    value: Optional[float]
+    value2: Optional[float]
+    t2_idx: Optional[float] = None  # bar index of t2 (zones), None otherwise
+    color_override: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +111,9 @@ class ChartPane(QWidget):
         x_trans: XAxisTransform,
         config: ViewerConfig,
         is_main: bool = False,
+        role: str = "",
+        title: str = "",
+        weight: int = 0,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -102,6 +122,11 @@ class ChartPane(QWidget):
         self.y_trans = YAxisTransform(config=config)
         self.config = config
         self.is_main = is_main
+        # Pane identity from the chart definition: role "price"/"value"/"volume",
+        # a small title in the top-left corner and the splitter weight.
+        self.role = role or ("price" if is_main else "value")
+        self.title = title or ""
+        self.weight = int(weight or 0)
         self.draw_x_axis = False  # Only the pane directly under chart draws the X-axis
 
         # Data
@@ -167,6 +192,12 @@ class ChartPane(QWidget):
                     t = pt.t if hasattr(pt, "t") else pt.get("t")
                     val = pt.value if hasattr(pt, "value") else pt.get("value")
                     val2 = getattr(pt, "value2", None) if hasattr(pt, "value2") else pt.get("value2")
+                    t2 = getattr(pt, "t2", None) if hasattr(pt, "t2") else pt.get("t2")
+                    color_override = (
+                        getattr(pt, "color_override", None)
+                        if hasattr(pt, "color_override")
+                        else pt.get("color_override")
+                    )
                     t_int = int(t) if t is not None else None
                     if t_int is not None and t_int in self._ts_map:
                         bar_i = float(self._ts_map[t_int])
@@ -176,7 +207,21 @@ class ChartPane(QWidget):
                         continue
                     fval = float(val) if val is not None else None
                     fval2 = float(val2) if val2 is not None else None
-                    indexed_pts.append((bar_i, fval, fval2))
+                    # Zone end (t2) resolved to a bar index, None for non-zones.
+                    bar_i2 = None
+                    if t2 is not None:
+                        t2_int = int(t2)
+                        if t2_int in self._ts_map:
+                            bar_i2 = float(self._ts_map[t2_int])
+                        else:
+                            bar_i2 = self._timestamp_to_bar_idx(t2_int)
+                    indexed_pts.append(IndexedOverlayPoint(
+                        idx=bar_i,
+                        value=fval,
+                        value2=fval2,
+                        t2_idx=bar_i2,
+                        color_override=color_override,
+                    ))
 
                 indexed_pts.sort(key=lambda x: x[0])
                 indices = [p[0] for p in indexed_pts]
@@ -239,12 +284,16 @@ class ChartPane(QWidget):
         if not self.is_main:
             indexed_ovs = getattr(self, "_indexed_overlays", {})
             for item in indexed_ovs.values():
+                # Zones and levels are decoration: they must never stretch the
+                # Y autoscale (only lines/bands/histograms do).
+                if item["overlay"].type in DECOR_OVERLAY_TYPES:
+                    continue
                 indices = item["indices"]
                 if not indices:
                     continue
                 i_start = bisect.bisect_left(indices, min_idx)
                 i_end = bisect.bisect_right(indices, max_idx_val)
-                for _, val, val2 in item["pts"][i_start:i_end]:
+                for _, val, val2, _t2, _color in item["pts"][i_start:i_end]:
                     if val is not None:
                         if val < p_min: p_min = val
                         if val > p_max: p_max = val
@@ -445,6 +494,23 @@ class ChartPane(QWidget):
             y = (chart_h / num_ticks) * i
             painter.setPen(grid_pen)
             painter.drawLine(0, int(y), int(chart_w), int(y))
+
+        # Pane title (chart definition): small, muted, top-left. The big
+        # watermark stays reserved for the price pane.
+        if self.title:
+            painter.save()
+            title_color = QColor(self.config.default_text_color)
+            title_color.setAlpha(120)
+            painter.setPen(title_color)
+            title_font = QFont(painter.font())
+            title_font.setPointSize(8)
+            painter.setFont(title_font)
+            painter.drawText(
+                QRectF(6, 2, max(10.0, chart_w - 12), 14),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                self.title,
+            )
+            painter.restore()
 
     def _render_y_axis(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
         """Render Y-axis labels, ticks, TC2000 mini-arrow handle, and scale handle pill for this pane."""
@@ -726,8 +792,8 @@ class ChartPane(QWidget):
 
         # One box per overlay curve that belongs to this pane
         for ov_id, item in getattr(self, "_indexed_overlays", {}).items():
-            if item["overlay"].type == "marker":
-                continue  # markers are not drawn by the plot layer -> no value box
+            if item["overlay"].type in NON_CURVE_OVERLAY_TYPES:
+                continue  # markers/zones/levels carry no curve -> no value box
             val, val2 = self._overlay_value_at(item, bar_idx)
             out.extend(self._overlay_boxes(ov_id, item, val, val2))
         return out
@@ -745,13 +811,13 @@ class ChartPane(QWidget):
             out.append(self._price_value(self.bars[-1]))
 
         for ov_id, item in getattr(self, "_indexed_overlays", {}).items():
-            if item["overlay"].type == "marker":
+            if item["overlay"].type in NON_CURVE_OVERLAY_TYPES:
                 continue
             pts = item.get("pts") or []
             if not pts:
                 continue
-            _, val, val2 = pts[-1]  # newest available point of this curve
-            out.extend(self._overlay_boxes(ov_id, item, val, val2))
+            point = pts[-1]  # newest available point of this curve
+            out.extend(self._overlay_boxes(ov_id, item, point.value, point.value2))
         return out
 
     def _price_value(self, bar: Bar) -> CrosshairValue:
@@ -765,8 +831,13 @@ class ChartPane(QWidget):
         )
 
     def _overlay_boxes(self, ov_id: str, item: dict, val, val2) -> List[CrosshairValue]:
-        """Box(es) of one overlay curve: a band yields upper+lower, others one box."""
+        """Box(es) of one overlay curve: a band yields upper+lower, others one box.
+
+        Zones and levels are decoration and never appear in the readout.
+        """
         ov = item["overlay"]
+        if ov.type in NON_CURVE_OVERLAY_TYPES:
+            return []
         color = (ov.style or {}).get("color", "#26A69A")
         out: List[CrosshairValue] = []
         if ov.type == "band":
@@ -798,8 +869,8 @@ class ChartPane(QWidget):
         tolerance = float(getattr(self.config, "crosshair_value_box_snap_bars", 1.0))
         if abs(indices[best] - target) > tolerance:
             return None, None
-        _, val, val2 = item["pts"][best]
-        return val, val2
+        point = item["pts"][best]
+        return point.value, point.value2
 
     def _value_box_font(self, base_font: QFont) -> QFont:
         """Value box font: X-axis font size x config factor, x VALUE_BOX_SCALE."""
@@ -1069,7 +1140,12 @@ class ChartPane(QWidget):
         painter.restore()
 
     def _render_overlays(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
-        """Render all overlays assigned to this pane with sub-millisecond bisect slicing."""
+        """Render all overlays assigned to this pane with sub-millisecond bisect slicing.
+
+        Painting order per pane (contract section 3):
+        zones -> band -> histogram -> level -> line -> marker. Within one
+        category the overlay order is preserved.
+        """
         indexed_ovs = getattr(self, "_indexed_overlays", {})
         if not indexed_ovs:
             return
@@ -1087,7 +1163,14 @@ class ChartPane(QWidget):
         max_vis_idx = self.x_trans.x_to_bar(chart_w) + 2.0
         default_line_width = max(1, int(getattr(self.config, "default_indicator_line_width_px", 1)))
 
+        buckets: Dict[str, list] = {overlay_type: [] for overlay_type in OVERLAY_DRAW_ORDER}
         for item in indexed_ovs.values():
+            overlay_type = item["overlay"].type
+            if overlay_type in buckets:
+                buckets[overlay_type].append(item)
+        ordered = [item for overlay_type in OVERLAY_DRAW_ORDER for item in buckets[overlay_type]]
+
+        for item in ordered:
             ov = item["overlay"]
             indices = item["indices"]
             pts = item["pts"]
@@ -1096,16 +1179,31 @@ class ChartPane(QWidget):
 
             ov_type = ov.type
             style = ov.style
-            color = QColor(style.get("color", "#26A69A"))
+            default_color = "#546E7A" if ov_type == "level" else "#26A69A"
+            color = QColor(style.get("color", default_color))
 
             # Thin indicator lines: AA off so a 1px stroke stays 1px wide, exactly
             # like the candle borders. Everything else keeps antialiasing.
-            line_width = resolve_line_width(style, default_line_width) if ov_type == "line" else None
+            line_width = (
+                resolve_line_width(style, default_line_width)
+                if ov_type in ("line", "level")
+                else None
+            )
             if aa_enabled:
                 painter.setRenderHint(
                     QPainter.RenderHint.Antialiasing,
                     not (crisp_thin and line_width is not None and line_width <= 1),
                 )
+
+            if ov_type == "zone":
+                # Zones draw from the FULL point list: a zone may start left of
+                # the viewport while its end is still visible.
+                self._render_zones(painter, ov, pts, chart_h)
+                continue
+
+            if ov_type == "level":
+                self._render_levels(painter, ov, color, line_width, chart_w)
+                continue
 
             i_start = bisect.bisect_left(indices, min_vis_idx)
             i_end = bisect.bisect_right(indices, max_vis_idx)
@@ -1114,29 +1212,16 @@ class ChartPane(QWidget):
                 continue
 
             if ov_type == "line":
-                pen = QPen(color)
-                # Explicit width = pixel count; otherwise the 1px default applies.
-                pen.setWidth(line_width)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-                painter.setPen(pen)
-
-                # Segment points to respect gaps (None values) cleanly
-                segments: List[List[QPointF]] = []
-                current_seg: List[QPointF] = []
-                for idx, val, _ in vis_pts:
-                    if val is not None:
-                        x = self.x_trans.bar_to_x(idx)
-                        y = self.y_trans.price_to_y(val)
-                        current_seg.append(QPointF(x, y))
-                    else:
-                        if current_seg:
-                            segments.append(current_seg)
-                            current_seg = []
-                if current_seg:
-                    segments.append(current_seg)
-
-                for seg in segments:
+                # A colour change splits the polyline into segments, each drawn
+                # with its own pen; the transition point is shared so the line
+                # stays connected.
+                for seg_color, seg in self._line_color_segments(vis_pts, color.name()):
+                    pen = QPen(QColor(seg_color))
+                    # Explicit width = pixel count; otherwise the 1px default applies.
+                    pen.setWidth(line_width)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                    painter.setPen(pen)
                     if len(seg) > 1:
                         painter.drawPolyline(seg)
                     elif len(seg) == 1:
@@ -1150,11 +1235,11 @@ class ChartPane(QWidget):
 
                 upper_points = []
                 lower_points = []
-                for idx, val, val2 in vis_pts:
-                    if val is not None and val2 is not None:
-                        x = self.x_trans.bar_to_x(idx)
-                        y1 = self.y_trans.price_to_y(val)
-                        y2 = self.y_trans.price_to_y(val2)
+                for point in vis_pts:
+                    if point.value is not None and point.value2 is not None:
+                        x = self.x_trans.bar_to_x(point.idx)
+                        y1 = self.y_trans.price_to_y(point.value)
+                        y2 = self.y_trans.price_to_y(point.value2)
                         upper_points.append(QPointF(x, y1))
                         lower_points.append(QPointF(x, y2))
 
@@ -1163,19 +1248,21 @@ class ChartPane(QWidget):
                     painter.drawPolygon(poly)
 
             elif ov_type == "histogram":
-                hist_color = QColor(color)
-                hist_color.setAlpha(style.get("alpha", 70))
-                painter.setBrush(QBrush(hist_color))
+                alpha = int(style.get("alpha", 70))
                 painter.setPen(Qt.PenStyle.NoPen)
 
                 candle_w = max(1.0, self.x_trans.candle_width_px * 0.8)
                 y_zero = self.y_trans.price_to_y(0.0)
                 is_center = (ov.origin == "center")
 
-                for idx, val, _ in vis_pts:
-                    if val is not None:
-                        x = self.x_trans.bar_to_x(idx)
-                        y = self.y_trans.price_to_y(val)
+                for point in vis_pts:
+                    if point.value is not None:
+                        # Per-bar colour from the point's override, else the style colour.
+                        bar_color = QColor(point.color_override) if point.color_override else QColor(color)
+                        bar_color.setAlpha(alpha)
+                        painter.setBrush(QBrush(bar_color))
+                        x = self.x_trans.bar_to_x(point.idx)
+                        y = self.y_trans.price_to_y(point.value)
                         if is_center:
                             bar_top = min(y, y_zero)
                             bar_h = abs(y - y_zero)
@@ -1186,6 +1273,113 @@ class ChartPane(QWidget):
                         painter.drawRect(bar_rect)
 
         painter.restore()
+
+    def _line_color_segments(self, vis_pts, default_color: str) -> List[tuple]:
+        """Split visible line points into (colour, [QPointF]) segments.
+
+        A change of the point's color_override starts a new segment; the
+        transition point is shared so the polyline stays visually connected.
+        Points without an override use the overlay's style colour.
+        """
+        segments: List[tuple] = []
+        current: List[QPointF] = []
+        current_color: Optional[str] = None
+        previous: Optional[QPointF] = None
+        for point in vis_pts:
+            if point.value is None:
+                # Gap: close the running segment, the next point starts a new one.
+                if current:
+                    segments.append((current_color, current))
+                current, current_color, previous = [], None, None
+                continue
+            point_color = str(point.color_override) if point.color_override else default_color
+            xy = QPointF(
+                self.x_trans.bar_to_x(point.idx),
+                self.y_trans.price_to_y(point.value),
+            )
+            if current and point_color != current_color:
+                segments.append((current_color, current))
+                current = [previous] if previous is not None else []
+                current_color = point_color
+            elif not current:
+                current_color = point_color
+            current.append(xy)
+            previous = xy
+        if current:
+            segments.append((current_color, current))
+        return segments
+
+    def zone_rect(
+        self,
+        t_idx: float,
+        t2_idx: float,
+        value,
+        value2,
+        chart_h: float,
+    ) -> QRectF:
+        """Pixel rectangle of a zone in data space (t..t2 x value..value2).
+
+        A null value/value2 means the zone spans the full pane height. The
+        rectangle is normalised (left/top smaller than right/bottom) so a zone
+        may be declared in either direction.
+        """
+        x1 = self.x_trans.bar_to_x(float(t_idx))
+        x2 = self.x_trans.bar_to_x(float(t2_idx))
+        left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+        if value is None or value2 is None:
+            top, bottom = 0.0, float(chart_h)
+        else:
+            y1 = self.y_trans.price_to_y(float(value))
+            y2 = self.y_trans.price_to_y(float(value2))
+            top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+        return QRectF(left, top, max(0.0, right - left), max(0.0, bottom - top))
+
+    def _render_zones(self, painter: QPainter, ov: Overlay, pts, chart_h: float) -> None:
+        """Background rectangles of a zone overlay (no border, alpha fill)."""
+        style = ov.style or {}
+        zone_color = QColor(style.get("color", "#26A69A"))
+        zone_color.setAlpha(int(style.get("alpha", 30)))
+        painter.setBrush(QBrush(zone_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        for point in pts:
+            if point.t2_idx is None:
+                continue  # a zone needs an end time
+            rect = self.zone_rect(point.idx, point.t2_idx, point.value, point.value2, chart_h)
+            if rect.width() > 0 and rect.height() > 0:
+                painter.drawRect(rect)
+
+    def _render_levels(self, painter: QPainter, ov: Overlay, color: QColor, line_width, chart_w: float) -> None:
+        """Horizontal reference lines over the full width, with an optional label.
+
+        Levels are decoration: they draw independently of bar timestamps and
+        never influence the Y autoscale.
+        """
+        style = ov.style or {}
+        label = style.get("label")
+        label_font = QFont(painter.font())
+        label_font.setPointSize(8)
+        for pt in (ov.values or []):
+            val = pt.value if hasattr(pt, "value") else pt.get("value")
+            if val is None:
+                continue
+            y = self.y_trans.price_to_y(float(val))
+            pen = QPen(color)
+            pen.setWidth(line_width or 1)
+            if style.get("dash"):
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(0, int(y), int(chart_w), int(y))
+            if label:
+                label_color = QColor(color)
+                label_color.setAlpha(170)
+                painter.setPen(label_color)
+                painter.setFont(label_font)
+                label_w = max(10.0, min(220.0, chart_w - 4.0))
+                painter.drawText(
+                    QRectF(chart_w - label_w - 4.0, y - 8.0, label_w, 16.0),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    str(label),
+                )
 
     # ── Annotations ────────────────────────────────────────────────────
 

@@ -93,7 +93,9 @@ class ViewerConfig:
     control_panel_enabled: bool = True
     control_panel_always_on_top: bool = True
     control_panel_width: int = 360
-    control_panel_height: int = 560
+    # Der Chart-Builder braucht mehr Hoehe als die alten Sektionen; das Panel
+    # scrollt bei kleineren Fenstern, statt Inhalt abzuschneiden.
+    control_panel_height: int = 720
     control_search_debounce_ms: int = 150  # Debounce for the DB-backed realtime search
     control_search_limit: int = 20
     control_request_timeout_ms: int = 5000  # Mark unanswered control.request as failed
@@ -151,7 +153,7 @@ class ViewerConfig:
             control_panel_enabled=os.getenv("CV_CONTROL_PANEL", "true").lower() in ("true", "1", "yes"),
             control_panel_always_on_top=os.getenv("CV_CONTROL_PANEL_ON_TOP", "true").lower() in ("true", "1", "yes"),
             control_panel_width=int(os.getenv("CV_CONTROL_PANEL_WIDTH", "360")),
-            control_panel_height=int(os.getenv("CV_CONTROL_PANEL_HEIGHT", "560")),
+            control_panel_height=int(os.getenv("CV_CONTROL_PANEL_HEIGHT", "720")),
             control_search_debounce_ms=int(os.getenv("CV_CONTROL_SEARCH_DEBOUNCE_MS", "150")),
             control_search_limit=int(os.getenv("CV_CONTROL_SEARCH_LIMIT", "20")),
             control_request_timeout_ms=int(os.getenv("CV_CONTROL_REQUEST_TIMEOUT_MS", "5000")),

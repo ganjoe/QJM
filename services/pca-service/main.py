@@ -6,6 +6,7 @@ from chart_data import router as chart_router
 from indicators import router as indicator_router
 from scanners import router as scanner_router
 from watchlists_api import router as watchlist_router
+from presets_api import router as presets_router
 from breadth import router as breadth_router
 from universal_scanner import router as universal_scanner_router
 
@@ -33,6 +34,7 @@ app.include_router(chart_router, prefix="/api")
 app.include_router(indicator_router, prefix="/api")
 app.include_router(scanner_router, prefix="/api")
 app.include_router(watchlist_router, prefix="/api")
+app.include_router(presets_router, prefix="/api")
 app.include_router(breadth_router, prefix="/api")
 app.include_router(universal_scanner_router, prefix="/api")
 

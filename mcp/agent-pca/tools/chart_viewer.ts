@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { PCA_SERVICE_URL, log, supabase, POSTGREST_UNIVERSE_LIMIT } from "./shared.ts";
+import { runChartBuilderAction } from "./chart_builder.ts";
 
 export const CHART_VIEWER_API_URL = Deno.env.get("CHART_VIEWER_API_URL") || "http://host.docker.internal:8766";
 
@@ -402,7 +403,7 @@ export function registerChartViewerTools(server: McpServer) {
       title: "Control Desktop Chart Viewer",
       description: "Controls the TC2000-style native desktop chart viewer running on the user's screen.\n\n" +
         "ACTIONS:\n" +
-        "- DISPLAY_STOCK: Open/update a chart window for a stock ticker (e.g. 'NVDA', 'AAPL', 'MSFT'). Automatically loads historical OHLCV data, precalculated or on-the-fly indicators, and topbar metrics from Supabase registry using presets ('default', 'trend_template', 'momentum', 'clean').\n" +
+        "- DISPLAY_STOCK: Open/update a chart window for a stock ticker (e.g. 'NVDA', 'AAPL', 'MSFT'). Automatically loads historical OHLCV data, precalculated or on-the-fly indicators, and topbar metrics from Supabase registry using presets ('default', 'trend_template', 'momentum', 'clean'). `chart` ist ein Alias fuer `preset` auf Ebene der Chart-Definition (geordnete Panes + Topbar) und wird als 'chart' an den Viewer durchgereicht.\n" +
         "- DISPLAY_WATCHLIST: Opens a watchlist window. Provide `list_name` to load from Supabase OR `ticker` with comma-separated symbols (e.g. 'AAPL,MSFT,NVDA'). The tickers are read fresh from Supabase on EVERY call, so calling it again with the same `list_name` simply refreshes the existing window (window_id = list_id).\n" +
         "- `list_name: 'scan_latest'` öffnet die Auto-Watchlist des Universal Scanners: sie enthält nach jedem `run_universal_scanner`-Lauf das vollständige Treffer-Ergebnis (Replace). Für den aktuellsten Stand zuerst scannen, dann DISPLAY_WATCHLIST aufrufen. Eine leere Liste (Scan ohne Treffer) kann nicht angezeigt werden und führt zu einem Fehler - vorher `manage_watchlist` (LOAD) prüfen.\n" +
         "- DISPLAY_SERIES: Berechnet Long-Short-Spread-Zeitreihen (Paare) on the fly im MCP-Prozess — ausschließlich im RAM, kein Parquet, keine Persistenz — und pusht sie als eigenständige Chart-Fenster in den Viewer. Einzelpaar: `ticker` + `ticker_b`. Universum: `list_name` (Supabase-Watchlist) oder `ticker` als Komma-Liste; es werden alle C(n,2)-Paare berechnet, nach `min_spread_pct` gefiltert und die besten `top_n` als getilte Fenster geöffnet. `dry_run: true` liefert nur das Ranking, ohne Fenster zu öffnen. Spread-Modi: 'pct' (normierte Differenz in Prozentpunkten), 'ratio' (normiertes Kursverhältnis), 'abs' (rohe Differenz).\n" +
@@ -417,7 +418,21 @@ export function registerChartViewerTools(server: McpServer) {
         "- LOAD_SETUP: Load a saved window layout. Reuses existing windows of matching type, closes excess windows, creates missing ones. Matches monitor count exactly or picks closest variant. Requires `setup_name`.\n" +
         "- LIST_SETUPS: List all saved setups with their monitor-count variants.\n" +
         "- DELETE_SETUP: Delete a setup or a specific monitor-count variant. Requires `setup_name`; optional `monitor_count`.\n" +
-        "- RENAME_SETUP: Rename all variants of a setup. Requires `setup_name` and `new_setup_name`.\n\n" +
+        "- RENAME_SETUP: Rename all variants of a setup. Requires `setup_name` and `new_setup_name`.\n" +
+        "- SETUP_ASSIGN: Chart/Symbol/Timeframe eines gespeicherten Setup-Slots setzen (ohne Fenster zu oeffnen). Requires `setup_name` und `window_id` oder `slot` (1-basiert); optional `chart_id` (\"\" loest die Bindung), `symbol`, `timeframe`, `monitor_count`. SAVE_SETUP akzeptiert dafuer auch `windows` [{window_id|slot, chart_id, symbol, timeframe}].\n\n" +
+        "- LIST_CHARTS: Listet die gespeicherten Chart-Definitionen (Ebene Chart: geordnete Panes + Topbar) als Tabelle (id, display_name, pane_count, summary).\n" +
+        "- COMPOSE_CHART: Baut den Inhalt eines offenen Fensters aus Pane-Presets zusammen (Draft/Vorschau im Viewer, nicht gespeichert). Erfordert `window_id` und `panes` [{pane_id?, pane_preset_id, scale?, weight?}], optional `topbar_metrics` und `base_chart_id`.\n" +
+        "- GET_CHART_STATE: Inhalt eines offenen Fensters lesen (Panes in Reihenfolge, chart_id, draft, topbar_metrics, x_axis_pane). Erfordert `window_id`. Grundlage fuer jedes inkrementelle Editing.\n" +
+        "- LIST_WINDOWS: Alle offenen Fenster mit Symbol, Timeframe, chart_id, Draft-Status und Pane-Anzahl (Charts zuerst, Watchlist-Fenster danach).\n" +
+        "- SAVE_CHART: Den aktuellen Fensterinhalt (Draft) als Chart-Definition speichern. Erfordert `window_id` und `chart_id`; optional `display_name`, `description` und `overwrite: false` gegen stilles Ueberschreiben.\n" +
+        "- APPLY_CHART: Ein gespeichertes Chart auf ein offenes Fenster anwenden (Fenster bleibt, Inhalt wechselt). Erfordert `window_id` und `chart_id`.\n" +
+        "- ADD_PANE: Einen Pane aus einem Pane-Preset an ein bestehendes Fenster anhaengen (inkrementell statt Full-Replace). Erfordert `window_id` und `pane_preset_id`; optional `after_pane_id`, `pane_id`, `scale`, `weight`. Ergebnis ist ein Draft (SAVE_CHART speichert).\n" +
+        "- REMOVE_PANE: Eine Pane aus dem Fenster entfernen (das Preispane 'main' bleibt). Erfordert `window_id` und `pane_id`.\n" +
+        "- REORDER_PANES: Pane-Reihenfolge setzen. Erfordert `window_id` und `pane_ids` (vollstaendig, 'main' zuerst).\n" +
+        "- DIFF_CHART: Was wuerde sich aendern, wenn Chart X auf das Fenster angewendet wird? Reiner Strukturvergleich ohne Rendern. Erfordert `window_id` und `chart_id`.\n" +
+        "- DUPLICATE_CHART: Chart als Variante kopieren. Erfordert `source_chart_id` und `new_chart_id`; optional `display_name`, `apply_to_window`.\n" +
+        "- DELETE_CHART: Gespeichertes Chart loeschen. Erfordert `chart_id`; ohne `force` wird abgelehnt, wenn ein Setup das Chart referenziert.\n" +
+        "- LIST_TOPBAR_METRICS: Verfuegbare Topbar-Metriken (Feature-Spalten) auflisten; optional mit \`symbol\`, um zu pruefen, welche Metriken Daten haben. Vorrang: chart.topbar_metrics bestimmt den Metrik-Streifen, SET_TOPBAR ist fensterlokal.\n" +
         "WHEN TO USE: Use whenever you want to display charts, show technical setups, mark price targets, draw support/resistance levels, capture UI screenshots for inspection, show trade markers, or manage window layouts (save/load/delete/rename setups).",
       inputSchema: {
         action: z.enum([
@@ -436,12 +451,27 @@ export function registerChartViewerTools(server: McpServer) {
           "LIST_SETUPS",
           "DELETE_SETUP",
           "RENAME_SETUP",
+          "SETUP_ASSIGN",
+          "LIST_CHARTS",
+          "COMPOSE_CHART",
+          "GET_CHART_STATE",
+          "LIST_WINDOWS",
+          "SAVE_CHART",
+          "APPLY_CHART",
+          "ADD_PANE",
+          "REMOVE_PANE",
+          "REORDER_PANES",
+          "DUPLICATE_CHART",
+          "DELETE_CHART",
+          "DIFF_CHART",
+          "LIST_TOPBAR_METRICS",
         ]).describe("The action to perform"),
 
         ticker: z.string().optional().describe("Stock ticker symbol (or comma-separated symbols for DISPLAY_WATCHLIST)"),
         list_name: z.string().optional().describe("Supabase list name for DISPLAY_WATCHLIST (e.g. 'current_positions')"),
         preset: z.string().optional().default("default").describe("Indicator preset name: e.g. 'default', 'trend_template', 'momentum', 'clean', or custom user preset like 'qmaggi' created via manage_chart_presets"),
-        timeframe: z.string().optional().default("1D").describe("Candle timeframe (e.g. '1D', '5min')"),
+        chart: z.string().optional().describe("Chart-Preset-Id (Alias fuer preset: Ebene Chart-Definition aus geordneten Panes + Topbar + x_axis_pane). Fuer DISPLAY_STOCK und OPEN_WINDOW; wird als chart im Command-Payload an den Viewer durchgereicht."),
+        timeframe: z.string().optional().describe("Candle timeframe (e.g. '1D', '5min'); Default '1D'. Bei SETUP_ASSIGN nur setzen, wenn der Slot wirklich umgestellt werden soll."),
         window_id: z.string().optional().describe("Target chart window ID (defaults to 'win_{ticker}_1d')"),
 
         // ── DISPLAY_SERIES (Long-Short-Paar-Spreads, RAM-only) ──
@@ -491,9 +521,43 @@ export function registerChartViewerTools(server: McpServer) {
         setup_name: z.string().optional().describe("Setup name for SAVE_SETUP, LOAD_SETUP, DELETE_SETUP, RENAME_SETUP"),
         new_setup_name: z.string().optional().describe("New setup name for RENAME_SETUP"),
         monitor_count: z.number().optional().describe("Optional specific monitor count variant for DELETE_SETUP"),
+        panes: z.array(z.object({
+          pane_id: z.string().optional().describe("Slot-Id im Fenster (z. B. main, rs, volume). Fehlt sie, nimmt der Service die pane_preset_id. Fuer COMPOSE_CHART."),
+          pane_preset_id: z.string().describe("Id des Pane-Presets (pca_pane_presets.id) oder builtin:volume. Fuer COMPOSE_CHART."),
+          scale: z.enum(["linear", "log"]).optional().describe("Y-Achsen-Skalierung dieses Panes. Fuer COMPOSE_CHART."),
+          weight: z.number().optional().describe("Relative Hoehe des Panes (Default 2). Fuer COMPOSE_CHART."),
+          overrides: z.record(z.string(), z.any()).optional().describe("Pane-spezifische Ueberschreibungen. Fuer COMPOSE_CHART."),
+        })).optional().describe("COMPOSE_CHART: geordnete Panes des Fensters (Slot -> Pane-Preset). Ohne pane_id nimmt der Service die pane_preset_id."),
+        topbar_metrics: z.array(z.string()).optional().describe("COMPOSE_CHART: Metriken fuer die Topbar des Fensters."),
+        base_chart_id: z.string().optional().describe("COMPOSE_CHART: bestehendes Chart als Basis; seine Panes werden durch panes ersetzt; ohne base_chart_id startet der Draft leer."),
+        chart_id: z.string().optional().describe("Id der Chart-Definition fuer SAVE_CHART und APPLY_CHART (Ebene Chart: geordnete Panes + Topbar)."),
+        display_name: z.string().optional().describe("SAVE_CHART: Anzeigename des Charts (Default: chart_id)."),
+        description: z.string().optional().describe("SAVE_CHART: Beschreibung des Charts."),
+        overwrite: z.boolean().optional().describe("SAVE_CHART: false = vorhandenes Chart nicht ueberschreiben (Fehler already_exists). Default true (heutiges Verhalten)."),
+        pane_preset_id: z.string().optional().describe("ADD_PANE: Id des anzuhängenden Pane-Presets (pca_pane_presets.id oder builtin:volume)."),
+        pane_id: z.string().optional().describe("ADD_PANE/REMOVE_PANE: Slot-Id im Fenster. ADD_PANE vergibt sie sonst der Server; REMOVE_PANE braucht sie."),
+        after_pane_id: z.string().optional().describe("ADD_PANE: hinter dieser Pane einfügen (Default: vor dem Volumen-Pane bzw. ans Ende)."),
+        pane_ids: z.array(z.string()).optional().describe("REORDER_PANES: vollständige Pane-Reihenfolge (muss exakt die aktuellen Slots enthalten, 'main' zuerst)."),
+        scale: z.enum(["linear", "log"]).optional().describe("ADD_PANE: Y-Skala der neuen Pane."),
+        weight: z.number().optional().describe("ADD_PANE: relative Höhe der neuen Pane (Default 2)."),
+        source_chart_id: z.string().optional().describe("DUPLICATE_CHART: Id des Quellcharts."),
+        new_chart_id: z.string().optional().describe("DUPLICATE_CHART: Id der Kopie."),
+        force: z.boolean().optional().describe("DELETE_CHART: auch löschen, wenn ein Setup das Chart referenziert."),
+        apply_to_window: z.string().optional().describe("DUPLICATE_CHART: Kopie direkt auf dieses Fenster anwenden."),
+        symbol: z.string().optional().describe("LIST_TOPBAR_METRICS: optionales Symbol, um zu prüfen, welche Metriken dafür Daten haben; SETUP_ASSIGN: Symbol des Slots."),
+        slot: z.number().optional().describe("SETUP_ASSIGN: 1-basierte Slot-Nummer im gespeicherten Setup (Alternative zu window_id)."),
+        windows: z.array(z.object({
+          window_id: z.string().optional(),
+          slot: z.number().optional(),
+          chart_id: z.string().optional(),
+          symbol: z.string().optional(),
+          timeframe: z.string().optional(),
+        })).optional().describe("SAVE_SETUP: Slot-Bindungen direkt beim Speichern setzen (chart_id/symbol/timeframe je Fenster)."),
       },
     },
-    async ({ action, ticker, ticker_b, pairs, list_name, preset, timeframe, window_id, annotation, annotation_id, topbar_block, limit, limit_bars, mode, min_spread_pct, top_n, rank_by, overlay, overlay_periods, grid_cols, cell_w, cell_h, origin_x, origin_y, dry_run, topbar, resolution, hires, setup_name, new_setup_name, monitor_count }: any) => {
+    async ({ action, ticker, ticker_b, pairs, list_name, preset, chart, timeframe, window_id, annotation, annotation_id, topbar_block, limit, limit_bars, mode, min_spread_pct, top_n, rank_by, overlay, overlay_periods, grid_cols, cell_w, cell_h, origin_x, origin_y, dry_run, topbar, resolution, hires, setup_name, new_setup_name, monitor_count, panes, topbar_metrics, base_chart_id, chart_id, display_name, description, overwrite,
+        pane_preset_id, pane_id, after_pane_id, pane_ids, scale, weight, source_chart_id, new_chart_id, force, apply_to_window, symbol,
+        slot, windows }: any) => {
 
       try {
         const tf = timeframe || "1D";
@@ -524,10 +588,13 @@ export function registerChartViewerTools(server: McpServer) {
           const sym = ticker.toUpperCase();
           const targetWinId = window_id || `win_${sym.toLowerCase()}_${tf.toLowerCase()}`;
           const cappedLimit = Math.min(Math.max(20, limit || 2000), 10000);
-          const selectedPreset = preset || "default";
+          // 'chart' (Chart-Preset-Id) ist ein Alias fuer 'preset': ist kein eigenes
+          // Indikator-Preset gesetzt, uebernimmt die Chart-Id die Preset-Rolle.
+          const selectedChart = chart ? String(chart) : "";
+          const selectedPreset = selectedChart && (!preset || preset === "default") ? selectedChart : (preset || "default");
 
-          log.info(`[chart_viewer] DISPLAY_STOCK: ${sym} with preset '${selectedPreset}'...`);
-          const cmdPayload = {
+          log.info(`[chart_viewer] DISPLAY_STOCK: ${sym} with preset '${selectedPreset}'${selectedChart ? ` / chart '${selectedChart}'` : ""}...`);
+          const cmdPayload: any = {
             action: "DISPLAY_STOCK",
             symbol: sym,
             preset: selectedPreset,
@@ -535,6 +602,7 @@ export function registerChartViewerTools(server: McpServer) {
             limit: cappedLimit,
             window_id: targetWinId,
           };
+          if (selectedChart) cmdPayload.chart = selectedChart;
 
           const viewerRes = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
             method: "POST",
@@ -552,16 +620,25 @@ export function registerChartViewerTools(server: McpServer) {
             throw new Error(`DISPLAY_STOCK failed on Chart Server: ${viewerResult.error}`);
           }
 
+          // Warnkanal (Plan Phase 4): fehlende Spalten/Panes werden gemeldet,
+          // damit "success" nie ein halbes Chart bedeutet.
+          const warnings: any[] = viewerResult.warnings || [];
+          const skipped: any[] = viewerResult.skipped || [];
+
           return {
             content: [{
               type: "text",
               text: JSON.stringify({
                 status: "success",
-                message: `Chart for ${sym} (${tf}) with preset '${selectedPreset}' displayed on Desktop Viewer.`,
+                message: `Chart for ${sym} (${tf}) with ${selectedChart ? `chart '${selectedChart}'` : `preset '${selectedPreset}'`} displayed on Desktop Viewer.` +
+                  (skipped.length > 0 ? ` ${skipped.length} Pane-Preset(s) uebersprungen.` : ""),
                 window_id: viewerResult.window_id || targetWinId,
                 bars: viewerResult.bars,
                 overlays: viewerResult.overlays,
                 preset: selectedPreset,
+                ...(selectedChart ? { chart: selectedChart } : {}),
+                warnings,
+                skipped,
               }, null, 2),
             }],
           };
@@ -824,7 +901,11 @@ export function registerChartViewerTools(server: McpServer) {
           const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "SAVE_SETUP", setup_name }),
+            body: JSON.stringify({
+              action: "SAVE_SETUP",
+              setup_name,
+              ...(Array.isArray(windows) && windows.length > 0 ? { windows } : {}),
+            }),
           });
 
           const data = await res.json();
@@ -834,6 +915,40 @@ export function registerChartViewerTools(server: McpServer) {
               text: JSON.stringify({
                 status: "success",
                 message: `Setup '${setup_name}' saved (${data.window_count || "?"} windows, ${data.monitor_count || "?"} monitors).`,
+                result: data,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 9b. SETUP_ASSIGN — Chart/Symbol/Timeframe eines Setup-Slots setzen (ohne Fenster zu oeffnen)
+        if (action === "SETUP_ASSIGN") {
+          if (!setup_name) throw new Error("Parameter 'setup_name' is required for SETUP_ASSIGN.");
+          if (window_id === undefined && slot === undefined) {
+            throw new Error("SETUP_ASSIGN braucht 'window_id' oder 'slot' (1-basiert).");
+          }
+          const assignPayload: any = { action: "SETUP_ASSIGN", setup_name };
+          if (monitor_count !== undefined) assignPayload.monitor_count = monitor_count;
+          if (window_id !== undefined) assignPayload.window_id = window_id;
+          if (slot !== undefined) assignPayload.slot = slot;
+          if (chart_id !== undefined) assignPayload.chart_id = chart_id;
+          if (symbol !== undefined) assignPayload.symbol = symbol;
+          if (timeframe !== undefined) assignPayload.timeframe = timeframe;
+
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(assignPayload),
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(`SETUP_ASSIGN failed: ${data.error}`);
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Setup '${setup_name}' Slot ${data.slot} (${data.window_id}) aktualisiert.`,
+                changed: data.changed,
                 result: data,
               }, null, 2),
             }],
@@ -1238,6 +1353,99 @@ export function registerChartViewerTools(server: McpServer) {
             }],
           };
         }
+
+        // 15. LIST_CHARTS — gespeicherte Chart-Definitionen (Panes + Topbar) als Tabelle
+        if (action === "LIST_CHARTS") {
+          log.info(`[chart_viewer] LIST_CHARTS`);
+          const res = await fetch(`${PCA_SERVICE_URL}/api/charts`);
+          if (!res.ok) {
+            throw new Error(`PCA API error: HTTP ${res.status} ${await res.text()}`);
+          }
+          const data = await res.json();
+          const charts: any[] = Array.isArray(data?.charts) ? data.charts : (Array.isArray(data) ? data : []);
+          const cell = (v: any) => String(v ?? "").split("|").join(" ").split("\n").join(" ").trim();
+          const rows = charts.map((c: any) => `| ${cell(c.id)} | ${cell(c.display_name)} | ${cell(c.pane_count)} | ${cell(c.summary)} |`);
+          const lines: string[] = [
+            `📊 **LIST_CHARTS** — ${charts.length} Chart-Preset(s)`,
+            ``,
+            `| id | display_name | pane_count | summary |`,
+            `| :-- | :-- | --: | :-- |`,
+            ...(rows.length > 0 ? rows : [`| — | keine Chart-Presets | — | — |`]),
+          ];
+          return {
+            content: [{ type: "text", text: lines.join("\n") }],
+          };
+        }
+
+        // 16. COMPOSE_CHART — Fensterinhalt aus Pane-Presets zusammensetzen (Draft im Viewer)
+        if (action === "COMPOSE_CHART") {
+          if (!window_id) throw new Error("Parameter 'window_id' is required for COMPOSE_CHART.");
+          if (!Array.isArray(panes) || panes.length === 0) {
+            throw new Error("Parameter 'panes' (nicht-leeres Array aus {pane_id?, pane_preset_id, scale?, weight?}) is required for COMPOSE_CHART.");
+          }
+          const composePanes = panes.map((p: any) => {
+            if (!p || !p.pane_preset_id) throw new Error("COMPOSE_CHART: jedes Pane braucht eine pane_preset_id.");
+            const entry: any = { pane_preset_id: p.pane_preset_id };
+            if (p.pane_id !== undefined) entry.pane_id = p.pane_id;
+            if (p.scale !== undefined) entry.scale = p.scale;
+            if (p.weight !== undefined) entry.weight = p.weight;
+            if (p.overrides !== undefined) entry.overrides = p.overrides;
+            return entry;
+          });
+
+          const cmdPayload: any = { action: "COMPOSE_CHART", window_id, panes: composePanes };
+          if (topbar_metrics !== undefined) cmdPayload.topbar_metrics = topbar_metrics;
+          if (base_chart_id !== undefined) cmdPayload.base_chart_id = base_chart_id;
+
+          log.info(`[chart_viewer] COMPOSE_CHART: ${window_id} mit ${composePanes.length} Pane(s)`);
+          const res = await fetch(`${CHART_VIEWER_API_URL}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cmdPayload),
+          });
+          if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Chart Viewer Server rejected COMPOSE_CHART: HTTP ${res.status} ${errText}`);
+          }
+          const data = await res.json();
+          if (data.error) {
+            throw new Error(`COMPOSE_CHART failed on Chart Server: ${data.error}`);
+          }
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "success",
+                message: `Chart in window ${window_id} aus ${composePanes.length} Pane(s) zusammengesetzt (Draft — speichern mit SAVE_CHART oder manage_chart_presets CREATE/UPDATE).`,
+                panes: composePanes,
+                warnings: data?.warnings || [],
+                skipped: data?.skipped || [],
+                result: data,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // 17. Chart-Builder-Lifecycle (Plan Phase 1): State, Fensterliste, Speichern, Anwenden
+        const builderResponse = await runChartBuilderAction(action, {
+          window_id,
+          chart_id,
+          display_name,
+          description,
+          overwrite,
+          pane_preset_id,
+          pane_id,
+          after_pane_id,
+          pane_ids,
+          scale,
+          weight,
+          source_chart_id,
+          new_chart_id,
+          force,
+          apply_to_window,
+          symbol,
+        });
+        if (builderResponse) return builderResponse;
 
         throw new Error(`Unhandled action: ${action}`);
 
