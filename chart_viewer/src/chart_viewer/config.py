@@ -53,6 +53,13 @@ class ViewerConfig:
     default_crosshair_color: str = "#758696"
     crosshair_snap_to_bar: bool = True  # TC2000-style: snap cursor line to nearest candle center
 
+    # Crosshair value boxes (per-curve Y-axis readout at the snapped cursor bar)
+    crosshair_value_box_enabled: bool = True         # ENV: CV_CROSSHAIR_VALUE_BOX
+    crosshair_value_box_font_factor: float = 1.5     # ENV: CV_CROSSHAIR_VALUE_FONT_FACTOR (x X-axis font)
+    crosshair_value_box_snap_bars: float = 1.0       # ENV: CV_CROSSHAIR_VALUE_SNAP_BARS
+    crosshair_value_box_max_width_px: float = 150.0  # ENV: CV_CROSSHAIR_VALUE_MAX_WIDTH_PX
+    crosshair_value_box_min_width_px: float = 62.0   # ENV: CV_CROSSHAIR_VALUE_MIN_WIDTH_PX
+
     # Plot rendering & Indicator styles
     default_indicator_line_width_px: int = 1  # Line width for indicator lines that set no explicit width
     crisp_thin_indicator_lines: bool = True  # Draw 1px indicator lines without AA so they match the candle borders
@@ -82,6 +89,15 @@ class ViewerConfig:
     key_zoom_fps: int = 60  # Frame rate for smooth zoom animation
     key_shift_speed_multiplier: float = 2.0  # Speed multiplier when Shift is held (immediate activation, 2x speed)
 
+    # Control panel (viewer-side ticker search, watchlist editing, chart presets)
+    control_panel_enabled: bool = True
+    control_panel_always_on_top: bool = True
+    control_panel_width: int = 360
+    control_panel_height: int = 560
+    control_search_debounce_ms: int = 150  # Debounce for the DB-backed realtime search
+    control_search_limit: int = 20
+    control_request_timeout_ms: int = 5000  # Mark unanswered control.request as failed
+
     @classmethod
     def from_env(cls) -> ViewerConfig:
         """Create config populated from environment variables with fallbacks."""
@@ -106,6 +122,11 @@ class ViewerConfig:
             touch_left_border=os.getenv("CV_TOUCH_LEFT_BORDER", "true").lower() in ("true", "1", "yes"),
             y_handle_hit_radius_px=float(os.getenv("CV_Y_HANDLE_HIT_RADIUS_PX", "8.0")),
             crosshair_snap_to_bar=os.getenv("CV_CROSSHAIR_SNAP", "true").lower() in ("true", "1", "yes"),
+            crosshair_value_box_enabled=os.getenv("CV_CROSSHAIR_VALUE_BOX", "true").lower() in ("true", "1", "yes"),
+            crosshair_value_box_font_factor=float(os.getenv("CV_CROSSHAIR_VALUE_FONT_FACTOR", "1.5")),
+            crosshair_value_box_snap_bars=float(os.getenv("CV_CROSSHAIR_VALUE_SNAP_BARS", "1.0")),
+            crosshair_value_box_max_width_px=float(os.getenv("CV_CROSSHAIR_VALUE_MAX_WIDTH_PX", "150.0")),
+            crosshair_value_box_min_width_px=float(os.getenv("CV_CROSSHAIR_VALUE_MIN_WIDTH_PX", "62.0")),
             default_indicator_line_width_px=int(os.getenv("CV_DEFAULT_INDICATOR_LINE_WIDTH_PX", "1")),
             crisp_thin_indicator_lines=os.getenv("CV_CRISP_THIN_INDICATOR_LINES", "true").lower() in ("true", "1", "yes"),
             enable_antialiasing=os.getenv("CV_ENABLE_ANTIALIASING", "true").lower() in ("true", "1", "yes"),
@@ -127,6 +148,13 @@ class ViewerConfig:
             key_zoom_speed_per_sec=float(os.getenv("CV_KEY_ZOOM_SPEED_PER_SEC", "1.15")),
             key_zoom_fps=int(os.getenv("CV_KEY_ZOOM_FPS", "60")),
             key_shift_speed_multiplier=float(os.getenv("CV_KEY_SHIFT_SPEED_MULTIPLIER", "2.0")),
+            control_panel_enabled=os.getenv("CV_CONTROL_PANEL", "true").lower() in ("true", "1", "yes"),
+            control_panel_always_on_top=os.getenv("CV_CONTROL_PANEL_ON_TOP", "true").lower() in ("true", "1", "yes"),
+            control_panel_width=int(os.getenv("CV_CONTROL_PANEL_WIDTH", "360")),
+            control_panel_height=int(os.getenv("CV_CONTROL_PANEL_HEIGHT", "560")),
+            control_search_debounce_ms=int(os.getenv("CV_CONTROL_SEARCH_DEBOUNCE_MS", "150")),
+            control_search_limit=int(os.getenv("CV_CONTROL_SEARCH_LIMIT", "20")),
+            control_request_timeout_ms=int(os.getenv("CV_CONTROL_REQUEST_TIMEOUT_MS", "5000")),
         )
 
 

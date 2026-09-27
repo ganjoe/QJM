@@ -16,6 +16,8 @@ class InProcessTransport(AgentTransport):
         self.name = name
         self.peer: InProcessTransport | None = None
         self._handlers: List[Callable[[Envelope], None]] = []
+        self._connect_handlers: List[Callable[[], None]] = []
+        self._disconnect_handlers: List[Callable[[], None]] = []
         self._connected: bool = False
 
     def set_peer(self, peer: InProcessTransport) -> None:
@@ -33,6 +35,19 @@ class InProcessTransport(AgentTransport):
     def on_event(self, handler: Callable[[Envelope], None]) -> None:
         self._handlers.append(handler)
 
+    def on_connect(self, handler: Callable[[], None]) -> None:
+        self._connect_handlers.append(handler)
+
+    def on_disconnect(self, handler: Callable[[], None]) -> None:
+        self._disconnect_handlers.append(handler)
+
+    def _notify(self, handlers: List[Callable[[], None]]) -> None:
+        for handler in list(handlers):
+            try:
+                handler()
+            except Exception as e:
+                logger.exception(f"{self.name}: error in connection state handler: {e}")
+
     def _dispatch(self, envelope: Envelope) -> None:
         for handler in self._handlers:
             try:
@@ -41,10 +56,16 @@ class InProcessTransport(AgentTransport):
                 logger.exception(f"{self.name} error in handler for {envelope.type}: {e}")
 
     def connect(self) -> None:
+        if self._connected:
+            return
         self._connected = True
+        self._notify(self._connect_handlers)
 
     def disconnect(self) -> None:
+        was_connected = self._connected
         self._connected = False
+        if was_connected:
+            self._notify(self._disconnect_handlers)
 
     def is_connected(self) -> bool:
         return self._connected

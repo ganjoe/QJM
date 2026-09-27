@@ -113,10 +113,17 @@ KNOWN_ABBREVIATIONS: Dict[str, str] = {
     "breadth_minervini": "Minervini Marktbreite",
     "breadth_minervini_pct": "Minervini Marktbreite %",
     "shares_outstanding": "Aktienanzahl",
+    "free_float": "Frei handelbare Aktien (Free Float)",
+    "free_float_percent": "Free Float in % der ausstehenden Aktien",
+    "float_effective_date": "Stichtag der Free-Float-Messung",
+    "float_source": "Quelle des Free Floats",
+    "float_updated_at": "Zeitpunkt des letzten Float-Syncs",
+    "cik": "SEC Central Index Key",
     "currency": "Währung",
     "eps": "Earnings Per Share",
     "revenue": "Jahresumsatz",
-    "earnings": "Quartalszahlen-Datum",
+    "earnings": "Letzter Quartalszahlen-Termin",
+    "next_earnings": "Nächster Quartalszahlen-Termin",
     "market_cap": "Marktkapitalisierung",
     "pe_ratio": "Kurs-Gewinn-Verhältnis",
     "days_to_earnings": "Tage bis Quartalszahlen",
@@ -137,7 +144,7 @@ COMPUTED_FIELDS: Dict[str, str] = {
 
 # Supabase columns that are infrastructure/bookkeeping and must never be exposed as filterable
 # stock metadata. Everything else on cda_master_universe is discovered dynamically at runtime.
-SUPABASE_SYSTEM_COLUMNS = {"ticker", "has_parquet", "last_updated", "created_at", "utime"}
+SUPABASE_SYSTEM_COLUMNS = {"ticker", "has_parquet", "last_updated", "created_at", "utime", "next_earnings_source"}
 
 # Fallback catalog used before the first successful cda_master_universe fetch (or when it fails).
 KNOWN_SUPABASE_FIELDS: List[Tuple[str, str]] = [
@@ -146,6 +153,7 @@ KNOWN_SUPABASE_FIELDS: List[Tuple[str, str]] = [
     ("eps", "float"),
     ("revenue", "float"),
     ("earnings", "date"),
+    ("next_earnings", "date"),
 ]
 KNOWN_SUPABASE_TYPES: Dict[str, str] = {name: typ for name, typ in KNOWN_SUPABASE_FIELDS}
 
@@ -465,10 +473,13 @@ def load_ticker_record(ticker: str, metadata: Optional[Dict[str, Any]] = None) -
     else:
         record["pe_ratio"] = None
 
-    if record["earnings"]:
+    # Vorwärtsgerichteter Termin (cda_master_universe.next_earnings) hat Vorrang vor dem
+    # letzten gemeldeten Termin (Fallback für Altdaten ohne next_earnings).
+    earnings_raw = record.get("next_earnings") or record.get("earnings")
+    if earnings_raw:
         try:
             # Parse ISO date/timestamp
-            earn_str = record["earnings"].replace("Z", "+00:00")
+            earn_str = str(earnings_raw).replace("Z", "+00:00")
             dt_earn = datetime.fromisoformat(earn_str)
             dt_now = datetime.now(timezone.utc)
             record["days_to_earnings"] = (dt_earn.date() - dt_now.date()).days

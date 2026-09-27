@@ -109,14 +109,48 @@ services:
       # geliefertem Tweet (~$0.05/Tag statt ~$18/Tag im alten 15-min-Timeline-Betrieb).
       # Modus "timeline": alter Pfad (20er-Page pro Influencer, Liveness-optimiert).
       X_INGESTION_MODE: "search"
-      # Suchlauf-Intervall = maximale Aktualität (Kosten sind volumen-, nicht abfrageabhängig)
+      # --- Laufzeitplan: genau EIN Lauf pro Tag um 22:00 (Europe/Berlin) ---
+      # Verpasste Slots (Container war aus) werden beim Start nachgeholt; zusätzlich
+      # jederzeit manuell über manage_sync_pipeline SYNC_NOW. Leer = Intervallbetrieb
+      # über X_SEARCH_INTERVAL_SEC (Altverhalten).
+      X_DAILY_RUN_AT: "22:00"
+      X_DAILY_RUN_TZ: "Europe/Berlin"
+      # Nur im Intervallbetrieb relevant (dann bitte Überlappung <= Intervall/10):
       X_SEARCH_INTERVAL_SEC: "3600"
-      # Überlappung gegen Grenz-/Index-Lücken
-      X_SEARCH_OVERLAP_SEC: "900"
-      # Sicherheitsnetz: vollständiger Timeline-Abgleich (holt Suchindex-Lücken nach)
+      # Überlappung gegen Index-Lag am Fensterrand. Jeder erneut gelieferte Tweet
+      # kostet erneut 15 Credits: 1h bei 24h-Fenster = ~4% Aufschlag (~$0.30/Monat).
+      X_SEARCH_OVERLAP_SEC: "3600"
+      # Rückstand, den die Suche selbst aufholt (2 Tage). Darüber wird gedeckelt und
+      # der Rest geht an den Timeline-Abgleich – der Cursor springt nie still vor.
+      X_SEARCH_MAX_CATCHUP_SEC: "172800"
+      # Sicherheitsnetz: Timeline-Abgleich (holt Suchindex-Lücken nach).
+      # Gemessen 2026-09-21: alter Modus = 9.961 Tweets / 1.4942 $ für 1.256 neue
+      # Posts (87% Duplikate). Jetzt: max. 3 Seiten pro Influencer, Abbruch sobald
+      # eine Seite nur Bekanntes enthält, Fenster max. 7 Tage -> ~$0.39/Lauf.
+      # 604800 = wöchentlich (~$1.70/Monat). 86400 = täglich (~$11/Monat) und damit
+      # eine echte Lücken-Garantie auch für Vielposter.
       X_RECONCILE_INTERVAL_SEC: "604800"
-      # Ab diesem Rückstand übernimmt der Abgleich, die Suche holt nur das letzte Fenster
-      X_SEARCH_MAX_CATCHUP_SEC: "86400"
+      X_RECONCILE_MAX_PAGES_PER_USER: "3"
+      X_RECONCILE_STOP_ON_KNOWN_PAGE: "true"
+      X_RECONCILE_MAX_LOOKBACK_SEC: "604800"
+      # Harte Kostenbremse pro PHASE (Suche bzw. Lücken-Schließer), Credits:
+      # normal sind ~24.000 pro Tageslauf, ein 2-Tage-Rückstand ~50.000.
+      X_MAX_CREDITS_PER_CYCLE: "80000"
+      # Nach einem 402 ("Credits is not enough") 30 min keine X-Requests mehr senden;
+      # der Tagesslot bleibt offen und läuft nach dem Aufladen automatisch nach.
+      X_PAYMENT_BLOCK_MS: "1800000"
+      # --- Influencer-Favoriten (Geld-Gate) ---
+      # Nur Accounts mit x_users.favorite=true laufen im Regel-Sync. Nicht-Favoriten
+      # bleiben durchsuchbar und werden von der Tier-2-Suche gezielt nachgeladen.
+      # Tagesbudget für diese interaktiven Abrufe (Tier 2/3, Live-Suche, manuelle Syncs):
+      X_INTERACTIVE_DAILY_CREDITS: "50000"
+      # Tier 2 lädt nur nach, wenn die Datenlage dünn ist:
+      # < X_TIER2_MIN_POSTS gespeicherte Posts im Fenster, max. X_TIER2_MAX_AUTHORS
+      # Accounts pro Aufruf, je max. X_TIER2_MAX_POSTS Posts.
+      X_TIER2_MIN_POSTS: "3"
+      X_TIER2_MAX_AUTHORS: "3"
+      X_TIER2_MAX_POSTS: "60"
+      X_TIER2_WINDOW_DAYS: "7"
       # Nur für X_INGESTION_MODE=timeline relevant:
       X_DISCOVERY_INTERVAL_SEC: "21600"
       X_LIVENESS_CHECK: "true"
@@ -153,6 +187,62 @@ services:
         aliases:
           - mcp-cco
           - llm-gw-mcp-cco
+
+  # ============================================
+  # Journal MCP Server — Trader-Tagebuch (Port 8801)
+  # Eigener Datenbereich (journal_entry/journal_thesis/journal_entry_link),
+  # Migration 034. Siehe TRADER_JOURNAL_MCP_PLAN.md.
+  # ============================================
+  mcp-journal:
+    build:
+      context: ../mcp/agent-journal
+      dockerfile: Dockerfile
+    image: llm-gw-mcp-journal:latest
+    container_name: llm-gw-mcp-journal
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+    volumes:
+      - ../mcp/agent-journal/prompts:/app/prompts:ro
+      - ../mcp/agent-journal/index.ts:/app/index.ts:ro
+      - ../mcp/agent-journal/tools:/app/tools:ro
+      - ../mcp/agent-journal/scripts:/app/scripts:ro
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:8001}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      SWITCHYARD_URL: http://switchyard:4000/v1
+      EMBED_MODEL: embeddings
+      # 1100 Zeichen liegen auch bei dichter Tokenisierung unter dem 512-Token-Kontext
+      # des mxbai-Backends; der Server faengt eine Kontextgrenze zusaetzlich ab.
+      EMBED_MAX_CHARS: "1100"
+      EMBED_DIM: "1024"
+      EMBED_VERSION: "mxbai-v1"
+      EMBED_MODEL_NAME: "mxbai-embed-large"
+      PORT: "8801"
+      AGENT_ID: "journal"
+      # Datumsfelder des Journals sind Berliner Kalendertage; die DB-Funktion
+      # journal_today() muss dazu passen (Migration 034).
+      JOURNAL_TZ: "Europe/Berlin"
+      JOURNAL_DEDUPE_WINDOW_HOURS: "12"
+      JOURNAL_RELATED_LIMIT: "3"
+      JOURNAL_RELATED_THRESHOLD: "0.5"
+      JOURNAL_SEARCH_THRESHOLD: "0.5"
+      # Direkte LLM-Anbindung (Destillat). Embeddings laufen ueber Switchyard.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      DEEPSEEK_MAX_RETRIES: ${DEEPSEEK_MAX_RETRIES:-4}
+      DEEPSEEK_REASONING_EFFORT: ${DEEPSEEK_REASONING_EFFORT:-off}
+    ports:
+      - "8801:8801"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - mcp-journal
+          - llm-gw-mcp-journal
 
   # ============================================
   # PTA MCP Server — Execution & Portfolio Management
@@ -309,6 +399,8 @@ services:
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - CV_AUTOSAVE_DEBOUNCE_SEC=${CV_AUTOSAVE_DEBOUNCE_SEC:-1.5}
       - CV_SUPABASE_TIMEOUT_SEC=${CV_SUPABASE_TIMEOUT_SEC:-10.0}
+      # Control panel: watchlist add triggers the chart download for new tickers
+      - STOCK_DATA_NODE_URL=${STOCK_DATA_NODE_URL:-http://host.docker.internal:8002}
     volumes:
       - ../chart_viewer/src:/app/src:ro
       - ../chart_viewer/run_server.py:/app/run_server.py:ro

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { STOCK_DATA_NODE_URL, log, supabase } from "./shared.ts";
 import { registerMassiveTools } from "./massive.ts";
+import { registerEarningsTools } from "./earnings.ts";
 
 declare const Deno: any;
 
@@ -233,6 +234,9 @@ export async function reconcileMissingMetadata(limit = 50): Promise<number> {
 export function registerCdaTools(server: McpServer) {
   // Massive.com integration controls (incl. download frequency)
   registerMassiveTools(server);
+
+  // Earnings-Kalender: cda_earnings_history (Vergangenheit) + next_earnings (Zukunft)
+  registerEarningsTools(server);
 
   server.registerTool(
     "manage_chart_downloads",
@@ -704,12 +708,13 @@ export function registerCdaTools(server: McpServer) {
         shares_outstanding: z.number().optional().describe("Ausstehende Aktien (Shares Outstanding) für Marktkapitalisierung"),
         eps: z.number().optional().describe("Earnings per share"),
         revenue: z.number().optional().describe("Umsatz"),
-        earnings: z.string().optional().describe("Datum der nächsten/letzten Earnings (UTC Zeitstempel)"),
+        earnings: z.string().optional().describe("Letzter gemeldeter Earnings-Termin (UTC Zeitstempel)."),
+        next_earnings: z.string().optional().describe("Nächster geplanter Earnings-Termin (UTC, ISO-8601 oder YYYY-MM-DD). Für Historie: manage_earnings_calendar."),
         has_parquet: z.boolean().optional().describe("Gibt an, ob lokale Chartdaten vorliegen."),
         chunk_size: z.number().optional().describe("Batch-Größe für Bulk-Sync / Reconcile (Standard: 50 oder UNIVERSE_SYNC_CHUNK_SIZE)"),
       },
     },
-    async ({ action, ticker, tickers, utime, currency, shares_outstanding, eps, revenue, earnings, has_parquet, chunk_size }: any) => {
+    async ({ action, ticker, tickers, utime, currency, shares_outstanding, eps, revenue, earnings, next_earnings, has_parquet, chunk_size }: any) => {
       try {
         if (action === "RECONCILE") {
           const limitCount = chunk_size && chunk_size > 0 ? chunk_size : 50;
@@ -871,6 +876,12 @@ export function registerCdaTools(server: McpServer) {
           payload.eps = eps !== undefined ? eps : existingData?.eps;
           payload.revenue = revenue !== undefined ? revenue : existingData?.revenue;
           payload.earnings = earnings !== undefined ? earnings : existingData?.earnings;
+          if (next_earnings !== undefined) {
+            payload.next_earnings = next_earnings;
+            payload.next_earnings_source = "manual";
+          } else {
+            payload.next_earnings = existingData?.next_earnings;
+          }
           payload.has_parquet = has_parquet !== undefined ? has_parquet : (existingData?.has_parquet ?? true);
           payload.last_updated = new Date().toISOString();
           

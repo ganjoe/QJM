@@ -69,18 +69,35 @@ def test_websocket_binary_transport():
     received_on_client = []
     client_transport.on_event(lambda env: received_on_client.append(env))
 
+    # The ViewerApp performs the viewer.ready handshake when the transport reports a
+    # (re-)established connection; emulate that here (the transport itself no longer
+    # knows about the handshake, so InProcess and WebSocket behave identically).
+    connected_events = []
+
+    def _on_connect() -> None:
+        connected_events.append(True)
+        client_transport.send_command(
+            make_envelope(
+                msg_type="viewer.ready",
+                payload={"protocol_version": cfg.protocol_version},
+                kind=MessageKind.EVENT,
+            )
+        )
+
+    client_transport.on_connect(_on_connect)
     client_transport.connect()
 
     # Wait for handshake & ack
-    for _ in range(20):
-        if len(received_on_server) >= 1 and len(received_on_client) >= 1:
+    for _ in range(40):
+        if connected_events and len(received_on_server) >= 1 and len(received_on_client) >= 1:
             break
         time.sleep(0.05)
 
     client_transport.disconnect()
     server.shutdown()
 
-    # Initial handshake sent viewer.ready
+    # Connect callback fired and the viewer.ready handshake reached the server
+    assert connected_events, "on_connect handler was not invoked"
     assert len(received_on_server) >= 1
     assert received_on_server[0].type == "viewer.ready"
 

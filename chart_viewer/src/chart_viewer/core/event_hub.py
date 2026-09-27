@@ -39,12 +39,20 @@ class EventHub:
         """Check if any windows are registered for a given color flag."""
         return bool(self._flag_listeners.get(flag, []))
 
-    def broadcast_symbol_to_flag(self, symbol: str, flag: int) -> None:
-        """Broadcast a new symbol to all windows listening to the given color flag."""
+    def broadcast_symbol_to_flag(self, symbol: str, flag: int, preset: Optional[str] = None) -> None:
+        """Broadcast a new symbol to all windows listening to the given color flag.
+
+        `preset` is forwarded to listeners that accept it (the control panel passes
+        the chart preset the user selected); with `None` the previous call shape
+        `listener(symbol)` is preserved.
+        """
         if flag in self._flag_listeners:
             for listener in self._flag_listeners[flag]:
                 try:
-                    listener(symbol)
+                    if preset is None:
+                        listener(symbol)
+                    else:
+                        listener(symbol, preset)
                 except Exception as e:
                     logger.exception(f"Error in flag listener: {e}")
 

@@ -1,4 +1,4 @@
-import { supabase, log } from "../tools/shared.ts";
+import { supabase, log, X_MAX_CREDITS_PER_CYCLE, interactiveBudgetStatus, X_INTERACTIVE_DAILY_CREDITS } from "../tools/shared.ts";
 import { startXIngestion, stopXIngestion, xIngestionStats } from "./x_ingestion_worker.ts";
 import { startMetadataWorker, stopMetadataWorker, metadataWorkerStats } from "./metadata_worker.ts";
 import { startEmbeddingWorker, stopEmbeddingWorker, embeddingWorkerStats } from "./embedding_worker.ts";
@@ -58,6 +58,7 @@ export class WorkerManager {
       { count: ytEmbeddedChunks },
       { count: ytFailedVideos },
       { data: ingestionStateRow },
+      { count: favoriteInfluencers },
     ] = await Promise.all([
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("status", "pending_metadata"),
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).or("status.eq.pending_embedding,status.eq.pending"),
@@ -81,6 +82,8 @@ export class WorkerManager {
       supabase.from("agent_workspace").select("*", { count: "exact", head: true }).eq("artifact_type", "yt_chunk"),
       supabase.from("yt_videos").select("*", { count: "exact", head: true }).eq("status", "failed"),
       supabase.from("system_settings").select("value").eq("key", "x_ingestion_state").single(),
+      // Nur Favoriten laufen im Regel-Sync (Geld-Gate).
+      supabase.from("x_users").select("*", { count: "exact", head: true }).eq("is_active", true).eq("favorite", true),
     ]);
 
     return {
@@ -88,6 +91,9 @@ export class WorkerManager {
         x_ingestion: {
           running: xIngestionStats.isRunning,
           cycle_count: xIngestionStats.cycleCount,
+          next_run: xIngestionStats.nextRunAt || null,
+          last_cycle_finished: xIngestionStats.lastCycleFinishedAt || null,
+          manual_run_pending: xIngestionStats.manualRunPending,
           total_ingested: xIngestionStats.totalPostsIngested,
           last_run: xIngestionStats.lastRunTime ? new Date(xIngestionStats.lastRunTime).toISOString() : null,
           last_error: xIngestionStats.lastError,
@@ -97,6 +103,33 @@ export class WorkerManager {
             last_cycle_users_checked: xIngestionStats.lastCycleUsersChecked,
             last_cycle_users_synced: xIngestionStats.lastCycleUsersSynced,
             last_cycle_credits: xIngestionStats.lastCycleCredits,
+            // Aufschlüsselung nach Quelle – zeigt, ob Credits in die Suche, den
+            // Timeline-Abgleich oder den Liveness-Check fließen.
+            last_cycle_credits_by_source: xIngestionStats.lastCycleCreditsBySource,
+            total_credits_by_source: xIngestionStats.totalCreditsBySource,
+            last_search_tweets_fetched: xIngestionStats.lastSearchTweetsFetched,
+            last_search_credits: xIngestionStats.lastSearchCredits,
+            last_reconcile_tweets_fetched: xIngestionStats.lastReconcileTweetsFetched,
+            last_reconcile_credits: xIngestionStats.lastReconcileCredits,
+            last_reconcile_skipped: xIngestionStats.lastReconcileSkipped,
+            // Bremsen: Budget-Stopps und 402-Guthaben-Sperre.
+            budget_stops: xIngestionStats.budgetStops,
+            last_budget_stop: xIngestionStats.lastBudgetStop,
+            payment_blocked_until: xIngestionStats.paymentBlockedUntil
+              ? new Date(xIngestionStats.paymentBlockedUntil).toISOString()
+              : null,
+            payment_errors_402: xIngestionStats.paymentErrors402,
+            max_credits_per_cycle: X_MAX_CREDITS_PER_CYCLE,
+            // Interaktive Abrufe (Tools: Tier 2/3, Live-Suche, manuelle Syncs)
+            interactive: (() => {
+              const s = interactiveBudgetStatus();
+              return { used: s.used, limit: s.limit, calls: s.calls };
+            })(),
+            // Abdeckung / Lücken-Schließer
+            last_search_truncated: xIngestionStats.lastSearchTruncated,
+            gap_closer_runs: xIngestionStats.gapCloserRuns,
+            gap_closer_saved: xIngestionStats.gapCloserSaved,
+            coverage_failures: xIngestionStats.coverageFailures,
             total_tweets_fetched: xIngestionStats.totalTweetsFetched,
             total_credits: xIngestionStats.totalCredits,
             last_search_saved: xIngestionStats.lastSearchSaved,
@@ -176,6 +209,7 @@ export class WorkerManager {
           stage_legacy_categorized: legacyCategorizedCount || 0,
           total: totalPosts || 0,
           active_influencers: activeInfluencers || 0,
+          favorite_influencers: favoriteInfluencers || 0,
           // Datenqualitaet metadata.tickers + fehlgeschlagene Metadaten.
           with_tickers: withTickersCount || 0,
           empty_tickers: emptyTickersCount || 0,

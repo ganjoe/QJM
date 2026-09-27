@@ -13,88 +13,27 @@ from typing import Dict, List, Optional
 from chart_viewer.transport.base import AgentTransport
 from chart_viewer.models.envelope import Envelope, MessageKind, make_envelope, create_message_id
 from chart_viewer.models.entities import WindowState, WindowGeometry, MonitorInfo
+from chart_viewer.agent.supabase import (
+    CV_SUPABASE_TIMEOUT_SEC,
+    SUPABASE_HEADERS,
+    SUPABASE_REST_URL,
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SupabaseError,
+    extract_url_error_msg as _extract_url_error_msg,
+    supabase_count as _supabase_count,
+    supabase_delete as _supabase_delete,
+    supabase_get as _supabase_get,
+    supabase_patch as _supabase_patch,
+    supabase_post as _supabase_post,
+)
+from chart_viewer.agent.control_service import ControlService
+from chart_viewer.models.validation import sanitize_pane_scales
 
 logger = logging.getLogger(__name__)
 
-# Configurable timeouts and debounce intervals (via environment variables)
-CV_SUPABASE_TIMEOUT_SEC = float(os.environ.get("CV_SUPABASE_TIMEOUT_SEC", "10.0"))
+# Configurable timeout and debounce interval (via environment variables)
 CV_AUTOSAVE_DEBOUNCE_SEC = float(os.environ.get("CV_AUTOSAVE_DEBOUNCE_SEC", "1.5"))
-
-# Supabase configuration (same as agent-pca shared.ts)
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://host.docker.internal:8001")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1"
-SUPABASE_HEADERS = {
-    "apikey": SUPABASE_SERVICE_ROLE_KEY,
-    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=representation",
-}
-
-
-def _extract_url_error_msg(e: urllib.error.URLError) -> str:
-    """Extract informative error text from URLError / HTTPError."""
-    if isinstance(e, urllib.error.HTTPError):
-        try:
-            body = e.read().decode(errors="replace")
-            return f"HTTP {e.code}: {e.reason} - {body}"
-        except Exception:
-            return f"HTTP {e.code}: {e.reason}"
-    return str(e)
-
-
-def _supabase_get(path: str) -> dict | list:
-    """GET from Supabase REST API."""
-    url = f"{SUPABASE_REST_URL}{path}"
-    req = urllib.request.Request(url, headers=SUPABASE_HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        msg = _extract_url_error_msg(e)
-        logger.error("Supabase GET %s failed: %s", url, msg)
-        raise RuntimeError(f"Supabase unreachable: {msg}") from e
-
-
-def _supabase_post(path: str, payload: dict) -> dict | list:
-    """POST to Supabase REST API."""
-    url = f"{SUPABASE_REST_URL}{path}"
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        msg = _extract_url_error_msg(e)
-        logger.error("Supabase POST %s failed: %s", url, msg)
-        raise RuntimeError(f"Supabase unreachable: {msg}") from e
-
-
-def _supabase_patch(path: str, payload: dict) -> dict | list:
-    """PATCH to Supabase REST API."""
-    url = f"{SUPABASE_REST_URL}{path}"
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, headers=SUPABASE_HEADERS, method="PATCH")
-    try:
-        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        msg = _extract_url_error_msg(e)
-        logger.error("Supabase PATCH %s failed: %s", url, msg)
-        raise RuntimeError(f"Supabase unreachable: {msg}") from e
-
-
-def _supabase_delete(path: str) -> None:
-    """DELETE from Supabase REST API."""
-    url = f"{SUPABASE_REST_URL}{path}"
-    req = urllib.request.Request(url, headers=SUPABASE_HEADERS, method="DELETE")
-    try:
-        with urllib.request.urlopen(req, timeout=CV_SUPABASE_TIMEOUT_SEC):
-            pass
-    except urllib.error.URLError as e:
-        msg = _extract_url_error_msg(e)
-        logger.error("Supabase DELETE %s failed: %s", url, msg)
-        raise RuntimeError(f"Supabase unreachable: {msg}") from e
 
 
 class ChartAgent:
@@ -117,6 +56,9 @@ class ChartAgent:
         self.screens: list[dict] = []
         self._autosave_timer: threading.Timer | None = None
         self._autosave_lock = threading.Lock()
+
+        # Control panel service: symbol search, watchlist CRUD, chart presets
+        self.control_service = ControlService(self)
 
     def start(self) -> None:
         self.transport.connect()
@@ -215,8 +157,16 @@ class ChartAgent:
         elif envelope.type == "window.change_symbol":
             win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
             symbol = envelope.payload.get("symbol") if isinstance(envelope.payload, dict) else None
+            preset = envelope.payload.get("preset") if isinstance(envelope.payload, dict) else None
             if win_id and symbol:
-                self._handle_window_change_symbol(win_id, symbol)
+                self._handle_window_change_symbol(win_id, symbol, preset=preset)
+
+        elif envelope.type == "window.pane_scales_changed":
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            win_id = envelope.window_id or payload.get("window_id")
+            pane_scales = payload.get("pane_scales")
+            if win_id and isinstance(pane_scales, dict):
+                self._handle_pane_scales_changed(win_id, pane_scales)
 
         elif envelope.type == "annotation.moved":
             logger.info(f"Agent recorded annotation move: {envelope.payload}")
@@ -224,6 +174,15 @@ class ChartAgent:
         elif envelope.type == "resync.request":
             # Viewer requested full resync -> push layout.restore
             self.restore_layout()
+
+        elif envelope.type == "control.request":
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            request_id = str(payload.get("request_id") or "")
+            op = str(payload.get("op") or "")
+            if request_id and op:
+                self.control_service.handle(request_id, op, payload.get("params"))
+            else:
+                logger.warning("Ignoring malformed control.request: %s", payload)
 
         elif envelope.type == "screenshot.response":
             payload = envelope.payload if isinstance(envelope.payload, dict) else {}
@@ -248,6 +207,45 @@ class ChartAgent:
         self.restore_layout()
         if getattr(self, "on_viewer_ready_callback", None):
             self.on_viewer_ready_callback()
+
+    def _handle_pane_scales_changed(self, window_id: str, pane_scales: dict) -> None:
+        """Viewer toggled a pane LOG/LIN button for this window.
+
+        The ledger and the cached snapshot are updated synchronously (so a later
+        layout restore keeps the setting); the preset write goes out in a
+        background thread, because the receive thread must not block on HTTP.
+        Windows without a preset only keep the setting locally.
+        """
+        clean = sanitize_pane_scales(pane_scales)
+        win_info = self.layout_ledger.get(window_id)
+        if isinstance(win_info, dict):
+            win_info["pane_scales"] = clean
+        snap = self.series_data.get(window_id)
+        if isinstance(snap, dict):
+            snap["pane_scales"] = clean
+
+        preset_id = ""
+        if isinstance(win_info, dict):
+            preset_id = str(win_info.get("preset") or "").strip()
+        if not preset_id:
+            logger.info(
+                "Pane scales for %s changed, but the window has no preset to store them in",
+                window_id,
+            )
+            return
+
+        def _worker() -> None:
+            try:
+                result = self.control_service.set_pane_scales(preset_id, clean)
+                logger.info(
+                    "Pane scales of preset '%s' updated: %s",
+                    preset_id,
+                    result.get("pane_scales") if isinstance(result, dict) else result,
+                )
+            except Exception as e:
+                logger.warning("Could not persist pane scales in preset '%s': %s", preset_id, e)
+
+        threading.Thread(target=_worker, name="cv-pane-scales", daemon=True).start()
 
     def open_window(
         self,
@@ -343,8 +341,13 @@ class ChartAgent:
         )
         self.send_command(env)
 
-    def _handle_window_change_symbol(self, window_id: str, new_symbol: str) -> None:
-        """Fetch new data and send snapshot.full when Chart changes symbol."""
+    def _handle_window_change_symbol(self, window_id: str, new_symbol: str, preset: str | None = None) -> None:
+        """Fetch new data and send snapshot.full when Chart changes symbol.
+
+        `preset` comes from the viewer control panel and overrides the preset a window
+        was opened with; it is persisted in the layout ledger so later symbol changes
+        keep it.
+        """
         logger.info(f"Agent processing symbol change for {window_id} -> {new_symbol}")
         
         # We need to preserve the timeframe and preset (if any) from the layout ledger
@@ -358,7 +361,11 @@ class ChartAgent:
             tf_mult = win_info.get("multiplier", 1)
         tf_str = f"{tf_mult}{tf_unit}"
         
-        preset = win_info.get("preset")
+        if preset:
+            win_info["preset"] = preset
+            self.layout_ledger[window_id] = win_info
+        else:
+            preset = win_info.get("preset")
         if not preset:
             try:
                 import json

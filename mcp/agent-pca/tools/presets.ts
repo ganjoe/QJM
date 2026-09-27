@@ -11,7 +11,7 @@ export function registerPresetTools(server: McpServer) {
             title: "Manage Chart Presets",
             description: "Create, read, update, or delete dynamic chart presets (e.g. creating a preset with specific indicators like sma_10, ema_21, bb_20 and specific colors).",
             inputSchema: {
-                action: z.enum(["CREATE", "GET", "LIST", "UPDATE", "DELETE"]).describe("The operation to perform."),
+                action: z.enum(["CREATE", "GET", "LIST", "UPDATE", "DELETE", "SET_PANE_SCALE"]).describe("The operation to perform."),
                 preset_id: z.string().optional().describe("ID of the preset (e.g. 'qmaggi', 'momentum'). Required for CREATE, GET, UPDATE, DELETE."),
                 display_name: z.string().optional().describe("Human readable name for the preset. Used in CREATE and UPDATE."),
                 description: z.string().optional().describe("Description of the preset. Used in CREATE and UPDATE."),
@@ -23,10 +23,16 @@ export function registerPresetTools(server: McpServer) {
                         style_override: z.record(z.string(), z.any()).optional().describe("Style overrides (e.g. { color: '#FF00FF', width: 2 })."),
                         pane: z.string().optional().describe("Target pane: 'main' = Overlay im Chartfenster, beliebiger Name (z. B. 'rs') = eigene Subpane mit eigener Y-Achse, 'none' = nur Topbar-Metrik. Weglassen = aus plot_type des Features ableiten.")
                     })
-                ).optional().describe("List of indicators for this preset. Used in CREATE and UPDATE.")
+                ).optional().describe("List of indicators for this preset. Used in CREATE and UPDATE."),
+                pane_scales: z.record(z.string(), z.enum(["linear", "log"])).optional().describe(
+                    "Y-Achsen-Skalierung je Pane, z. B. { main: 'log', volume: 'linear' }. Panes ohne Eintrag sind linear. " +
+                    "Wird ueblicherweise vom Chart-Viewer selbst gesetzt (LOG/LIN-Taste im Pane). Used in CREATE and UPDATE."
+                ),
+                pane: z.string().optional().describe("Pane-ID fuer action=SET_PANE_SCALE, z. B. 'main', 'volume', 'rs'."),
+                scale: z.enum(["linear", "log"]).optional().describe("Ziel-Skalierung fuer action=SET_PANE_SCALE (Default 'linear').")
             }
         },
-        async ({ action, preset_id, display_name, description, topbar_metrics, members }: any) => {
+        async ({ action, preset_id, display_name, description, topbar_metrics, members, pane_scales, pane, scale }: any) => {
             if (action === "LIST") {
                 log.info("[manage_chart_presets] LIST presets");
                 const res = await fetch(`${PCA_SERVICE_URL}/api/presets`);
@@ -37,6 +43,20 @@ export function registerPresetTools(server: McpServer) {
             }
 
             if (!preset_id) throw new Error("preset_id is required for this action.");
+
+            if (action === "SET_PANE_SCALE") {
+                if (!pane) throw new Error("pane is required for SET_PANE_SCALE.");
+                log.info(`[manage_chart_presets] SET_PANE_SCALE ${preset_id}: ${pane} -> ${scale || "linear"}`);
+                const res = await fetch(`${PCA_SERVICE_URL}/api/presets/${encodeURIComponent(preset_id)}/pane_scales`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pane_scales: { [pane]: scale || "linear" } })
+                });
+                if (!res.ok) throw new Error(`API error: ${await res.text()}`);
+                return {
+                    content: [{ type: "text", text: JSON.stringify(await res.json(), null, 2) }]
+                };
+            }
 
             if (action === "GET") {
                 log.info(`[manage_chart_presets] GET preset ${preset_id}`);
@@ -65,6 +85,9 @@ export function registerPresetTools(server: McpServer) {
                     display_name: display_name || preset_id,
                     description: description || "",
                     topbar_metrics: topbar_metrics || [],
+                    // Nur senden, wenn ausdruecklich angegeben: ein UPDATE ohne
+                    // pane_scales darf die im Viewer gesetzten Y-Skalen nicht loeschen.
+                    ...(pane_scales ? { pane_scales } : {}),
                     members: members.map((m: any, idx: number) => ({
                         feature_id: m.feature_id,
                         sort_order: m.sort_order ?? idx,

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from chart_viewer.transport.websocket import WebSocketTransport
 from chart_viewer.ui.app import ViewerApp
+from chart_viewer.ui.theme import apply_dark_theme
 from chart_viewer.config import ViewerConfig
 
 
@@ -26,6 +27,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ChartViewer")
     app.setQuitOnLastWindowClosed(False)
+    # Dark palette + app stylesheet: covers every window, dialog and popup,
+    # including modal dialogs that are not children of the control panel.
+    apply_dark_theme(app)
 
     config = ViewerConfig.from_env()
     transport = WebSocketTransport(url=args.ws, config=config)

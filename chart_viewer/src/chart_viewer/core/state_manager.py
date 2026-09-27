@@ -18,7 +18,7 @@ from chart_viewer.models.entities import (
     WatchlistState,
     WatchlistRow,
 )
-from chart_viewer.models.validation import validate_bar
+from chart_viewer.models.validation import validate_bar, sanitize_pane_scales
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ class WindowData:
         self.annotations: Dict[str, Annotation] = {}
         self.topbar_blocks: Dict[str, TopBarBlock] = {}
         self.y_axis_mode: str = "auto"
+        # Y-Achsen-Skalierung je Pane aus dem Preset: {"main": "log", ...}
+        self.pane_scales: dict = {}
         self.sync_group_id: Optional[str] = None
         self.style_defaults: dict = {}
 
@@ -146,6 +148,10 @@ class StateManager:
                 win_data.timeframe = Timeframe.from_string(tf_raw)
         if "y_axis_mode" in payload:
             win_data.y_axis_mode = payload["y_axis_mode"]
+        if "pane_scales" in payload:
+            # Der Snapshot ist die Wahrheit: ein Preset ohne pane_scales setzt
+            # die Panes bewusst zurueck auf linear (Schluessel vorhanden = replace).
+            win_data.pane_scales = sanitize_pane_scales(payload.get("pane_scales"))
         if "sync_group_id" in payload:
             win_data.sync_group_id = payload["sync_group_id"]
         if "style_defaults" in payload:

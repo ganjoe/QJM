@@ -34,6 +34,8 @@ class WebSocketTransport(AgentTransport):
         self.url = url
         self.config = config
         self._handlers: List[Callable[[Envelope], None]] = []
+        self._connect_handlers: List[Callable[[], None]] = []
+        self._disconnect_handlers: List[Callable[[], None]] = []
         self._ws = None
         self._connected = False
         self._should_run = False
@@ -61,6 +63,21 @@ class WebSocketTransport(AgentTransport):
     def on_event(self, handler: Callable[[Envelope], None]) -> None:
         self._handlers.append(handler)
 
+    def on_connect(self, handler: Callable[[], None]) -> None:
+        """Register a callback invoked after the connection is (re-)established."""
+        self._connect_handlers.append(handler)
+
+    def on_disconnect(self, handler: Callable[[], None]) -> None:
+        """Register a callback invoked after the connection was lost."""
+        self._disconnect_handlers.append(handler)
+
+    def _notify(self, handlers: List[Callable[[], None]]) -> None:
+        for handler in list(handlers):
+            try:
+                handler()
+            except Exception as e:
+                logger.exception(f"Error in connection state handler: {e}")
+
     def _dispatch(self, envelope: Envelope) -> None:
         for handler in self._handlers:
             try:
@@ -77,6 +94,7 @@ class WebSocketTransport(AgentTransport):
 
     def disconnect(self) -> None:
         self._should_run = False
+        was_connected = self._connected
         with self._lock:
             if self._ws:
                 try:
@@ -85,6 +103,8 @@ class WebSocketTransport(AgentTransport):
                     pass
                 self._ws = None
             self._connected = False
+        if was_connected:
+            self._notify(self._disconnect_handlers)
 
     def is_connected(self) -> bool:
         return self._connected
@@ -125,8 +145,12 @@ class WebSocketTransport(AgentTransport):
                     logger.debug(f"WebSocket connection error: {e}")
 
             with self._lock:
+                was_connected = self._connected
                 self._connected = False
                 self._ws = None
+
+            if was_connected:
+                self._notify(self._disconnect_handlers)
 
             if not self._should_run:
                 break
@@ -138,17 +162,9 @@ class WebSocketTransport(AgentTransport):
             backoff_ms = min(max_backoff_ms, int(backoff_ms * factor))
 
     def _on_connection_established(self) -> None:
-        """Trigger viewer.ready and request layout resync."""
-        logger.info("Connection established, sending viewer.ready")
-        ready_env = make_envelope(
-            msg_type="viewer.ready",
-            payload={"protocol_version": self.config.protocol_version},
-            kind=MessageKind.EVENT,
-        )
-        try:
-            self.send_command(ready_env)
-        except Exception as e:
-            logger.error(f"Failed to send viewer.ready: {e}")
+        """Notify connect handlers; ViewerApp performs the viewer.ready handshake."""
+        logger.info("Connection established, notifying connect handlers")
+        self._notify(self._connect_handlers)
 
     def _handle_binary_frame(self, data: bytes) -> None:
         """Decode binary msgpack frame and check sequence monotonicity."""

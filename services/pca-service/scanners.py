@@ -183,6 +183,9 @@ class BaseScanner(ABC):
     min_bars: int = 1
     requires_features: bool = False
     support_range: bool = True
+    # Conditions that depend on the FULL history (all-time highs) request the complete series
+    # even in range mode; the warm-up window alone would truncate their lookback.
+    needs_full_history: bool = False
 
     @abstractmethod
     def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None, **kwargs) -> Dict[str, Any]:
@@ -225,6 +228,7 @@ class BaseScanner(ABC):
             "min_bars": self.min_bars,
             "requires_features": self.requires_features,
             "support_range": self.support_range,
+            "needs_full_history": self.needs_full_history,
         }
 
     def data_quality_issues(self, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
@@ -792,6 +796,204 @@ class PhoenixScanner(BaseScanner):
                              "score": rs.round(2).astype("float64")})
 
 
+# ─── Stochastik (10/1) signal scanners ────────────────────────────────────────
+#
+# FAST stochastic %K with the FIXED parameters 10 / 1 -- period 10, slowing 1 (no smoothing),
+# i.e. deliberately NOT the common 14/3/3 defaults. The math is identical to the on-the-fly
+# calculation in indicators.py:
+#     %K = 100 * (close - lowest low(k_period)) / (highest high(k_period) - lowest low(k_period))
+#     slowed by the mean of the last 'slowing' raw values (slowing = 1 -> raw %K).
+# A flat window (HH == LL) is neutral at 50, exactly like indicators.calculate_stochastic.
+# k_period/slowing are class attributes, are never read from configuration and reject
+# conflicting scanner_params overrides (reported in the hit details).
+# All three scanners are TRANSITION signals: they fire on the bar on which the move happens,
+# never on bars that merely stay above a level.
+
+_DEFAULT_STOCH_K_PERIOD = 10   # fixed, do not change
+_DEFAULT_STOCH_SLOWING = 1     # fixed, do not change
+_DEFAULT_STOCH_LEVEL = 20.0
+_DEFAULT_STOCH_HIGH_LEVEL = 80.0
+_DEFAULT_STOCH_MIN_HISTORY_BARS = 252
+
+
+class StochasticSignalScanner(BaseScanner):
+    """Shared machinery of the Stochastik (10/1) signal scanners.
+
+    The indicator parameters are FIXED: period 10, slowing 1 (no smoothing). This is the
+    requested 10/1 stochastic, not the usual 14/3/3 default, and it cannot be changed through
+    'scanner_params' (a conflicting override is ignored and echoed in the hit details).
+    """
+
+    k_period: int = _DEFAULT_STOCH_K_PERIOD
+    slowing: int = _DEFAULT_STOCH_SLOWING
+    support_range: bool = True
+
+    #: column of the per-bar state frame that carries this scanner's signal
+    signal_column: str = ""
+
+    def _stoch_k(self, df: pd.DataFrame) -> pd.Series:
+        low = pd.to_numeric(df["low"], errors="coerce").astype(float)
+        high = pd.to_numeric(df["high"], errors="coerce").astype(float)
+        close = pd.to_numeric(df["close"], errors="coerce").astype(float)
+        lowest = low.rolling(self.k_period, min_periods=self.k_period).min()
+        highest = high.rolling(self.k_period, min_periods=self.k_period).max()
+        span = highest - lowest
+        raw_k = (100.0 * (close - lowest) / span.where(span != 0)).where(span != 0, 50.0)
+        if self.slowing > 1:   # same order as indicators.calculate_stochastic
+            return raw_k.rolling(self.slowing, min_periods=self.slowing).mean()
+        return raw_k
+
+    def _params(self, level: Optional[float] = None, low_level: Optional[float] = None,
+                high_level: Optional[float] = None, max_gap_bars: Optional[int] = None,
+                min_history_bars: Optional[int] = None, k_period: Optional[int] = None,
+                slowing: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+        # The indicator parameters are fixed at 10/1: any conflicting override is refused
+        # (and reported) instead of silently changing the indicator.
+        rejected: Dict[str, Any] = {}
+        for key, value, fixed in (("k_period", k_period, self.k_period),
+                                  ("slowing", slowing, self.slowing)):
+            if value is not None and int(value) != int(fixed):
+                rejected[key] = {"requested": value, "used": fixed}
+        return {
+            "level": _DEFAULT_STOCH_LEVEL if level is None else float(level),
+            "low_level": _DEFAULT_STOCH_LEVEL if low_level is None else float(low_level),
+            "high_level": _DEFAULT_STOCH_HIGH_LEVEL if high_level is None else float(high_level),
+            "max_gap_bars": 1 if max_gap_bars is None else max(1, int(max_gap_bars)),
+            "min_history_bars": (_DEFAULT_STOCH_MIN_HISTORY_BARS if min_history_bars is None
+                                 else max(0, int(min_history_bars))),
+            "rejected_params": rejected,
+        }
+
+    def _state(self, df: pd.DataFrame, p: Dict[str, Any]) -> pd.DataFrame:
+        """Causal bar-by-bar state of all three stochastic signals (no look-ahead)."""
+        k = self._stoch_k(df)
+        prev_k = k.shift(1)
+        pos = pd.Series(np.arange(len(df), dtype=float), index=df.index)
+
+        # Signal 1: upward transition across the lower level (<= level  ->  > level).
+        sig_x20 = ((k > p["level"]) & (prev_k <= p["level"])).fillna(False)
+
+        # Signal 2: direct jump from below low_level to above high_level. The jump is measured
+        # from the most recent reading below low_level; max_gap_bars = 1 is a literal one-bar jump.
+        below_low = (k < p["low_level"]).fillna(False)
+        last_below_pos = pos.where(below_low).ffill().shift(1)
+        gap = pos - last_below_pos
+        cross_high = ((k > p["high_level"]) & (prev_k <= p["high_level"])).fillna(False)
+        sig_20_80 = (cross_high & gap.between(1, p["max_gap_bars"])).fillna(False)
+
+        # Signal 3: the FIRST signal-2 since the most recent all-time-high bar. The ATH is the
+        # running maximum of the whole loaded history; every new ATH resets the "first" count.
+        high = pd.to_numeric(df["high"], errors="coerce").astype(float)
+        is_ath = (high >= high.cummax()).fillna(False)
+        last_ath_pos = pos.where(is_ath).ffill().shift(1)
+        last_sig_pos = pos.where(sig_20_80).ffill().shift(1)
+        first_after_ath = (sig_20_80 & last_ath_pos.notna()
+                           & (last_sig_pos.isna() | (last_sig_pos < last_ath_pos))
+                           & (pos >= p["min_history_bars"])).fillna(False)
+
+        ts = (pd.to_numeric(df["timestamp"], errors="coerce")
+              if "timestamp" in df.columns else pd.Series(np.nan, index=df.index))
+        return pd.DataFrame({
+            "k": k,
+            "k_prev": prev_k,
+            "gap_below": gap,
+            "sig_x20": sig_x20.astype(bool),
+            "sig_20_80": sig_20_80.astype(bool),
+            "sig_20_80_ath": first_after_ath.astype(bool),
+            "bars_since_ath": pos - last_ath_pos,
+            "ath_high": high.where(is_ath).ffill(),
+            "ath_ts": ts.where(is_ath).ffill(),
+            "ts": ts,
+        }, index=df.index)
+
+    def _details(self, state: pd.DataFrame, p: Dict[str, Any]) -> Dict[str, Any]:
+        row = state.iloc[-1]
+
+        def num(value):
+            return None if value is None or pd.isna(value) else round(float(value), 2)
+
+        details: Dict[str, Any] = {
+            "indicator": f"stochastic %K({self.k_period}/{self.slowing})",
+            "k_period": self.k_period,          # fixed at 10, not the 14 default
+            "slowing": self.slowing,            # fixed at 1, not the 3 default
+            "k": num(row["k"]),
+            "k_prev": num(row["k_prev"]),
+            "level": p["level"],
+            "low_level": p["low_level"],
+            "high_level": p["high_level"],
+            "max_gap_bars": p["max_gap_bars"],
+            "bars_since_below_low": num(row["gap_below"]),
+        }
+        if p.get("rejected_params"):
+            details["ignored_parameter_overrides"] = p["rejected_params"]
+        if not pd.isna(row["ath_high"]):
+            details["ath_high"] = num(row["ath_high"])
+            details["bars_since_ath"] = num(row["bars_since_ath"])
+            details["ath_date"] = (ts_to_date(int(row["ath_ts"]))
+                                   if not pd.isna(row["ath_ts"]) else None)
+        return details
+
+    def evaluate(self, ticker: str, df: pd.DataFrame, feat_df: Optional[pd.DataFrame] = None,
+                 **kwargs) -> Dict[str, Any]:
+        p = self._params(**kwargs)
+        if len(df) < self.min_bars:
+            return {"matched": False, "score": None,
+                    "details": {"error": "Not enough history (<%d bars)" % self.min_bars}}
+        state = self._state(df, p)
+        row = state.iloc[-1]
+        k_now = row["k"]
+        return {
+            "matched": bool(row[self.signal_column]),
+            "score": None if pd.isna(k_now) else round(float(k_now), 2),
+            "details": self._details(state, p),
+        }
+
+    def evaluate_range(self, ticker: str, df: pd.DataFrame,
+                       feat_df: Optional[pd.DataFrame] = None, **kwargs) -> pd.DataFrame:
+        state = self._state(df, self._params(**kwargs))
+        return pd.DataFrame({
+            "matched": state[self.signal_column].astype(bool),
+            "score": state["k"].round(2).astype("float64"),
+        })
+
+
+class StochX20Scanner(StochasticSignalScanner):
+    """ww_bdoh_1 (Signal 1) -- Stochastik (10/1) crosses above 20 (transition only)."""
+
+    name = "ww_bdoh_1"
+    description = ("ww_bdoh_1 / Stochastik (10/1) crossing above 20: fires on the transition bar where the fast "
+                   "%K moves from <= 20 to > 20; bars that merely stay above 20 never fire. "
+                   "Params: level (default 20). Score = %K on the trigger bar.")
+    min_bars = _DEFAULT_STOCH_K_PERIOD + 2
+    signal_column = "sig_x20"
+
+
+class Stoch20To80Scanner(StochasticSignalScanner):
+    """ww_bdoh_2 (Signal 2) -- Stochastik (10/1) jumps from below 20 to above 80."""
+
+    name = "ww_bdoh_2"
+    description = ("ww_bdoh_2 / Stochastik (10/1) jump from oversold to overbought: fires on the bar where the fast "
+                   "%K crosses above 80 while the most recent reading below 20 is at most max_gap_bars "
+                   "bars old (default 1 = a direct one-bar jump from < 20 to > 80). Params: low_level "
+                   "(20), high_level (80), max_gap_bars (1). Score = %K on the trigger bar.")
+    min_bars = _DEFAULT_STOCH_K_PERIOD + 3
+    signal_column = "sig_20_80"
+
+
+class Stoch20To80AthScanner(StochasticSignalScanner):
+    """ww_bdoh_3 (Signal 3) -- the first below-20-to-above-80 jump after an all-time high."""
+
+    name = "ww_bdoh_3"
+    description = ("ww_bdoh_3 / First Stochastik (10/1) 20 -> 80 jump after an all-time high: the ww_bdoh_2 trigger, "
+                   "but only the FIRST one since the most recent all-time-high bar (highest high of the "
+                   "whole loaded history); every new all-time high resets it. Needs the full history, so "
+                   "tickers with fewer than 253 bars are reported as skipped. Params: low_level (20), "
+                   "high_level (80), max_gap_bars (1), min_history_bars (252). Score = %K on the trigger bar.")
+    min_bars = _DEFAULT_STOCH_MIN_HISTORY_BARS + 1
+    needs_full_history = True
+    signal_column = "sig_20_80_ath"
+
+
 # ─── Scanner Registry ─────────────────────────────────────────────────────────
 
 class ScannerRegistry:
@@ -804,6 +1006,9 @@ class ScannerRegistry:
         self.register(DcrScanner())
         self.register(WcrScanner())
         self.register(PhoenixScanner())
+        self.register(StochX20Scanner())
+        self.register(Stoch20To80Scanner())
+        self.register(Stoch20To80AthScanner())
 
     def register(self, scanner: BaseScanner):
         self._scanners[scanner.name.lower()] = scanner
@@ -1011,7 +1216,10 @@ def _scan_ticker(ticker: str, scanners: Sequence[BaseScanner], timeframe: str,
         "data_quality_bars": 0,
     }
 
-    df, reason, meta = load_scan_frame(ticker, timeframe, from_ts, to_ts, warmup_bars, want_features)
+    # All-time-high style scanners need the complete series (not just the warm-up window) so their
+    # running extremes are real; the requested window itself stays the same (see 'in_range' below).
+    load_from = None if any(sc.needs_full_history for sc in scanners) else from_ts
+    df, reason, meta = load_scan_frame(ticker, timeframe, load_from, to_ts, warmup_bars, want_features)
     if df is None or df.empty:
         result.update({"status": "skipped", "reason": reason or "no_parquet_data"})
         return result

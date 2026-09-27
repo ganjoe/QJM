@@ -33,3 +33,17 @@ class AgentTransport(ABC):
     def is_connected(self) -> bool:
         """Return True if the transport is active and connected."""
         pass
+
+    def on_connect(self, handler: Callable[[], None]) -> None:
+        """Register a callback invoked after the connection is (re-)established.
+
+        Transports that cannot report connection state keep the no-op default.
+        """
+        pass
+
+    def on_disconnect(self, handler: Callable[[], None]) -> None:
+        """Register a callback invoked after the connection was lost.
+
+        Transports that cannot report connection state keep the no-op default.
+        """
+        pass

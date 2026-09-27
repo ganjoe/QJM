@@ -110,6 +110,8 @@ class WindowState(msgspec.Struct):
     timeframe: Timeframe | None = None
     viewport: dict = {}  # candle_width_px, pan_offset, etc.
     y_axis_mode: Literal["auto", "manual", "log", "linear"] = "auto"
+    # Y-Skalierung je Pane aus dem Preset: {"main": "log", "volume": "linear"}
+    pane_scales: dict = {}
     annotations: list[Annotation] = []
     overlays: list[Overlay] = []
     sync_group_id: str | None = None

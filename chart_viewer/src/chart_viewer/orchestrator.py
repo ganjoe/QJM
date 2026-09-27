@@ -13,7 +13,29 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
+from chart_viewer.formatting import compact_number as _compact_number
+from chart_viewer.formatting import de_num as _de_num
+from chart_viewer.fundamentals import fundamental_topbar_parts
+from chart_viewer.models.validation import sanitize_pane_scales
+
 logger = logging.getLogger("chart_viewer.orchestrator")
+
+# Kurze Topbar-Beschriftungen. Sie ueberschreiben den display_name der
+# Feature-Registry NUR in der Info-Zeile - Scanner-Tabellen und Watchlist-Spalten
+# behalten die ausgeschriebenen Registry-Namen.
+TOPBAR_LABEL_OVERRIDES: Dict[str, str] = {
+    "ibd_rs": "IBD-RS",
+    "IBD RS Rating": "IBD-RS",
+}
+
+
+def _short_topbar_label(metric_col: str, resolved_col: str, registry_label: str) -> str:
+    """Label der Registry, ersetzt durch die Kurzform, wenn eine hinterlegt ist."""
+    for key in (metric_col, resolved_col, registry_label):
+        short = TOPBAR_LABEL_OVERRIDES.get(key or "")
+        if short:
+            return short
+    return registry_label
 
 # PCA-Service base URL – configurable via environment variable
 PCA_SERVICE_URL = os.environ.get("PCA_SERVICE_URL", "http://127.0.0.1:8794")
@@ -116,25 +138,6 @@ def _column_to_indicator_spec(column: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _de_num(value: float, decimals: int = 2) -> str:
-    """Zahl mit deutschem Format: Komma als Dezimal-, Punkt als Tausendertrenner."""
-    text = f"{value:,.{decimals}f}"
-    # Separatoren ueber einen Platzhalter tauschen, damit sie sich nicht ueberschreiben
-    return text.replace(",", "\u00a0").replace(".", ",").replace("\u00a0", ".")
-
-
-def _compact_number(value: float, currency: bool = False) -> str:
-    """Grosse Zahlen kompakt darstellen: 1080860352.96 -> '1,08 Mrd. $'."""
-    sign = "-" if value < 0 else ""
-    amount = abs(value)
-    for limit, suffix in ((1e12, "Bio."), (1e9, "Mrd."), (1e6, "Mio."), (1e3, "Tsd.")):
-        if amount >= limit:
-            scaled = f"{amount / limit:.2f}".rstrip("0").rstrip(".")
-            scaled = scaled.replace(".", ",")
-            return f"{sign}{scaled} {suffix}{' $' if currency else ''}"
-    return f"{sign}{_de_num(amount, 0)}{' $' if currency else ''}"
-
-
 def _format_metric_value(col_name: str, calc_type: Optional[str], value: Any) -> str:
     """Topbar-Wert typabhaengig formatieren.
 
@@ -180,16 +183,19 @@ def build_display_stock(
     3. Matches requested indicators against available Parquet columns
     4. Falls back to on-the-fly calculation for missing indicators
     5. Builds overlay objects with user-specified styles
-    6. Builds topbar content from metric columns
+    6. Builds topbar content from metric columns + fundamental universe metadata
 
     Returns a dict ready to be used as an OPEN_WINDOW command payload.
     """
     symbol = symbol.upper()
 
     # 1. Resolve preset if given
+    pane_scales: Dict[str, str] = {}
     if preset and not indicators:
         preset_data = resolve_preset(preset)
         indicators = preset_data.get("indicators", [])
+        # Y-Skalierung je Pane (linear/log) aus dem Preset uebernehmen
+        pane_scales = sanitize_pane_scales(preset_data.get("pane_scales"))
         if topbar_metrics is None:
             topbar_metrics = preset_data.get("topbar_metrics", [])
 
@@ -453,6 +459,7 @@ def build_display_stock(
                     metric_col,
                     label_map.get(resolved_metric, (metric_col.replace("_", " ").title(), None)),
                 )
+                label = _short_topbar_label(metric_col, resolved_metric, label)
                 topbar_parts.append(
                     f"{label}: {_format_metric_value(resolved_metric, ctype, val)}"
                 )
@@ -474,10 +481,16 @@ def build_display_stock(
                 logger.warning("Could not calculate live days_back for topbar: %s", e)
 
     last_close = bars[-1]["close"] if bars else 0
+    fundamental_parts = fundamental_topbar_parts(symbol, last_close)
+
     topbar_content = f"{symbol} | Last: ${last_close:.2f}"
     if topbar_parts:
         topbar_content += " | " + " | ".join(topbar_parts)
-    topbar_content += f" | Bars: {len(bars)} | Overlays: {len(overlays)}"
+    if fundamental_parts:
+        topbar_content += " | " + " | ".join(fundamental_parts)
+    # "Bars" schliesst die Zeile ab; die Overlay-Anzahl stand hier frueher auch,
+    # ist fuer die Chartarbeit aber ohne Aussage und hat die Zeile nur verlaengert.
+    topbar_content += f" | Bars: {len(bars)}"
 
     # Add staleness notice if applicable
     if chart_data.get("features_stale") and chart_data.get("notice"):
@@ -496,6 +509,9 @@ def build_display_stock(
         "bars": bars,
         "overlays": overlays,
         "annotations": [],
+        # Linear/Log je Pane; der Viewer wendet das beim Snapshot an und
+        # meldet Aenderungen (LOG/LIN-Taste) ins Preset zurueck.
+        "pane_scales": pane_scales,
         "topbar": {
             "block_id": "info_block",
             "content": topbar_content,

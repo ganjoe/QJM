@@ -25,6 +25,10 @@
 # nicht, also gehoert das Diagramm-Werkzeug zur Rolle drawio.
 - id: mcp-openbrain-drawio
   disabled: true
+# Das Trader-Tagebuch (openbrain-journal) gehoert dem interaktiven Trader-Agenten,
+# nicht den Workitem-Rollen.
+- id: mcp-openbrain-journal
+  disabled: true
 
 # ── Orchestrierung abschalten, die der Lead nicht besitzt ──────────────────
 # Arbeit wird ueber Workitems verteilt, nicht ueber Subagenten oder Workflows.

@@ -12,9 +12,12 @@ from chart_viewer.transport.base import AgentTransport
 from chart_viewer.models.envelope import Envelope, MessageKind, make_envelope
 from chart_viewer.core.event_hub import EventHub
 from chart_viewer.core.state_manager import StateManager
+from chart_viewer.models.validation import sanitize_pane_scales
 from chart_viewer.core.backpressure import TickCoalescer
 from chart_viewer.ui.window import ChartWindow
 from chart_viewer.ui.watchlist_window import WatchlistWindow
+from chart_viewer.ui.control_panel import ControlPanelWindow
+from chart_viewer.ui.theme import apply_dark_theme
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,8 @@ class ViewerApp(QObject):
 
     # Thread-safe signal to process envelopes on the Qt GUI thread
     envelope_received_signal = Signal(object)
+    # Transport connection state, marshalled from the network thread to the GUI thread
+    connection_state_signal = Signal(bool)
 
     def __init__(
         self,
@@ -34,6 +39,11 @@ class ViewerApp(QObject):
         super().__init__(parent)
         self.transport = transport
         self.config = config
+
+        # Safety net for entrypoints that do not theme the QApplication themselves:
+        # without this, dialogs and popups opened outside the styled widgets fall
+        # back to the platform's light palette. Idempotent.
+        apply_dark_theme(QApplication.instance())
 
         self.event_hub = EventHub()
         self.state_manager = StateManager()
@@ -59,13 +69,38 @@ class ViewerApp(QObject):
             gui_app.screenAdded.connect(self._on_screen_added)
             gui_app.screenRemoved.connect(self._on_screen_removed)
 
+        # Connection state (marshalled to the GUI thread): viewer.ready handshake +
+        # control panel reload. The handshake lives here (not in the transport) so
+        # every transport - WebSocket and InProcess - behaves identically.
+        self.connection_state_signal.connect(self._on_connection_state_changed)
+        self.transport.on_connect(lambda: self.connection_state_signal.emit(True))
+        self.transport.on_disconnect(lambda: self.connection_state_signal.emit(False))
+
+        # Control panel: always available while the viewer runs and owned by the
+        # viewer - never part of the agent layout ledger, setup saving or screenshots.
+        self.control_panel: ControlPanelWindow | None = None
+        if self.config.control_panel_enabled:
+            self.control_panel = ControlPanelWindow(config=self.config)
+            self.control_panel.control_request.connect(self._send_control_request)
+            self.control_panel.symbol_activated.connect(self._on_control_symbol_activated)
+
     def start(self) -> None:
         """Start application: connect transport and start 60Hz render timer.
 
         Section 8: Starts with 0 windows. Viewer creates windows only on agent command.
         """
         self.render_timer.start()
+        if self.control_panel is not None:
+            self.control_panel.show()
+            if self.control_panel.is_pinned():
+                self.control_panel.raise_()
         self.transport.connect()
+
+    def shutdown(self) -> None:
+        """Stop viewer-owned timers and the control panel (clean process teardown)."""
+        self.render_timer.stop()
+        if self.control_panel is not None:
+            self.control_panel.shutdown()
 
     def _send_viewer_ready(self) -> None:
         """Handshake: send viewer.ready with screen info (Section 8)."""
@@ -125,6 +160,7 @@ class ViewerApp(QObject):
             win_data = self.state_manager.apply_snapshot(win_id, payload)
             if win_id in self.windows:
                 self.windows[win_id].bind_data(win_data)
+            self._refresh_panel_chart_windows()
             self._send_ack(envelope.message_id)
 
         elif msg_type == "bar.append" and win_id:
@@ -192,6 +228,7 @@ class ViewerApp(QObject):
             for win in list(self.windows.values()):
                 win.close()
             self.windows.clear()
+            self._refresh_panel_chart_windows()
             self._send_viewer_ready()
 
         elif msg_type == "window.command" and win_id:
@@ -201,6 +238,10 @@ class ViewerApp(QObject):
                     self.windows[win_id].close()
                 elif win_id in self.watchlists:
                     self.watchlists[win_id].close()
+
+        elif msg_type == "control.response":
+            if self.control_panel is not None:
+                self.control_panel.apply_response(payload)
 
         elif msg_type == "screenshot.request":
             self._handle_screenshot_request(payload)
@@ -226,6 +267,8 @@ class ViewerApp(QObject):
             win.geometry_changed_signal.connect(self._on_window_geometry_changed)
             win.flag_changed_signal.connect(self._on_flag_changed)
             win.symbol_change_requested.connect(self._on_symbol_change_requested)
+            win.pane_scale_changed.connect(self._on_pane_scale_changed)
+            win.panel_focus_requested.connect(self._on_panel_focus_requested)
             
             # Register for EventHub symbol routing
             self.event_hub.register_for_flag(win.color_flag, win.request_symbol_change)
@@ -266,6 +309,7 @@ class ViewerApp(QObject):
             win.show()
             win.raise_()
 
+        self._refresh_panel_chart_windows()
         self._send_ack(message_id)
 
     def _handle_watchlist_open(self, payload: dict, message_id: bytes) -> None:
@@ -337,13 +381,25 @@ class ViewerApp(QObject):
             for flag in range(4):
                 self.event_hub.unregister_for_flag(flag, win.request_symbol_change)
             self.event_hub.register_for_flag(new_flag, win.request_symbol_change)
+        self._refresh_panel_chart_windows()
 
     def _on_watchlist_row_selected(self, window_id: str, symbol: str, color_flag: int) -> None:
-        """Watchlist routing symbol to ChartWindows with same flag.
-        If no ChartWindow with that flag exists, automatically create one."""
+        """Watchlist row click: route the symbol to the chart windows of that flag."""
+        self.route_symbol_to_flag(symbol, color_flag)
+
+    def _on_control_symbol_activated(self, symbol: str, color_flag: int, preset: str) -> None:
+        """Control panel: route a searched/watched symbol incl. the selected preset."""
+        self.route_symbol_to_flag(symbol, color_flag, preset=preset or None)
+
+    def route_symbol_to_flag(self, symbol: str, color_flag: int, preset: str | None = None) -> None:
+        """Route a symbol to all ChartWindows with the same color flag.
+
+        If no ChartWindow with that flag exists, one is created automatically
+        (identical behaviour to clicking a watchlist row).
+        """
         if self.event_hub.has_listeners_for_flag(color_flag):
             # Existing behavior: route to already open ChartWindow(s) with this flag
-            self.event_hub.broadcast_symbol_to_flag(symbol, color_flag)
+            self.event_hub.broadcast_symbol_to_flag(symbol, color_flag, preset=preset)
         else:
             # No ChartWindow with this flag → auto-create one
             chart_win_id = f"win_{symbol.lower()}_1d"
@@ -362,16 +418,19 @@ class ViewerApp(QObject):
                         self.event_hub.unregister_for_flag(flag, self.windows[chart_win_id].request_symbol_change)
                     self.event_hub.register_for_flag(color_flag, self.windows[chart_win_id].request_symbol_change)
                     # Request symbol data from server for the new window
-                    self._on_symbol_change_requested(chart_win_id, symbol)
+                    self._on_symbol_change_requested(chart_win_id, symbol, preset=preset)
             else:
                 # Window already exists → just change its symbol
-                self.windows[chart_win_id].request_symbol_change(symbol)
+                self.windows[chart_win_id].request_symbol_change(symbol, preset=preset)
 
-    def _on_symbol_change_requested(self, window_id: str, symbol: str) -> None:
-        """ChartWindow asking Server for new symbol data."""
+    def _on_symbol_change_requested(self, window_id: str, symbol: str, preset: str | None = None) -> None:
+        """ChartWindow asking Server for new symbol data (optional preset from the panel)."""
+        payload = {"window_id": window_id, "symbol": symbol}
+        if preset:
+            payload["preset"] = preset
         env = make_envelope(
             msg_type="window.change_symbol",
-            payload={"window_id": window_id, "symbol": symbol},
+            payload=payload,
             kind=MessageKind.EVENT,
             window_id=window_id,
         )
@@ -379,6 +438,65 @@ class ViewerApp(QObject):
             self.transport.send_command(env)
         except Exception as e:
             logger.warning(f"Could not send window.change_symbol: {e}")
+
+    def _on_pane_scale_changed(self, window_id: str, pane_scales: dict) -> None:
+        """Pane LOG/LIN button: keep local state in sync and tell the agent.
+
+        The agent persists the map in its layout ledger and in the active chart
+        preset, so the setting survives symbol changes and preset applies.
+        """
+        if isinstance(pane_scales, dict):
+            win_data = self.state_manager.get_window_data(window_id)
+            if win_data is not None:
+                win_data.pane_scales = sanitize_pane_scales(pane_scales)
+
+        env = make_envelope(
+            msg_type="window.pane_scales_changed",
+            payload={"window_id": window_id, "pane_scales": pane_scales or {}},
+            kind=MessageKind.EVENT,
+            window_id=window_id,
+        )
+        try:
+            self.transport.send_command(env)
+        except Exception as e:
+            logger.warning(f"Could not send window.pane_scales_changed: {e}")
+
+    # ── Control panel plumbing ─────────────────────────────────────────────
+
+    def _send_control_request(self, request_id: str, op: str, params: dict) -> None:
+        """Forward a control panel request to the agent (fire-and-forget + response)."""
+        env = make_envelope(
+            msg_type="control.request",
+            payload={"request_id": request_id, "op": op, "params": params or {}},
+            kind=MessageKind.COMMAND,
+        )
+        try:
+            self.transport.send_command(env)
+        except Exception as e:
+            logger.warning(f"Could not send control.request '{op}': {e}")
+            if self.control_panel is not None:
+                self.control_panel.set_connection_state(False)
+
+    def _on_connection_state_changed(self, connected: bool) -> None:
+        """Transport (re-)connected or dropped - always runs on the GUI thread."""
+        if self.control_panel is not None:
+            self.control_panel.set_connection_state(connected)
+        if connected:
+            self._send_viewer_ready()
+
+    def _refresh_panel_chart_windows(self) -> None:
+        """Keep the control panel's chart list (and preset target) up to date."""
+        if self.control_panel is None:
+            return
+        self.control_panel.set_chart_windows([
+            {"window_id": win_id, "symbol": win.symbol, "color_flag": win.color_flag}
+            for win_id, win in self.windows.items()
+        ])
+
+    def _on_panel_focus_requested(self) -> None:
+        """Ctrl+Shift+P in any chart window brings the control panel to the front."""
+        if self.control_panel is not None:
+            self.control_panel.focus_panel()
 
     def _handle_layout_restore(self, payload: dict) -> None:
         """Section 11: Rebuild entire window layout pushed by Agent."""
@@ -459,6 +577,7 @@ class ViewerApp(QObject):
             self.windows.pop(window_id)
             
         self.state_manager.remove_window(window_id)
+        self._refresh_panel_chart_windows()
 
         self._send_window_closed(window_id)
 

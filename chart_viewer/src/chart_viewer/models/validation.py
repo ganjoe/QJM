@@ -37,6 +37,29 @@ def validate_series_monotonicity(bars: Sequence[Bar]) -> bool:
     return True
 
 
+# Y-Achsen-Skalierungen, die ein Pane annehmen darf (Log/Lin-Taste im Pane).
+PANE_SCALES = ("linear", "log")
+
+
+def sanitize_pane_scales(raw) -> dict:
+    """Normalize a pane -> scale mapping from a preset/snapshot payload.
+
+    Pane IDs are lowercased (the viewer addresses panes that way); unknown scale
+    values fall back to "linear" instead of raising, so one broken entry can
+    never take a whole preset down.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean = {}
+    for key, value in raw.items():
+        pane_id = str(key or "").strip().lower()
+        if not pane_id:
+            continue
+        scale = str(value or "").strip().lower()
+        clean[pane_id] = scale if scale in PANE_SCALES else "linear"
+    return clean
+
+
 def is_log_compatible(prices: Sequence[float]) -> bool:
     """Prices > 0 mandatory for Log-Y axis.
 

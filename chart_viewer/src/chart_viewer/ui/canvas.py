@@ -14,6 +14,7 @@ from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.core.state_manager import WindowData
 from chart_viewer.models.entities import Overlay
+from chart_viewer.models.validation import sanitize_pane_scales
 from chart_viewer.ui.pane import ChartPane
 
 # Persistence path for splitter heights keyed by pane count
@@ -32,6 +33,7 @@ class ChartCanvas(QWidget):
     annotation_moved = Signal(str, dict)  # (annotation_id, updated_anchors)
     data_request_more = Signal()
     axis_mode_forced = Signal(str)
+    pane_scale_changed = Signal(str, str)  # (pane_id, "linear"|"log") user clicked the LOG/LIN button
 
     def __init__(
         self,
@@ -75,6 +77,10 @@ class ChartCanvas(QWidget):
 
         # Reference data
         self.window_data: Optional[WindowData] = None
+
+        # Window focus: an unfocused chart window shows the idle value boxes
+        # (newest value of every curve) instead of a frozen crosshair.
+        self._window_active: bool = True
 
         # Save splitter on change
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
@@ -166,6 +172,8 @@ class ChartCanvas(QWidget):
 
         # Update all Y ranges
         self._update_all_y_ranges()
+        # Preset/snapshot Y-scales (linear/log per pane) belong to the new data
+        self.apply_pane_scales(getattr(win_data, "pane_scales", None))
         self.mark_layers_dirty()
 
     def _rebuild_panes(self, pane_ids: List[str]) -> None:
@@ -208,6 +216,7 @@ class ChartCanvas(QWidget):
             # Connect crosshair distribution and X-pan
             pane.crosshair_moved_signal.connect(self._on_pane_crosshair_moved)
             pane.x_pan_requested.connect(self._on_x_pan)
+            pane.y_scale_type_changed.connect(self._on_pane_scale_type_changed)
 
         # Restore or set default splitter sizes
         self._restore_splitter_sizes(len(pane_ids))
@@ -261,6 +270,30 @@ class ChartCanvas(QWidget):
         """Update Y-range for all panes."""
         for pane in self._panes.values():
             pane.update_y_range()
+
+    # -- Y-scale per pane (linear/log) ------------------------------------
+
+    def _on_pane_scale_type_changed(self, pane_id: str, scale_type: str) -> None:
+        """A pane LOG/LIN button was clicked -> tell the container (window)."""
+        self.mark_layers_dirty()
+        self.pane_scale_changed.emit(pane_id, scale_type)
+
+    def apply_pane_scales(self, pane_scales) -> None:
+        """Apply a {pane_id: "linear"|"log"} mapping to the existing panes.
+
+        Panes missing from the mapping fall back to linear (viewer default).
+        The change is applied without notifying the agent: a preset/snapshot is
+        the source, not a user click, and an echo would rewrite the preset.
+        """
+        clean = sanitize_pane_scales(pane_scales)
+        for pane_id, pane in self._panes.items():
+            pane.set_y_scale_type(clean.get(pane_id, "linear"), refit=False, notify=False)
+        self._update_all_y_ranges()
+        self.mark_layers_dirty()
+
+    def pane_scales(self) -> Dict[str, str]:
+        """Current Y-scale of every pane, e.g. for persisting it in a preset."""
+        return {pane_id: pane.y_scale_type for pane_id, pane in self._panes.items()}
 
     def _on_x_pan(self, delta_px: float) -> None:
         """Handle horizontal X-axis pan from mouse drag (right-click or middle-click)."""
@@ -326,6 +359,19 @@ class ChartCanvas(QWidget):
         """Apply an inter-window sync: vertical line only, no active pane, no Y."""
         for pane in self._panes.values():
             pane.set_crosshair(x_px, None, False, bar_index)
+
+    def set_window_active(self, active: bool) -> None:
+        """Report that this chart window gained or lost the focus.
+
+        Losing the focus (Control Panel, another application) drops the
+        crosshair: the pointer is no longer tracking this chart, so every pane
+        falls back to its idle readout — the value boxes then show the newest
+        value of each curve instead of the last hovered bar.
+        """
+        self._window_active = bool(active)
+        if not self._window_active:
+            for pane in self._panes.values():
+                pane.set_crosshair(None, None, False)
 
     def set_annotations(self, annotations) -> None:
         """Push the annotation set to the chart pane without touching zoom/pan state.

@@ -343,6 +343,8 @@ def main():
                                     "bars": display_cmd["bars"],
                                     "overlays": display_cmd.get("overlays", []),
                                     "annotations": display_cmd.get("annotations", []),
+                                    # Y-Skalierung je Pane aus dem Preset (linear/log)
+                                    "pane_scales": display_cmd.get("pane_scales", {}),
                                     # Persist topbar blocks so they survive a viewer reconnect /
                                     # layout.restore (the live push below is not persisted).
                                     "topbar_blocks": [topbar_block] if topbar_block else [],

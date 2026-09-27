@@ -59,10 +59,51 @@ export const X_LIVENESS_CHECK = Deno.env.get("X_LIVENESS_CHECK") !== "false";
 // "timeline" = user/tweet_timeline + Liveness-Check (Abrechnung pro 20er-Page)
 export const X_INGESTION_MODE = (Deno.env.get("X_INGESTION_MODE") || "search").toLowerCase();
 export const X_SEARCH_INTERVAL_SEC = parseInt(Deno.env.get("X_SEARCH_INTERVAL_SEC") || "3600");
-export const X_SEARCH_OVERLAP_SEC = parseInt(Deno.env.get("X_SEARCH_OVERLAP_SEC") || "900");
+// Täglicher Lauf statt Intervall: "22:00" = genau einmal pro Tag um 22:00 lokaler
+// Zeit (X_DAILY_RUN_TZ). Leer = alter Intervallbetrieb über X_SEARCH_INTERVAL_SEC.
+// Verpasste Slots (Container war aus) werden beim nächsten Start nachgeholt; ein
+// manueller Lauf ist jederzeit über manage_sync_pipeline SYNC_NOW möglich.
+export const X_DAILY_RUN_AT = Deno.env.get("X_DAILY_RUN_AT") || "";
+export const X_DAILY_RUN_TZ = Deno.env.get("X_DAILY_RUN_TZ") || "Europe/Berlin";
+// Überlappung kostet echtes Geld: jeder erneut gelieferte Tweet wird erneut mit
+// 15 Credits berechnet. 900s Overlap bei 3600s Intervall = ~25% Mehrkosten pro Lauf,
+// 300s = ~8%. Der Timeline-Abgleich fängt die schmale Lücke am Fensterrand ab.
+export const X_SEARCH_OVERLAP_SEC = parseInt(Deno.env.get("X_SEARCH_OVERLAP_SEC") || "300");
 export const X_SEARCH_MAX_CATCHUP_SEC = parseInt(Deno.env.get("X_SEARCH_MAX_CATCHUP_SEC") || "86400");
 export const X_RECONCILE_INTERVAL_SEC = parseInt(Deno.env.get("X_RECONCILE_INTERVAL_SEC") || "604800");
 export const X_RECONCILE_LIMIT = parseInt(Deno.env.get("X_RECONCILE_LIMIT") || "2000");
+
+// --- Kostensteuerung TwitterAPI.io (100.000 Credits = $1, 15 Credits pro Tweet) ---
+// Harte Obergrenze pro Ingestion-Zyklus. Ein einzelner Sicherheitsnetz-Abgleich hat
+// am 2026-09-21 ~150.000 Credits ($1.49) für 1.256 neue Posts verbrannt (87% Duplikate).
+// Der Guard bricht den Zyklus vorher ab, statt das Guthaben zu leeren.
+// Default 60.000 Credits ($0.60): ~30x ein normaler Suchzyklus (~2.000) und mit
+// Puffer über einem regulären Abgleich (~36.000) – fängt aber Runaways ab.
+export const X_MAX_CREDITS_PER_CYCLE = parseInt(Deno.env.get("X_MAX_CREDITS_PER_CYCLE") || "60000");
+// Tagesbudget für INTERAKTIVE X-Abrufe (Tier-2-Nachladen, search_x_ticker,
+// show_x_content ONLINE, manuelle Syncs). Der Ingestion-Worker ist davon nicht
+// betroffen – er hat sein eigenes Phasen-Budget. 50.000 Credits = $0.50/Tag.
+export const X_INTERACTIVE_DAILY_CREDITS = parseInt(Deno.env.get("X_INTERACTIVE_DAILY_CREDITS") || "50000");
+
+// --- Tier 2 der Influencer-Suche: gezieltes Live-Nachladen ---
+// Nur wenn für die angefragten Accounts im Fenster weniger als X_TIER2_MIN_POSTS
+// gespeichert sind ("dünne Datenlage"). Höchstens X_TIER2_MAX_AUTHORS Accounts
+// pro Aufruf, je maximal X_TIER2_MAX_POSTS Posts.
+export const X_TIER2_MIN_POSTS = parseInt(Deno.env.get("X_TIER2_MIN_POSTS") || "3");
+export const X_TIER2_MAX_AUTHORS = parseInt(Deno.env.get("X_TIER2_MAX_AUTHORS") || "3");
+export const X_TIER2_MAX_POSTS = parseInt(Deno.env.get("X_TIER2_MAX_POSTS") || "60");
+export const X_TIER2_WINDOW_DAYS = parseInt(Deno.env.get("X_TIER2_WINDOW_DAYS") || "7");
+// Nach einem 402 ("Credits is not enough") keinen einzigen Request mehr senden,
+// bis die Sperre abgelaufen ist – sonst feuert der Loop stündlich 12 Fehlversuche.
+export const X_PAYMENT_BLOCK_MS = parseInt(Deno.env.get("X_PAYMENT_BLOCK_MS") || "1800000");
+// Sicherheitsnetz-Abgleich (Timeline): max. Seiten pro Influencer ...
+export const X_RECONCILE_MAX_PAGES_PER_USER = parseInt(Deno.env.get("X_RECONCILE_MAX_PAGES_PER_USER") || "3");
+// ... und Abbruch, sobald eine Seite ausschließlich bereits bekannte Posts enthält
+// (= die kontinuierliche Suche hat dieses Territorium schon abgedeckt).
+export const X_RECONCILE_STOP_ON_KNOWN_PAGE = Deno.env.get("X_RECONCILE_STOP_ON_KNOWN_PAGE") !== "false";
+// Der Abgleich blickt nie weiter als X Sekunden zurück (Default 3 Tage). Die Suche
+// deckt das Tagesgeschäft ab; ältere Fenster kosten nur noch Duplikate.
+export const X_RECONCILE_MAX_LOOKBACK_SEC = parseInt(Deno.env.get("X_RECONCILE_MAX_LOOKBACK_SEC") || "259200");
 
 // --- Database Client ---
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -204,7 +245,64 @@ export const twitterApiIoStats = {
   windowStart: Date.now(),
   totalRequests: 0,
   lastRequestTime: 0,
+  // Guthaben-Sperre: nach einem 402 wird bis zum Ablauf kein Request mehr gesendet.
+  blockedUntil: 0,
+  paymentErrors402: 0,
+  // Tagesverbrauch der interaktiven Abrufe (Tools) – harte Kostenbremse.
+  interactiveDay: "",
+  interactiveCreditsToday: 0,
+  interactiveCallsToday: 0,
 };
+
+/** Tageszähler der interaktiven Abrufe bei Datumswechsel zurücksetzen. */
+function rollInteractiveDay(): void {
+  const today = new Date().toISOString().slice(0, 10);
+  if (twitterApiIoStats.interactiveDay !== today) {
+    twitterApiIoStats.interactiveDay = today;
+    twitterApiIoStats.interactiveCreditsToday = 0;
+    twitterApiIoStats.interactiveCallsToday = 0;
+  }
+}
+
+/**
+ * Erzeugt einen OpenBrain-Eintrag inkl. Embedding und liefert die UUID.
+ * Wird für die Influencer-Beschreibungen genutzt (Themenprofil, Keywords).
+ */
+export async function upsertOpenBrainEntry(content: string, thoughtType = "observation"): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.rpc("upsert_open_brain", {
+      p_agent_id: AGENT_ID,
+      p_content: content,
+      p_thought_type: thoughtType,
+    });
+    if (error) throw error;
+    const id = data?.id as string | undefined;
+    if (!id) return null;
+    const emb = await getDocumentEmbedding(content, "x_post");
+    if (emb && emb.length) {
+      await supabase.from("open_brain").update({ embedding: emb }).eq("id", id);
+    }
+    return id;
+  } catch (e: any) {
+    log.warn(`[OpenBrain] Eintrag konnte nicht gespeichert werden: ${e.message}`);
+    return null;
+  }
+}
+
+/** Kanonische Referenz auf einen OpenBrain-Eintrag (Inhalt der Spalte x_users.description). */
+export function openBrainRef(id: string): string {
+  return `openbrain://${id}`;
+}
+
+/** Status des interaktiven Tagesbudgets (für STATUS-Anzeige). */
+export function interactiveBudgetStatus(): { used: number; limit: number; calls: number } {
+  rollInteractiveDay();
+  return {
+    used: twitterApiIoStats.interactiveCreditsToday,
+    limit: X_INTERACTIVE_DAILY_CREDITS,
+    calls: twitterApiIoStats.interactiveCallsToday,
+  };
+}
 
 export async function throttledXFetch(url: string, init?: RequestInit): Promise<Response> {
   if (Date.now() < globalXApiBlockedUntil) {
@@ -256,11 +354,31 @@ export function isTwitterApiIoAvailable(): boolean {
 export async function twitterApiIoFetch(
   endpoint: string,
   params: Record<string, string | undefined>,
+  opts: { interactive?: boolean } = {},
 ): Promise<any> {
+  const interactive = opts.interactive === true;
+  if (interactive) {
+    rollInteractiveDay();
+    if (X_INTERACTIVE_DAILY_CREDITS > 0 && twitterApiIoStats.interactiveCreditsToday >= X_INTERACTIVE_DAILY_CREDITS) {
+      throw new Error(
+        `⛔ Tagesbudget für interaktive X-Abrufe erschöpft (${twitterApiIoStats.interactiveCreditsToday} von ` +
+        `${X_INTERACTIVE_DAILY_CREDITS} Credits). Morgen wieder verfügbar – oder X_INTERACTIVE_DAILY_CREDITS anpassen.`,
+      );
+    }
+  }
   if (!TWITTER_API_IO_KEY) {
     throw new Error(
       "❌ TwitterAPI.io ist nicht konfiguriert. Setze TWITTER_API_IO_KEY in der .env. " +
       "Prüfe den Provider-Status mit 'manage_sync_pipeline STATUS'.",
+    );
+  }
+
+  // Guthaben-Sperre: nach 402 keinen einzigen Request mehr senden (spart Fehlversuche
+  // und verhindert, dass der Loop im Minutentakt gegen eine leere Kasse läuft).
+  if (Date.now() < twitterApiIoStats.blockedUntil) {
+    throw new Error(
+      `TwitterAPI.io pausiert bis ${new Date(twitterApiIoStats.blockedUntil).toISOString()} ` +
+      `(402 Guthaben aufgebraucht – kein Request gesendet).`,
     );
   }
 
@@ -308,6 +426,13 @@ export async function twitterApiIoFetch(
       throw new Error(`TwitterAPI.io Rate Limit überschritten: ${errText}`);
     }
     if (res.status === 402) {
+      twitterApiIoStats.paymentErrors402++;
+      twitterApiIoStats.blockedUntil = Date.now() + X_PAYMENT_BLOCK_MS;
+      log.error(
+        `[TwitterAPI.io] 402 Payment Required – Guthaben aufgebraucht. ` +
+        `Alle X-Requests pausiert bis ${new Date(twitterApiIoStats.blockedUntil).toISOString()} ` +
+        `(${Math.round(X_PAYMENT_BLOCK_MS / 60000)} min). Bitte Credits aufladen.`,
+      );
       throw new Error(`TwitterAPI.io Payment Required (402): Guthaben aufgebraucht? ${errText}`);
     }
     if (res.status === 403) {
@@ -320,15 +445,31 @@ export async function twitterApiIoFetch(
 
   // Auto-unwrap: manche Endpoints wrappen in "data" (user/info, tweet_timeline),
   // andere nicht (tweets, followings). Einheitlich auflösen, dabei Paginierungs-Metadaten erhalten.
+  let payload = json;
   if (json.data && typeof json.data === "object" && !Array.isArray(json.data)) {
-    return {
+    payload = {
       ...json.data,
       has_next_page: json.has_next_page ?? json.data.has_next_page ?? json.hasNextPage ?? json.data.hasNextPage,
       next_cursor: json.next_cursor ?? json.data.next_cursor ?? json.nextCursor ?? json.data.nextCursor ?? json.cursor ?? json.data.cursor,
     };
   }
 
-  return json;
+  // Interaktive Abrufe werden pro geliefertem Element gegen das Tagesbudget gebucht
+  // (15 Credits pro Tweet, 18 pro User – wie im Ingestion-Worker). WICHTIG: erst
+  // NACH dem Unwrap zählen, sonst laufen gewrappte Endpoints (tweet_timeline) auf 0.
+  if (interactive) {
+    const deliveredTweets = Array.isArray(payload?.tweets) ? payload.tweets.length : 0;
+    const deliveredUsers = Array.isArray(payload?.users)
+      ? payload.users.length
+      : (payload?.id ? 1 : 0);
+    const credits = deliveredTweets * 15 + deliveredUsers * 18;
+    if (credits > 0) {
+      twitterApiIoStats.interactiveCreditsToday += credits;
+      twitterApiIoStats.interactiveCallsToday++;
+    }
+  }
+
+  return payload;
 }
 
 // --- Ticker Validator & First Mentions ---

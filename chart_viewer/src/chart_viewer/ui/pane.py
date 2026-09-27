@@ -3,19 +3,60 @@
 from __future__ import annotations
 import math
 import bisect
+from dataclasses import dataclass
 from typing import List, Dict, Optional
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF, QPixmap, QMouseEvent, QWheelEvent, QResizeEvent
+from PySide6.QtGui import (
+    QPainter,
+    QColor,
+    QPen,
+    QBrush,
+    QFont,
+    QFontMetrics,
+    QPolygonF,
+    QPixmap,
+    QMouseEvent,
+    QWheelEvent,
+    QResizeEvent,
+)
 
 from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.coords.y_axis import YAxisTransform
+from chart_viewer.formatting import format_value, format_volume
 from chart_viewer.models.entities import Bar, Overlay, OverlayPoint, Annotation
 from chart_viewer.models.color import resolve_bar_color
 
 Y_AXIS_WIDTH = 70.0
 X_AXIS_HEIGHT = 22.0
+
+# Log/Lin-Taste im Y-Achsen-Gutter (unterste Taste, direkt ueber dem AUTO/MANUAL-Pill).
+Y_SCALE_BUTTON_WIDTH = 50.0
+Y_SCALE_BUTTON_HEIGHT = 16.0
+Y_SCALE_BUTTON_BOTTOM_PX = 40.0  # Abstand der Taste zur Unterkante des Panes
+
+# Crosshair value boxes ("Datenfelder" in the Y-axis gutter). The number is
+# coupled to the X-axis label font size (factor 1.5 by default) so it reads
+# slightly larger than the axis; VALUE_BOX_SCALE shrinks font AND chrome of the
+# whole readout as one block (0.7 = ~30 % smaller than the original layout).
+X_AXIS_FONT_PT: float = 9.0
+VALUE_BOX_SCALE: float = 0.7
+VALUE_BOX_BG = "#1E222D"
+VALUE_BOX_TEXT = "#FFFFFF"
+VALUE_BOX_SECONDARY = "#9CA3AF"
+VALUE_BOX_PRICE_COLOR = "#D1D4DC"
+
+
+@dataclass(frozen=True)
+class CrosshairValue:
+    """One curve's value at the bar marked by the vertical crosshair line."""
+
+    key: str                              # "price" | overlay_id | f"{overlay_id}:upper"/":lower"
+    color: str                            # curve colour -> border and left stripe
+    value: float                          # y position (price box: the close)
+    text: str                             # primary line (large, white)
+    secondary_text: Optional[str] = None  # optional second line (volume, dimmed)
 
 
 def resolve_line_width(style: dict, default_width: int = 1) -> int:
@@ -45,6 +86,7 @@ class ChartPane(QWidget):
     y_scale_changed = Signal()         # user manually scaled this pane's Y
     crosshair_moved_signal = Signal(str, float, float)  # (pane_id, x_px, y_px)
     x_pan_requested = Signal(float)    # (delta_px) right-click X-pan request
+    y_scale_type_changed = Signal(str, str)  # (pane_id, "linear"|"log") by user click
 
     def __init__(
         self,
@@ -67,7 +109,8 @@ class ChartPane(QWidget):
         self.overlays: Dict[str, Overlay] = {}
         self.annotations: Dict[str, Annotation] = {}
         self.series_style: dict = {}
-        self.y_axis_mode: str = "auto"
+        self.y_axis_mode: str = "auto"       # "auto" | "manual" (Fit-Verhalten)
+        self.y_scale_type: str = "linear"    # "linear" | "log" (Y-Achsen-Skalierung)
         self.watermark_text: str = ""
         self.base_timestamp: int = 0
         self.bar_duration: int = 86400
@@ -81,12 +124,14 @@ class ChartPane(QWidget):
         self._is_scaling_y: bool = False
         self._is_hovering_y_handle: bool = False
         self._is_dragging_y_handle: bool = False
+        self._is_hovering_scale_button: bool = False
 
         # Crosshair
         self._crosshair_x: Optional[float] = None   # Shared X pixel (vertical line)
         self._crosshair_y: Optional[float] = None   # Local Y pixel (horizontal line, only in active pane)
         self._is_crosshair_active: bool = False      # True if mouse is in THIS pane
         self._crosshair_bar_index: Optional[int] = None  # Snapped candle index (shared, badge source of truth)
+        self._value_cache: Optional[tuple] = None    # (bar_idx, [CrosshairValue]) for the live layer
 
         # Measure tool
         self._is_measuring: bool = False
@@ -140,6 +185,7 @@ class ChartPane(QWidget):
                     "indices": indices,
                     "pts": indexed_pts,
                 }
+        self._value_cache = None
         self.mark_dirty()
 
     def set_annotations(self, annotations) -> None:
@@ -163,6 +209,9 @@ class ChartPane(QWidget):
 
     def mark_dirty(self) -> None:
         self._dirty = True
+        # Value boxes are computed live; invalidate the cache so in-place bar
+        # updates (live ticks mutate bars[-1]) reach the next paint.
+        self._value_cache = None
         self.update()
 
     def update_y_range(self) -> None:
@@ -206,7 +255,73 @@ class ChartPane(QWidget):
         if p_min == float("inf") or p_max == float("-inf"):
             return
 
-        self.y_trans.fit_range(p_min, p_max, requested_mode="linear")
+        # Die angeforderte Skalierung (Log/Lin-Taste) wird bei jedem Fit erneut
+        # angewandt; fit_range zieht bei nicht-positiven Werten selbst auf
+        # linear zurueck (is_mode_forced).
+        self.y_trans.fit_range(p_min, p_max, requested_mode=self.y_scale_type)
+
+    # --- Y-Skalierung: linear / logarithmisch (Taste pro Pane) -------------
+
+    def _content_height(self) -> float:
+        """Height of the pane area without the X-axis strip (same rule as paintEvent)."""
+        h = float(self.height())
+        return max(10.0, h - X_AXIS_HEIGHT) if self.draw_x_axis else h
+
+    def y_scale_button_rect(self, chart_h: Optional[float] = None) -> QRectF:
+        """Rect of the LOG/LIN button in this pane's Y-axis gutter.
+
+        Shared by the renderer and the hit test so a click always lands on
+        exactly what the user sees.
+        """
+        content_h = self._content_height() if chart_h is None else float(chart_h)
+        chart_w = max(10.0, float(self.width()) - Y_AXIS_WIDTH)
+        gx = chart_w + Y_AXIS_WIDTH / 2.0
+        top = content_h - Y_SCALE_BUTTON_BOTTOM_PX
+        return QRectF(
+            gx - Y_SCALE_BUTTON_WIDTH / 2.0,
+            top,
+            Y_SCALE_BUTTON_WIDTH,
+            Y_SCALE_BUTTON_HEIGHT,
+        )
+
+    def is_log_effective(self) -> bool:
+        """True when the pane is actually drawn logarithmically right now."""
+        return self.y_trans.mode == "log"
+
+    def is_log_forced(self) -> bool:
+        """True when log is requested but the visible values forbid it (<= 0)."""
+        return self.y_scale_type == "log" and not self.is_log_effective()
+
+    def set_y_scale_type(self, scale_type: str, refit: bool = True, notify: bool = True) -> bool:
+        """Set the requested Y scale ("linear" | "log"). Returns True on change.
+
+        notify=False is used when the mode comes from a preset/snapshot: the
+        change must be rendered but not echoed back to the agent as a user edit.
+        """
+        normalized = "log" if str(scale_type or "").strip().lower() == "log" else "linear"
+        changed = normalized != self.y_scale_type
+        self.y_scale_type = normalized
+        if refit:
+            self.update_y_range()
+        if changed:
+            self.mark_dirty()
+            if notify:
+                self.y_scale_type_changed.emit(self.pane_id, normalized)
+        return changed
+
+    def toggle_y_scale_type(self) -> None:
+        """LOG/LIN button clicked: switch the scale and report it to the canvas."""
+        self.set_y_scale_type("linear" if self.y_scale_type == "log" else "log")
+        if self._is_hovering_scale_button:
+            self.setToolTip(self._y_scale_tooltip())
+
+    def _y_scale_tooltip(self) -> str:
+        """Hover text of the LOG/LIN button (explains a forced fallback too)."""
+        if self.y_scale_type == "log":
+            if self.is_log_forced():
+                return "Log-Y nicht m\u00f6glich (Werte <= 0) - Klick schaltet auf linear"
+            return "Y-Achse logarithmisch - Klick schaltet auf linear"
+        return "Y-Achse linear - Klick schaltet auf logarithmisch"
 
     def _timestamp_to_bar_idx(self, t: int) -> float:
         """Convert timestamp to fractional bar index using cached bar timestamps."""
@@ -335,7 +450,7 @@ class ChartPane(QWidget):
         """Render Y-axis labels, ticks, TC2000 mini-arrow handle, and scale handle pill for this pane."""
         num_ticks = max(2, int(chart_h / 80))
         scale_font = QFont(painter.font())
-        scale_font.setPointSize(9)
+        scale_font.setPointSizeF(X_AXIS_FONT_PT)
         painter.setFont(scale_font)
 
         tick_pen = QPen(QColor("#434958"))
@@ -382,6 +497,9 @@ class ChartPane(QWidget):
         handle_font.setBold(True)
         painter.setFont(handle_font)
 
+        # Log/Lin-Taste: zeigt die angeforderte Y-Skalierung dieses Panes.
+        self._draw_y_scale_button(painter, chart_h)
+
         pill = QRectF(gx - 25, chart_h - 20, 50, 16)
         if self.y_axis_mode == "auto":
             painter.fillRect(pill, QColor("#14241F"))
@@ -395,6 +513,32 @@ class ChartPane(QWidget):
             painter.drawRoundedRect(pill, 3, 3)
             painter.setPen(QColor("#FF9100"))
             painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, "● MANUAL")
+
+    def _draw_y_scale_button(self, painter: QPainter, chart_h: float) -> None:
+        """Draw the LOG/LIN toggle of this pane in the Y-axis gutter.
+
+        The requested scale is shown, not the effective one: when log is
+        impossible for the visible values (<= 0) the button stays on LOG but
+        turns amber, so the click is never silently forgotten.
+        """
+        rect = self.y_scale_button_rect(chart_h)
+        requested_log = self.y_scale_type == "log"
+        forced = self.is_log_forced()
+
+        if forced:
+            bg, border, text_color, label = "#2A1E14", "#663B19", "#FF9100", "LOG"
+        elif requested_log:
+            bg, border, text_color, label = "#141C2E", "#2962FF", "#7EA6FF", "LOG"
+        else:
+            bg, border, text_color, label = "#1E222D", "#434958", "#9CA3AF", "LIN"
+        if self._is_hovering_scale_button:
+            border = "#787B86"
+
+        painter.fillRect(rect, QColor(bg))
+        painter.setPen(QPen(QColor(border), 1))
+        painter.drawRoundedRect(rect, 3, 3)
+        painter.setPen(QColor(text_color))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
 
     def _render_x_axis(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
         """Render X-axis time labels and tick marks at bottom of pane."""
@@ -424,7 +568,7 @@ class ChartPane(QWidget):
         tick_pen.setWidth(1)
 
         scale_font = QFont(painter.font())
-        scale_font.setPointSize(9)
+        scale_font.setPointSizeF(X_AXIS_FONT_PT)
         painter.setFont(scale_font)
 
         first_step = (min_idx // step_bars) * step_bars
@@ -464,23 +608,42 @@ class ChartPane(QWidget):
         self.update()  # Trigger repaint (only live layer, pixmap stays cached)
 
     def _render_crosshair(self, painter: QPainter, chart_w: float, content_h: float, chart_h: float) -> None:
-        """Draw crosshair lines live (not cached) for instant response."""
-        if self._crosshair_x is None:
+        """Draw crosshair lines live (not cached) plus the per-curve value boxes.
+
+        The value boxes are NOT tied to the crosshair: while no bar is marked
+        (mouse outside the pane, chart window not focused, e.g. while working in
+        the control panel) they keep showing the NEWEST value of every curve, so
+        the readout never blanks out.
+        """
+        cx: Optional[int] = None
+        bar_idx: Optional[int] = None
+        if self._crosshair_x is not None:
+            cx = int(self._crosshair_x)
+            bar_idx = self._resolve_crosshair_bar_index(float(self._crosshair_x))
+
+            ch_pen = QPen(QColor(self.config.default_crosshair_color))
+            ch_pen.setStyle(Qt.PenStyle.DashLine)
+            ch_pen.setWidth(1)
+            painter.setPen(ch_pen)
+
+            # Vertical line — always drawn across content area
+            painter.drawLine(cx, 0, cx, int(content_h))
+
+        # Value boxes: one per curve of THIS pane, read at the bar the line marks
+        # (bar_idx) — or at the end of the series (bar_idx None). Drawn before the
+        # cursor badge so the cursor readout always stays on top.
+        if getattr(self.config, "crosshair_value_box_enabled", True):
+            values = self._value_cache_for(bar_idx)
+            if values:
+                box_font = self._value_box_font(painter.font())
+                painter.setFont(box_font)
+                for value, box_rect in self._layout_value_boxes(values, content_h, box_font):
+                    self._draw_value_box(painter, value, box_rect)
+
+        if cx is None:
             return
 
-        from datetime import datetime, timezone
-
-        cx = int(self._crosshair_x)
-
-        ch_pen = QPen(QColor(self.config.default_crosshair_color))
-        ch_pen.setStyle(Qt.PenStyle.DashLine)
-        ch_pen.setWidth(1)
-        painter.setPen(ch_pen)
-
-        # Vertical line — always drawn across content area
-        painter.drawLine(cx, 0, cx, int(content_h))
-
-        # Horizontal line + price badge — only in the active pane
+        # Horizontal line + price badge (cursor position) — only in the active pane
         if self._is_crosshair_active and self._crosshair_y is not None:
             cy = int(self._crosshair_y)
             if cy <= content_h:
@@ -502,13 +665,8 @@ class ChartPane(QWidget):
                 painter.setFont(font)
                 painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, price_str)
 
-        # Crosshair time badge if this pane draws X-axis
-        if self.draw_x_axis and self.base_timestamp > 0:
-            bar_idx = self._crosshair_bar_index
-            if bar_idx is None:
-                # Fallback: nearest-neighbour (never floor) so the badge flips in
-                # the gap between two candles, not at the candle center.
-                bar_idx = math.floor(self.x_trans.x_to_bar(cx) + 0.5)
+        # Crosshair time badge if this pane draws X-axis (same bar index as the boxes)
+        if self.draw_x_axis and self.base_timestamp > 0 and bar_idx is not None:
             if self.bars and 0 <= bar_idx < len(self.bars):
                 t_sec = self.bars[bar_idx].t_open
             else:
@@ -535,6 +693,220 @@ class ChartPane(QWidget):
         if self.bar_duration >= 86400:
             return dt.strftime("%Y-%m-%d")
         return dt.strftime("%Y-%m-%d %H:%M")
+
+    # ── Crosshair value boxes (per-curve Y-axis readout) ─────────────────
+
+    def _resolve_crosshair_bar_index(self, x_px: float) -> Optional[int]:
+        """Authoritative bar index for the crosshair (date badge + value boxes).
+
+        Prefers the snapped index distributed by the canvas and falls back to
+        nearest-neighbour (half-up, never floor) so the badge flips in the gap
+        between two candles, not at the candle center.
+        """
+        idx = self._crosshair_bar_index
+        if idx is None:
+            if not self.bars:
+                return None
+            idx = math.floor(self.x_trans.x_to_bar(x_px) + 0.5)
+        if self.bars:
+            return max(0, min(len(self.bars) - 1, int(idx)))
+        return int(idx)
+
+    def crosshair_values(self, bar_idx: int) -> List[CrosshairValue]:
+        """Value of EVERY curve of this pane at the given bar.
+
+        The value depends on the bar index (X) only — never on the cursor's Y
+        position — so hovering anywhere in the pane reads the same numbers.
+        """
+        out: List[CrosshairValue] = []
+
+        # Main pane: the price curve = Close + Volume of the marked bar
+        if self.is_main and self.bars and 0 <= bar_idx < len(self.bars):
+            out.append(self._price_value(self.bars[bar_idx]))
+
+        # One box per overlay curve that belongs to this pane
+        for ov_id, item in getattr(self, "_indexed_overlays", {}).items():
+            if item["overlay"].type == "marker":
+                continue  # markers are not drawn by the plot layer -> no value box
+            val, val2 = self._overlay_value_at(item, bar_idx)
+            out.extend(self._overlay_boxes(ov_id, item, val, val2))
+        return out
+
+    def latest_values(self) -> List[CrosshairValue]:
+        """Value of every curve at the END of its series (the newest point).
+
+        This is the idle readout shown while no bar is marked by a crosshair
+        (mouse outside the pane, chart window not focused). Per overlay the last
+        AVAILABLE point counts, so a curve lagging the price by a bar or two
+        still reports its newest number instead of blanking out entirely.
+        """
+        out: List[CrosshairValue] = []
+        if self.is_main and self.bars:
+            out.append(self._price_value(self.bars[-1]))
+
+        for ov_id, item in getattr(self, "_indexed_overlays", {}).items():
+            if item["overlay"].type == "marker":
+                continue
+            pts = item.get("pts") or []
+            if not pts:
+                continue
+            _, val, val2 = pts[-1]  # newest available point of this curve
+            out.extend(self._overlay_boxes(ov_id, item, val, val2))
+        return out
+
+    def _price_value(self, bar: Bar) -> CrosshairValue:
+        """The main pane's price box: Close, with the bar's volume as second line."""
+        return CrosshairValue(
+            key="price",
+            color=VALUE_BOX_PRICE_COLOR,
+            value=float(bar.close),
+            text=format_value(bar.close),
+            secondary_text=format_volume(bar.volume),
+        )
+
+    def _overlay_boxes(self, ov_id: str, item: dict, val, val2) -> List[CrosshairValue]:
+        """Box(es) of one overlay curve: a band yields upper+lower, others one box."""
+        ov = item["overlay"]
+        color = (ov.style or {}).get("color", "#26A69A")
+        out: List[CrosshairValue] = []
+        if ov.type == "band":
+            if val is not None:
+                out.append(CrosshairValue(f"{ov_id}:upper", color, float(val), format_value(val)))
+            if val2 is not None:
+                out.append(CrosshairValue(f"{ov_id}:lower", color, float(val2), format_value(val2)))
+        elif val is not None:
+            out.append(CrosshairValue(ov_id, color, float(val), format_value(val)))
+        return out
+
+    def _overlay_value_at(self, item: dict, bar_idx: int) -> tuple:
+        """Overlay value(s) at (or near) bar_idx; (None, None) when no point lies there.
+
+        An exact index match wins. A nearest neighbour within
+        ``crosshair_value_box_snap_bars`` (default 1 bar) is accepted so minimal
+        timestamp offsets cannot blank the box; indicator warm-up bars (no point
+        yet) correctly produce no value at all.
+        """
+        indices = item["indices"]
+        if not indices:
+            return None, None
+        target = float(bar_idx)
+        pos = bisect.bisect_left(indices, target)
+        candidates = [i for i in (pos, pos - 1) if 0 <= i < len(indices)]
+        if not candidates:
+            return None, None
+        best = min(candidates, key=lambda i: abs(indices[i] - target))
+        tolerance = float(getattr(self.config, "crosshair_value_box_snap_bars", 1.0))
+        if abs(indices[best] - target) > tolerance:
+            return None, None
+        _, val, val2 = item["pts"][best]
+        return val, val2
+
+    def _value_box_font(self, base_font: QFont) -> QFont:
+        """Value box font: X-axis font size x config factor, x VALUE_BOX_SCALE."""
+        font = QFont(base_font)
+        font.setPointSizeF(
+            X_AXIS_FONT_PT
+            * float(getattr(self.config, "crosshair_value_box_font_factor", 1.5))
+            * VALUE_BOX_SCALE
+        )
+        return font
+
+    def _value_cache_for(self, bar_idx: Optional[int]) -> List[CrosshairValue]:
+        """Cache the readout per key (bar index; None = newest values).
+
+        Vertical mouse moves reuse the entry; ``bar_idx=None`` is the idle
+        readout at the end of the series.
+        """
+        if self._value_cache is None or self._value_cache[0] != bar_idx:
+            values = self.latest_values() if bar_idx is None else self.crosshair_values(bar_idx)
+            self._value_cache = (bar_idx, values)
+        return self._value_cache[1]
+
+    def _layout_value_boxes(self, values: List[CrosshairValue], content_h: float, font: QFont) -> list:
+        """Place one box per curve at its value's Y position, collision-free.
+
+        Returns [(CrosshairValue, QRectF)]. Boxes are right-aligned to the pane
+        edge (they grow leftwards over the chart when a value string is wider
+        than the Y-axis gutter) and never leave the content area; in the extreme
+        case (many curves in a very small pane) they may overlap instead.
+        """
+        metrics = QFontMetrics(font)
+        line_h = float(metrics.height())
+        # Padding, stripe and width limits belong to the scaled block as well,
+        # so shrinking VALUE_BOX_SCALE shrinks the whole field, not just the text.
+        pad_v = 3.0 * VALUE_BOX_SCALE
+        pad_h = 6.0 * VALUE_BOX_SCALE
+        stripe_w = 3.0 * VALUE_BOX_SCALE
+        gap = 2.0 * VALUE_BOX_SCALE
+        max_w = float(getattr(self.config, "crosshair_value_box_max_width_px", 150.0)) * VALUE_BOX_SCALE
+        min_w = float(getattr(self.config, "crosshair_value_box_min_width_px", 62.0)) * VALUE_BOX_SCALE
+        x_right = float(self.width()) - 3.0
+
+        items = []
+        for v in values:
+            text_w = float(metrics.horizontalAdvance(v.text))
+            if v.secondary_text:
+                text_w = max(text_w, float(metrics.horizontalAdvance(v.secondary_text)))
+            n_lines = 2 if v.secondary_text else 1
+            w = max(min_w, min(max_w, text_w + 2 * pad_h + stripe_w))
+            h = n_lines * line_h + 2 * pad_v
+            y = self.y_trans.price_to_y(v.value) - h / 2.0
+            items.append([v, w, h, y])
+
+        # Desired y = value position; push overlapping boxes downwards, then
+        # correct a stack that overflows the bottom edge from below upwards.
+        items.sort(key=lambda it: it[3])
+        for _ in range(2):
+            prev_bottom = -1e9
+            for it in items:
+                it[3] = max(it[3], prev_bottom + gap, 2.0)
+                prev_bottom = it[3] + it[2]
+            if prev_bottom > content_h - 2.0:
+                next_top = content_h - 2.0
+                for it in reversed(items):
+                    it[3] = min(it[3], next_top - it[2])
+                    next_top = it[3] - gap
+
+        # Final clamp: a box must never leave the pane (overlap accepted above)
+        for it in items:
+            it[3] = max(2.0, min(it[3], max(2.0, content_h - 2.0 - it[2])))
+
+        return [(it[0], QRectF(x_right - it[1], it[3], it[1], it[2])) for it in items]
+
+    def _draw_value_box(self, painter: QPainter, v: CrosshairValue, rect: QRectF) -> None:
+        """Draw one framed value box (border/stripe in the curve's colour)."""
+        painter.fillRect(rect, QColor(VALUE_BOX_BG))
+        painter.setPen(QPen(QColor(v.color), 1))
+        painter.drawRect(rect)
+        painter.fillRect(
+            QRectF(rect.left() + 1, rect.top() + 1, max(1.0, 3.0 * VALUE_BOX_SCALE),
+                   max(1.0, rect.height() - 2)),
+            QColor(v.color),
+        )
+
+        text_rect = rect.adjusted(8.0 * VALUE_BOX_SCALE, 1, -4.0 * VALUE_BOX_SCALE, -1)
+        if v.secondary_text:
+            half = text_rect.height() / 2.0
+            painter.setPen(QColor(VALUE_BOX_TEXT))
+            painter.drawText(
+                QRectF(text_rect.left(), text_rect.top(), text_rect.width(), half),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                v.text,
+            )
+            painter.setPen(QColor(VALUE_BOX_SECONDARY))
+            painter.drawText(
+                QRectF(text_rect.left(), text_rect.top() + half, text_rect.width(), half),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                v.secondary_text,
+            )
+        else:
+            painter.setPen(QColor(VALUE_BOX_TEXT))
+            painter.drawText(
+                text_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                v.text,
+            )
+
 
     def _render_measure_tool(self, painter: QPainter, chart_w: float, chart_h: float) -> None:
         """Render TC2000-style measure tool with info card."""
@@ -1002,6 +1374,12 @@ class ChartPane(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         chart_w = max(10.0, self.width() - Y_AXIS_WIDTH)
         pos = event.position()
+
+        # Log/Lin-Taste hat Vorrang vor Messwerkzeug und Achsen-Skalierung.
+        if event.button() == Qt.MouseButton.LeftButton and self.y_scale_button_rect().contains(pos):
+            self.toggle_y_scale_type()
+            return
+
         y_handle = self.y_trans.price_to_y(self.y_trans.p_max)
         is_handle = self.is_main and (chart_w - 5.0 <= pos.x() <= chart_w + 20.0) and (abs(pos.y() - y_handle) <= self.config.y_handle_hit_radius_px)
 
@@ -1060,7 +1438,18 @@ class ChartPane(QWidget):
                 self.mark_dirty()
                 self.y_scale_changed.emit()
         else:
-            if is_near_handle:
+            is_over_scale_button = self.y_scale_button_rect().contains(pos)
+            if is_over_scale_button != self._is_hovering_scale_button:
+                self._is_hovering_scale_button = is_over_scale_button
+                self.setToolTip(self._y_scale_tooltip() if is_over_scale_button else "")
+                self.update()
+
+            if is_over_scale_button:
+                if self._is_hovering_y_handle:
+                    self._is_hovering_y_handle = False
+                    self.update()
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            elif is_near_handle:
                 if not self._is_hovering_y_handle:
                     self._is_hovering_y_handle = True
                     self.update()
@@ -1085,6 +1474,10 @@ class ChartPane(QWidget):
         """Clear crosshair and handle hover when mouse leaves this pane."""
         if self._is_hovering_y_handle:
             self._is_hovering_y_handle = False
+            self.update()
+        if self._is_hovering_scale_button:
+            self._is_hovering_scale_button = False
+            self.setToolTip("")
             self.update()
         if getattr(self, "_is_panning_x", False):
             self._is_panning_x = False

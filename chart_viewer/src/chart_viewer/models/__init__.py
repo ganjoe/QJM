@@ -25,6 +25,8 @@ from chart_viewer.models.validation import (
     validate_bar,
     validate_series_monotonicity,
     is_log_compatible,
+    sanitize_pane_scales,
+    PANE_SCALES,
 )
 from chart_viewer.models.color import (
     resolve_bar_color,
@@ -52,6 +54,8 @@ __all__ = [
     "validate_bar",
     "validate_series_monotonicity",
     "is_log_compatible",
+    "sanitize_pane_scales",
+    "PANE_SCALES",
     "resolve_bar_color",
     "ResolvedBarColor",
 ]

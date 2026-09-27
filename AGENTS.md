@@ -20,4 +20,6 @@ Die MCP-Tools `mcp__openbrain-shelly__*` liefern Echtzeit- und Verbrauchsdaten d
 
 Wichtig: Die Steckdose versorgt den QJM-Server. Ein bewusstes Ausschalten über `shelly_set_switch(false)`
 bleibt aus; für einen Reboot den Power-Cycle nutzen. Für ein geordnetes Herunterfahren gibt es
-`POST /api/devices/server-plug/system` bzw. `powermeter/system-control.sh`.
+`POST /api/devices/server-plug/system` bzw. `/home/daniel/powermeter/system-control.sh`.
+Der Dienst läuft aus `/home/daniel/powermeter`; der MCP-Server (`openbrain-shelly`) liegt unter
+`mcp/agent-shelly`, der Ordner `powermeter/` ist für dessen künftige Heimat reserviert.

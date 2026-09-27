@@ -17,6 +17,14 @@ import {
   isTwitterApiIoAvailable,
   X_INITIAL_BACKFILL_LIMIT,
   X_INITIAL_SYNC_CONCURRENCY,
+  deepseekChatCompletion,
+  upsertOpenBrainEntry,
+  openBrainRef,
+  interactiveBudgetStatus,
+  X_TIER2_MIN_POSTS,
+  X_TIER2_MAX_AUTHORS,
+  X_TIER2_MAX_POSTS,
+  X_TIER2_WINDOW_DAYS,
 } from "./shared.ts";
 import {
   activeSyncControllers,
@@ -248,7 +256,7 @@ export async function searchTickerOnline(
 
       let cursor: string | undefined;
       while (pages < budgetPages) {
-        const json = await twitterApiIoFetch("tweet/advanced_search", { query, queryType: "Top", cursor });
+        const json = await twitterApiIoFetch("tweet/advanced_search", { query, queryType: "Top", cursor }, { interactive: true });
         pages++;
         const tweets: any[] = json.tweets || [];
         fetched += tweets.length;
@@ -391,6 +399,162 @@ export async function searchTickerOnline(
   return { text: lines.join("\n"), results, stats };
 }
 
+// =====================================================================
+// Influencer-Profil (OpenBrain) + Favoriten-Helfer
+// =====================================================================
+
+/** Handles, die im Regel-Sync laufen (Tier 1). Format: "@name", lowercase. */
+export async function getFavoriteHandles(): Promise<string[]> {
+  const { data } = await supabase
+    .from("x_users")
+    .select("username")
+    .eq("is_active", true)
+    .eq("favorite", true);
+  return (data || []).map((u: any) => `@${String(u.username).toLowerCase()}`);
+}
+
+/**
+ * Leitet aus den gespeicherten Posts ein Themenprofil ab: Top-Ticker, Top-Keywords
+ * und ein kurzer LLM-Text ("gut bei den Themen ..."). Ohne Posts bleibt es bei
+ * einem Startprofil, das der Nutzer per MCP ergänzen kann.
+ */
+export async function generateInfluencerProfile(handleInput: string): Promise<string> {
+  const handle = handleInput.replace(/^@/, "").toLowerCase();
+  const { data: user } = await supabase
+    .from("x_users")
+    .select("username, screen_name, notes")
+    .eq("username", handle)
+    .single();
+
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const { data: posts } = await supabase
+    .from("agent_workspace")
+    .select("content, metadata, created_at")
+    .eq("artifact_type", "x_post")
+    .or(`metadata->>author.eq.@${handle},metadata->>author.eq.${handle}`)
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(120);
+
+  const list = (posts || []) as any[];
+  const tickerCount = new Map<string, number>();
+  const keywordCount = new Map<string, number>();
+  for (const p of list) {
+    for (const t of (p.metadata?.tickers || [])) {
+      const k = String(t).toUpperCase();
+      tickerCount.set(k, (tickerCount.get(k) || 0) + 1);
+    }
+    for (const k of (p.metadata?.keywords || [])) {
+      const key = String(k);
+      keywordCount.set(key, (keywordCount.get(key) || 0) + 1);
+    }
+  }
+  const top = (m: Map<string, number>, n: number) =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, c]) => `${k} (${c}x)`).join(", ");
+
+  const screenName = user?.screen_name || handle;
+  const notes = user?.notes || "";
+  const topTickers = top(tickerCount, 15);
+  const topKeywords = top(keywordCount, 15);
+
+  const header = `Influencer @${handle} (${screenName})` +
+    (notes ? `\nEinordnung: ${notes}` : "");
+
+  if (list.length < 5) {
+    return `${header}\nThemenprofil: noch zu wenig Daten (${list.length} Posts im Korpus).` +
+      `\nBitte ergänzen: Themenfelder, Stärken, typische Ticker.`;
+  }
+
+  const sample = list.slice(0, 25)
+    .map((p) => `- ${String(p.content || "").replace(/\s+/g, " ").slice(0, 220)}`)
+    .join("\n");
+
+  const prompt =
+    `Handle: @${handle}\nName: ${screenName}\nNotizen: ${notes || "(keine)"}\n` +
+    `Häufige Ticker: ${topTickers || "(keine)"}\nHäufige Keywords: ${topKeywords || "(keine)"}\n\n` +
+    `Beispielposts (neueste zuerst):\n${sample}`;
+
+  let summary = "";
+  try {
+    summary = (await deepseekChatCompletion([
+      {
+        role: "system",
+        content:
+          "Du beschreibst Finanz-Influencer für ein Aktien-Recherche-System. Antworte auf Deutsch, " +
+          "3-5 sätze, sachlich, ohne Werbung. Nenne: (1) Themenfelder/Stärken, (2) typische Ticker oder Branchen, " +
+          "(3) Stil der Posts (z. B. Makro, Options-Flow, Einzelaktien-Analyse, News-Aggregator, Threads). " +
+          "Keine Anlageempfehlung, keine Bewertung der Person.",
+      },
+      { role: "user", content: prompt },
+    ], { temperature: 0.2, maxTokens: 450 })).trim();
+  } catch (e: any) {
+    log.warn(`[Influencer-Profil] LLM-Zusammenfassung für @${handle} fehlgeschlagen: ${e.message}`);
+  }
+
+  const parts = [header];
+  if (summary) parts.push(`Themenprofil: ${summary}`);
+  if (topTickers) parts.push(`Häufige Ticker: ${topTickers}`);
+  if (topKeywords) parts.push(`Häufige Keywords: ${topKeywords}`);
+  parts.push(`Datenbasis: ${list.length} Posts der letzten 30 Tage.`);
+  return parts.join("\n");
+}
+
+/**
+ * Schreibt das Influencer-Profil in den OpenBrain und verlinkt es in x_users
+ * (description = openbrain://<id>, brain_ref, brain_content, embedding).
+ * Ein vorhandener Eintrag wird soft-deleted, damit nichts dupliziert.
+ */
+export async function syncInfluencerBrainProfile(
+  handleInput: string,
+  opts: { refreshFromPosts?: boolean; contentOverride?: string } = {},
+): Promise<{ ref: string | null; content: string }> {
+  const handle = handleInput.replace(/^@/, "").toLowerCase();
+  const { data: user } = await supabase
+    .from("x_users")
+    .select("username, screen_name, notes, brain_ref")
+    .eq("username", handle)
+    .single();
+
+  const content = opts.contentOverride
+    ?? (opts.refreshFromPosts ? await generateInfluencerProfile(handle) : "");
+
+  if (!content) return { ref: user?.brain_ref || null, content: "" };
+
+  const id = await upsertOpenBrainEntry(content, "observation");
+  const oldRef = user?.brain_ref as string | undefined;
+  if (oldRef && id && oldRef !== id) {
+    await supabase.from("open_brain").update({ deleted_at: new Date().toISOString() }).eq("id", oldRef);
+  }
+
+  const embedText = `username: @${handle} screen_name: ${user?.screen_name || ""} beschreibung: ${content}`;
+  const embedding = await getDocumentEmbedding(embedText).catch(() => null);
+
+  await supabase.from("x_users").update({
+    description: id ? openBrainRef(id) : null,
+    brain_ref: id,
+    brain_content: content,
+    ...(embedding && embedding.length ? { embedding } : {}),
+  }).eq("username", handle);
+
+  return { ref: id, content };
+}
+
+/** Alle getrackten Handles (is_active) als lowercase-Set – für Tier 2. */
+export async function getTrackedHandles(): Promise<Set<string>> {
+  const { data } = await supabase.from("x_users").select("username").eq("is_active", true);
+  return new Set((data || []).map((u: any) => String(u.username).toLowerCase()));
+}
+
+/** Favoriten-Status + Profil für die Anzeige. */
+function formatInfluencerRow(u: any, idx: number): string {
+  const star = u.favorite ? "⭐" : "  ";
+  const desc = (u.brain_content || "").replace(/\s+/g, " ").slice(0, 140);
+  return `${idx + 1}. ${star} @${u.username} (${u.screen_name || "N/A"})` +
+    (u.notes ? ` – ${u.notes}` : "") +
+    (u.description ? `\n     brain: ${u.description}` : "") +
+    (desc ? `\n     ${desc}…` : "");
+}
+
 export function registerXTools(server: McpServer) {
   // 1. Tool: Search Influencer Posts
   server.registerTool(
@@ -402,6 +566,11 @@ export function registerXTools(server: McpServer) {
         "WHEN NOT TO USE: To simply browse chronological timeline feeds (single or multiple influencers, or specific dates) or fetch a single tweet by ID, use `show_x_content`.",
       inputSchema: {
         action: z.enum(["READ", "READ_IDS"]).default("READ").describe("READ = search posts, READ_IDS = fetch specific posts by ID array"),
+        tier: z.number().min(1).max(3).optional().default(2).describe(
+          "1 = nur offline (nur ⭐ Favoriten, 0 Credits). " +
+          "2 = DB aller Getrackten + automatisches, gezieltes Live-Nachladen, wenn die Datenlage dünn ist (nur mit Begründung). " +
+          "3 = zusätzlich freie Live-Suche auf X (Thema/Ticker), auch außerhalb der überwachten Accounts.",
+        ),
         query: z.string().optional().describe("Search query (ticker, topic, keyword). Leave empty to list recent posts."),
         limit: z.number().optional().default(200).describe("Max results (default: 200)"),
         threshold: z.number().optional().default(0.5).describe("Similarity threshold for semantic search (default: 0.5)"),
@@ -413,7 +582,7 @@ export function registerXTools(server: McpServer) {
         ...(GLOBAL_BRAIN_ACCESS ? { owner: z.string().optional().describe("Filter by agent ID.") } : {}),
       },
     },
-    async ({ action, query, limit, threshold, artifact_type, days_back, return_mode, ids, authors, owner }: any) => {
+    async ({ action, query, limit, threshold, artifact_type, days_back, return_mode, ids, authors, owner, tier: tierRaw }: any) => {
       try {
         const p_agent_id = GLOBAL_BRAIN_ACCESS ? (owner || null) : AGENT_ID;
 
@@ -453,6 +622,101 @@ export function registerXTools(server: McpServer) {
           expandedAuthors = Array.from(expandedHandlesSet);
         }
 
+        // ---------------------------------------------------------------
+        // Tier-Logik
+        //  1 = nur offline, nur Favoriten        (0 Credits)
+        //  2 = DB (alle Getrackten) + gezieltes Live-Nachladen bei dünner
+        //      Datenlage – passiert automatisch, aber nur mit Begründung
+        //  3 = zusätzlich freie Live-Suche auf X (Thema/Ticker)
+        // ---------------------------------------------------------------
+        const tier = Math.min(3, Math.max(1, Number(tierRaw ?? 2)));
+        const favoriteHandles = await getFavoriteHandles();
+        const favoriteSet = new Set(favoriteHandles.map((h) => h.toLowerCase()));
+        // Nur echte Handles (resolveAuthorHandles liefert auch Screen-Names mit Leerzeichen).
+        const requestedHandles = expandedAuthors
+          ? [...new Set(
+              expandedAuthors
+                .map((h) => h.replace(/^@/, "").toLowerCase())
+                .filter((h) => /^[a-z0-9_]{1,15}$/.test(h)),
+            )]
+          : [];
+
+        let scopeAuthors = expandedAuthors;
+        let tierNote = "";
+        if (tier === 1) {
+          if (expandedAuthors) {
+            const allowed = expandedAuthors.filter((h) => favoriteSet.has(`@${h.replace(/^@/, "").toLowerCase()}`));
+            scopeAuthors = [...new Set(allowed)];
+            if (scopeAuthors.length === 0) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `🔎 Tier 1 (offline, nur ⭐ Favoriten): Für ${requestedHandles.map((h) => "@" + h).join(", ")} liegen keine Favoriten-Daten vor.\n` +
+                    `Tier 2 würde die Posts dieser Accounts gezielt live nachladen (kostet Credits).`,
+                }],
+              };
+            }
+          } else {
+            scopeAuthors = favoriteHandles;
+          }
+          tierNote = `Tier 1 (offline, ${scopeAuthors?.length ?? 0} ⭐ Favoriten) · 0 Credits`;
+        } else {
+          tierNote = `Tier ${tier} (DB: alle Getrackten${tier === 3 ? " + Live-Suche auf X" : ""})`;
+        }
+
+        // --- Tier 2: gezieltes Live-Nachladen, aber nur mit Begründung ---
+        // Begründung = dünne Datenlage: für die angefragten Accounts liegen im
+        // Fenster weniger als X_TIER2_MIN_POSTS vor (oder gar keine).
+        const fetchedAuthors: string[] = [];
+        const skippedUntracked: string[] = [];
+        let tier2Credits = 0;
+        if (tier >= 2 && requestedHandles.length > 0) {
+          const windowDays = days_back && days_back > 0 ? days_back : X_TIER2_WINDOW_DAYS;
+          const sinceIso = new Date(Date.now() - windowDays * 86400000).toISOString();
+          const tracked = await getTrackedHandles();
+
+          const thin: string[] = [];
+          for (const h of requestedHandles) {
+            const { count } = await supabase
+              .from("agent_workspace")
+              .select("*", { count: "exact", head: true })
+              .eq("artifact_type", "x_post")
+              .or(`metadata->>author.eq.@${h},metadata->>author.eq.${h}`)
+              .gte("created_at", sinceIso);
+            if ((count || 0) < X_TIER2_MIN_POSTS) thin.push(h);
+          }
+
+          const fetchable = thin.filter((h) => tracked.has(h));
+          for (const h of thin.filter((h) => !tracked.has(h))) skippedUntracked.push(h);
+
+          const toFetch = fetchable.slice(0, X_TIER2_MAX_AUTHORS);
+          // Zeitfilter nur setzen, wenn der Aufrufer selbst ein Fenster vorgibt.
+          // Sonst die neuesten Posts holen – bei stillen Accounts liegt der letzte
+          // Post oft älter als das Standardfenster, und genau der ist interessant.
+          const fetchStart = days_back && days_back > 0 ? sinceIso : undefined;
+          const budgetBefore = interactiveBudgetStatus().used;
+          for (const h of toFetch) {
+            try {
+              log.info(`[Tier 2] Nachladen für @${h} (${fetchStart ? `${windowDays}d Fenster` : "neueste Posts"}, max ${X_TIER2_MAX_POSTS})...`);
+              await ingestInfluencerTweets(`@${h}`, h, X_TIER2_MAX_POSTS, fetchStart, undefined, false, {
+                source: "tier2",
+                maxPages: 3,
+                stopOnKnownPage: true,
+                interactive: true,
+              });
+              fetchedAuthors.push(h);
+            } catch (e: any) {
+              log.warn(`[Tier 2] Nachladen für @${h} fehlgeschlagen: ${e.message}`);
+            }
+          }
+          tier2Credits = interactiveBudgetStatus().used - budgetBefore;
+          if (toFetch.length > 0 || skippedUntracked.length > 0) {
+            tierNote += ` · dünne Datenlage: ${fetchedAuthors.length}/${toFetch.length} Accounts live nachgeladen` +
+              (tier2Credits > 0 ? ` (${tier2Credits} Credits)` : "") +
+              (skippedUntracked.length > 0 ? ` · nicht getrackt (Tier 3 nötig): ${skippedUntracked.map((h) => "@" + h).join(", ")}` : "");
+          }
+        }
+
         let data: any[];
 
         if (!trimmedQuery) {
@@ -463,7 +727,7 @@ export function registerXTools(server: McpServer) {
             p_agent_id: p_agent_id,
             p_artifact_type: artifact_type || null,
             p_days_back: days_back || null,
-            p_authors: expandedAuthors,
+            p_authors: scopeAuthors,
           });
           if (error) throw error;
           data = exactData || [];
@@ -478,7 +742,7 @@ export function registerXTools(server: McpServer) {
             p_agent_id: p_agent_id,
             p_artifact_type: artifact_type || null,
             p_days_back: days_back || null,
-            p_authors: expandedAuthors,
+            p_authors: scopeAuthors,
           });
           if (error) throw error;
           data = hybData || [];
@@ -492,9 +756,39 @@ export function registerXTools(server: McpServer) {
           });
         }
 
-        if (!data || data.length === 0) return { content: [{ type: "text", text: "Keine Ergebnisse gefunden." }] };
+        // --- Tier 3: freie Live-Suche auf X (Thema/Ticker), auch außerhalb des Korpus ---
+        let liveBlock = "";
+        if (tier >= 3 && trimmedQuery) {
+          try {
+            const handles = requestedHandles.slice(0, 20);
+            const parts: string[] = [];
+            if (handles.length > 0) parts.push(`(${handles.map((h) => `from:${h}`).join(" OR ")})`);
+            parts.push(trimmedQuery);
+            parts.push("-filter:replies");
+            const q = parts.join(" ").slice(0, 500);
 
-        return { content: [{ type: "text", text: formatSearchResults(data, return_mode) }] };
+            const before = interactiveBudgetStatus().used;
+            const json = await twitterApiIoFetch("tweet/advanced_search", { query: q, queryType: "Latest" }, { interactive: true });
+            const tweets: any[] = json.tweets || [];
+            const spent = interactiveBudgetStatus().used - before;
+
+            liveBlock = tweets.length > 0
+              ? `\n\n🌐 Live-Suche auf X (Tier 3${handles.length ? ` · ${handles.slice(0, 5).map((h) => "@" + h).join(", ")}${handles.length > 5 ? "…" : ""}` : " · alle X-Accounts"}): ` +
+                `${tweets.length} Posts, ${spent} Credits\n` +
+                tweets.slice(0, 20).map((t: any, i: number) =>
+                  `[L${i + 1}] ${t.createdAt ? new Date(t.createdAt).toLocaleDateString("de-DE") : "?"} | @${t.author?.userName || "?"} | ❤️ ${t.likeCount || 0}\n${t.text}`).join("\n\n")
+              : `\n\n🌐 Live-Suche auf X (Tier 3): keine Treffer (${spent} Credits).`;
+          } catch (e: any) {
+            liveBlock = `\n\n🌐 Live-Suche auf X (Tier 3) fehlgeschlagen: ${e.message}`;
+          }
+        }
+
+        const header = `🔎 ${tierNote}\n\n`;
+        if (!data || data.length === 0) {
+          return { content: [{ type: "text", text: `${header}Keine Treffer im lokalen Korpus.${liveBlock}` }] };
+        }
+
+        return { content: [{ type: "text", text: `${header}${formatSearchResults(data, return_mode)}${liveBlock}` }] };
       } catch (err: any) {
         return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
       }
@@ -578,7 +872,7 @@ export function registerXTools(server: McpServer) {
           const urlMatch = tweet_id.match(/status\/(\d+)/);
           if (urlMatch) id = urlMatch[1];
 
-          const json = await twitterApiIoFetch("tweets", { tweet_ids: id });
+          const json = await twitterApiIoFetch("tweets", { tweet_ids: id }, { interactive: true });
           const tweets: any[] = json.tweets || [];
           if (!tweets[0]) throw new Error("Tweet nicht gefunden");
 
@@ -700,30 +994,46 @@ export function registerXTools(server: McpServer) {
     "manage_influencers",
     {
       title: "Manage Influencers",
-      description: "List, add, or remove influencers from the database. Supports single handles, batch arrays, multiline text, or local file imports.",
+      description:
+        "List, add, remove or update influencers. ⭐ favorite = the account runs in the regular sync " +
+        "(daily search + timeline check); everything else stays searchable and can be fetched on demand (Tier 2). " +
+        "Each influencer has a description that lives as an OpenBrain entry (themes/strengths) and is referenced in x_users.description.",
       inputSchema: {
-        action: z.enum(["LIST", "ADD", "REMOVE"]).describe("The action to perform"),
+        action: z.enum(["LIST", "ADD", "REMOVE", "UPDATE"]).describe("LIST = show (favorites_only possible), ADD = add (favorite defaults to false), REMOVE = deactivate, UPDATE = set favorite/notes/description or rebuild the topic profile"),
         username: z.string().optional().describe("A single X username or comma-/newline-separated usernames (e.g. '@RayDalio, @fundstrat' or '@RayDalio')"),
         usernames: z.array(z.string()).optional().describe("An array of X usernames for batch operations (e.g. ['@RayDalio', '@fundstrat'])"),
         file_path: z.string().optional().describe("Optional path to a text file containing influencer handles (e.g. /home/daniel/QJM/dsh_playground/fintwit/01_makro_strategen.txt)"),
         raw_text: z.string().optional().describe("Raw text containing comma-, space- or newline-separated handles"),
-        notes: z.string().optional().describe("Optional notes/category about the influencer(s) (for ADD)"),
+        notes: z.string().optional().describe("Optional notes/category about the influencer(s) (ADD/UPDATE)"),
+        favorite: z.boolean().optional().describe("ADD/UPDATE: only favorites run in the regular sync. Default on ADD: false"),
+        favorites_only: z.boolean().optional().default(false).describe("LIST: show favorites only"),
+        description: z.string().optional().describe("UPDATE: description text for the influencer – written to the OpenBrain entry and linked in x_users.description"),
+        refresh_description: z.boolean().optional().default(false).describe("UPDATE: rebuild the topic profile from the stored posts (LLM) and refresh the OpenBrain entry"),
       },
     },
-    async ({ action, username, usernames, file_path, raw_text, notes }: any) => {
+    async ({ action, username, usernames, file_path, raw_text, notes, favorite, favorites_only, description, refresh_description }: any) => {
       try {
         if (action === "LIST") {
-          const { data, error } = await supabase
+          let listQuery = supabase
             .from("x_users")
-            .select("username, screen_name, notes")
+            .select("username, screen_name, notes, favorite, description, brain_content")
             .eq("is_active", true)
+            .order("favorite", { ascending: false })
             .order("username");
+          if (favorites_only) listQuery = listQuery.eq("favorite", true);
+          const { data, error } = await listQuery;
           if (error) throw error;
           if (!data || data.length === 0) {
             return { content: [{ type: "text", text: `Keine aktiven Influencer in der Datenbank gefunden.` }] };
           }
-          const formatted = data.map((i: any, idx: number) => `${idx + 1}. @${i.username} (${i.screen_name || 'N/A'}) - ${i.notes || ''}`).join("\n");
-          return { content: [{ type: "text", text: `Hier sind alle überwachten Influencer (${data.length}):\n\n${formatted}` }] };
+          const favCount = data.filter((u: any) => u.favorite).length;
+          const formatted = data.map((u: any, idx: number) => formatInfluencerRow(u, idx)).join("\n");
+          return {
+            content: [{
+              type: "text",
+              text: `Influencer (${data.length} aktiv, davon ${favCount} ⭐ im Regel-Sync):\n\n${formatted}`,
+            }],
+          };
         }
 
         const targetHandles = await extractInfluencerHandles(username, usernames, file_path, raw_text);
@@ -777,31 +1087,34 @@ export function registerXTools(server: McpServer) {
 
           // Helper to onboard a single user
           const onboardUser = async (cleanName: string) => {
-            const json = await twitterApiIoFetch("user/info", { userName: cleanName });
+            const json = await twitterApiIoFetch("user/info", { userName: cleanName }, { interactive: true });
             if (!json.id) {
               throw new Error("User nicht auf X gefunden (TwitterAPI.io)");
             }
             const userId = json.id;
             const screenName = json.name || cleanName;
+            // Neue Influencer starten OHNE favorite: sie sind bekannt/durchsuchbar,
+            // laufen aber erst nach ausdruecklicher Freigabe im Regel-Sync.
             const { error: upsertError } = await supabase.from("x_users").upsert({
               username: cleanName,
               x_id: userId,
               screen_name: screenName,
               notes: notes || null,
               is_active: true,
+              favorite: favorite === true,
             }, { onConflict: "username" });
 
             if (upsertError) throw upsertError;
 
-            // Asynchronously generate profile embedding without blocking user onboarding
-            const embedText = `username: ${cleanName} screen_name: ${screenName} notes: ${notes || ''}`;
-            getDocumentEmbedding(embedText)
-              .then((emb: number[]) => {
-                if (emb && emb.length > 0) {
-                  supabase.from("x_users").update({ embedding: emb }).eq("username", cleanName).then();
-                }
-              })
-              .catch((e: any) => log.debug(`Optional profile embedding for @${cleanName}: ${e.message}`));
+            // Beschreibung + OpenBrain-Eintrag: passiert standardmaessig. Ohne eigenen
+            // Text wird ein Themenprofil aus den bereits gespeicherten Posts erzeugt
+            // (bei einem brandneuen Account ist das ein Startprofil zum Ergaenzen).
+            syncInfluencerBrainProfile(cleanName, {
+              contentOverride: typeof description === "string" && description.trim() ? description.trim() : undefined,
+              refreshFromPosts: !(typeof description === "string" && description.trim()),
+            })
+              .then((r) => log.info(`[Influencer-Profil] @${cleanName}: ${r.ref ? `OpenBrain ${r.ref}` : "kein Eintrag"}`))
+              .catch((e: any) => log.debug(`Influencer-Profil für @${cleanName}: ${e.message}`));
 
             // Trigger initial backfill in background queue
             queueInitialSyncs([cleanName]);
@@ -816,7 +1129,10 @@ export function registerXTools(server: McpServer) {
               return {
                 content: [{
                   type: "text",
-                  text: `✅ Influencer @${res.cleanName} (${res.screenName}) wurde erfolgreich hinzugefügt und der Initial-Sync (${X_INITIAL_BACKFILL_LIMIT} Posts) wurde gestartet.`
+                  text: `✅ Influencer @${res.cleanName} (${res.screenName}) hinzugefügt.\n` +
+                    `• Sync: ${favorite === true ? "⭐ favorite = läuft im Regel-Sync" : "kein favorite – nur auf Abruf (Tier 2), nicht im Regel-Sync"}\n` +
+                    `• Initial-Sync (${X_INITIAL_BACKFILL_LIMIT} Posts) gestartet, Beschreibung/OpenBrain-Eintrag wird im Hintergrund erzeugt.\n` +
+                    `• Profil später verfeinern: manage_influencers UPDATE mit refresh_description=true.`
                 }]
               };
             } catch (err: any) {
@@ -852,7 +1168,9 @@ export function registerXTools(server: McpServer) {
           let responseText = `🚀 **Batch-Import im Hintergrund gestartet!**\n\n` +
             `• **Zu importieren:** ${toProcess.length} Accounts\n` +
             `• **Bereits aktiv:** ${alreadyTracked.length} Accounts\n` +
-            `• **Initial-Backfill:** ${X_INITIAL_BACKFILL_LIMIT} Posts pro Account (Parallelität: ${X_INITIAL_SYNC_CONCURRENCY})\n\n` +
+            `• **favorite:** ${favorite === true ? "ja (Regel-Sync)" : "nein (nur auf Abruf)"}\n` +
+            `• **Initial-Backfill:** ${X_INITIAL_BACKFILL_LIMIT} Posts pro Account (Parallelität: ${X_INITIAL_SYNC_CONCURRENCY})\n` +
+            `• **Beschreibung:** OpenBrain-Eintrag wird je Account automatisch erzeugt\n\n` +
             `Die Accounts werden nun schrittweise aufgelöst, in der Datenbank gespeichert und synchronisiert.`;
 
           if (alreadyTracked.length > 0) {
@@ -861,14 +1179,60 @@ export function registerXTools(server: McpServer) {
 
           return { content: [{ type: "text", text: responseText }] };
 
+        } else if (action === "UPDATE") {
+          if (targetHandles.length === 0) {
+            throw new Error("Mindestens ein Benutzername (username, usernames) ist für UPDATE erforderlich.");
+          }
+
+          const lines: string[] = [];
+          for (const h of targetHandles) {
+            const patch: Record<string, unknown> = {};
+            if (typeof favorite === "boolean") patch.favorite = favorite;
+            if (typeof notes === "string") patch.notes = notes;
+
+            if (Object.keys(patch).length > 0) {
+              const { error } = await supabase.from("x_users").update(patch).eq("username", h);
+              if (error) throw error;
+            }
+
+            const wantsProfile = !!description || refresh_description === true;
+            let profileNote = "";
+            if (wantsProfile) {
+              const res = await syncInfluencerBrainProfile(h, {
+                contentOverride: description ? String(description).trim() : undefined,
+                refreshFromPosts: !description && refresh_description === true,
+              });
+              profileNote = res.ref
+                ? ` | Beschreibung: openbrain://${res.ref}${description ? " (Text gesetzt)" : " (aus Posts erzeugt)"}`
+                : " | ⚠️ OpenBrain-Eintrag fehlgeschlagen";
+            }
+
+            const flags = [
+              typeof favorite === "boolean" ? `favorite=${favorite}` : null,
+              typeof notes === "string" ? "notes gesetzt" : null,
+            ].filter(Boolean).join(", ");
+
+            lines.push(`• @${h}: ${flags || "keine Änderung"}${profileNote}`);
+            await recordSyncLog("influencer_updated", `@${h}`, `Update: ${flags || "-"}${wantsProfile ? " + Beschreibung" : ""}`);
+          }
+
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Influencer aktualisiert:\n${lines.join("\n")}\n\n` +
+                `Hinweis: favorite steuert den Regel-Sync – ohne favorite wird der Account nur auf Abruf (Tier 2) geladen.`,
+            }],
+          };
+
         } else if (action === "REMOVE") {
           if (targetHandles.length === 0) {
             throw new Error("Mindestens ein Benutzername (username, usernames, file_path oder raw_text) ist für REMOVE erforderlich.");
           }
 
+          // Deaktivieren nimmt den Account auch aus dem Regel-Sync (favorite=false).
           const { data, error } = await supabase
             .from("x_users")
-            .update({ is_active: false })
+            .update({ is_active: false, favorite: false })
             .in("username", targetHandles)
             .select("username, screen_name");
 
@@ -1012,7 +1376,7 @@ export function registerXTools(server: McpServer) {
         activeSyncControllers.set(cleanName, controller);
 
         // Run ingestion in background (onlyForward: false allows paginating back up to limit)
-        ingestInfluencerTweets(cleanName, username, syncLimit, start_time, controller.signal, false)
+        ingestInfluencerTweets(cleanName, username, syncLimit, start_time, controller.signal, false, { source: "backfill", interactive: true })
           .then(count => log.info(`[Sync] Manual sync for ${cleanName} completed: ${count} posts ingested.`))
           .catch(e => log.error(`[Sync] Manual sync for ${cleanName} failed: ${e.message}`))
           .finally(() => activeSyncControllers.delete(cleanName));

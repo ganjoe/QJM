@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { WorkerManager } from "../workers/worker_manager.ts";
-import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY, X_DISCOVERY_INTERVAL_SEC, X_LIVENESS_CHECK, X_INGESTION_MODE, X_SEARCH_INTERVAL_SEC, X_RECONCILE_INTERVAL_SEC } from "./shared.ts";
+import { supabase, isTwitterApiIoAvailable, X_BEARER_TOKEN, X_CLIENT_ID, TWITTER_API_IO_KEY, X_DISCOVERY_INTERVAL_SEC, X_LIVENESS_CHECK, X_INGESTION_MODE, X_SEARCH_INTERVAL_SEC, X_RECONCILE_INTERVAL_SEC, X_DAILY_RUN_AT, X_DAILY_RUN_TZ } from "./shared.ts";
 import { processSinglePost } from "../workers/metadata_worker.ts";
+import { requestXIngestionRun } from "../workers/x_ingestion_worker.ts";
 
 export function registerPipelineTools(server: McpServer) {
   const manager = WorkerManager.getInstance();
@@ -13,7 +14,7 @@ export function registerPipelineTools(server: McpServer) {
       title: "Manage Sync Pipeline",
       description: "Controls the background sync workers (Stage 1 Ingestion, Stage 2 Metadata, Stage 3 Embeddings, YouTube) or checks backlog and throughput metrics.",
       inputSchema: {
-        action: z.enum(["START", "STOP", "STATUS", "REENRICH_X", "REPAIR_X_METADATA", "RETRY_METADATA_FAILED"]).describe("START/STOP = worker control, STATUS = stats, REENRICH_X = idempotenter Metadaten-Backfill für X-Posts (Datumsbereich), REPAIR_X_METADATA = vergiftete Altzeilen (unkategorisiert/ohne Keywords) reparieren, RETRY_METADATA_FAILED = fehlgeschlagene X-Posts erneut einreihen"),
+        action: z.enum(["START", "STOP", "STATUS", "SYNC_NOW", "REENRICH_X", "REPAIR_X_METADATA", "RETRY_METADATA_FAILED"]).describe("START/STOP = worker control, STATUS = stats, SYNC_NOW = sofort einen X-Ingestion-Lauf anstoßen (statt auf den täglichen Slot zu warten), REENRICH_X = idempotenter Metadaten-Backfill für X-Posts (Datumsbereich), REPAIR_X_METADATA = vergiftete Altzeilen (unkategorisiert/ohne Keywords) reparieren, RETRY_METADATA_FAILED = fehlgeschlagene X-Posts erneut einreihen"),
         start_date: z.string().optional().describe("REENRICH_X: nur Posts ab diesem created_at (ISO, z.B. 2026-09-01)"),
         end_date: z.string().optional().describe("REENRICH_X: nur Posts bis zu diesem created_at (ISO)"),
         only_with_cashtags: z.boolean().optional().default(true).describe("REENRICH_X: nur Posts mit '$' im Text (Default: true)"),
@@ -32,8 +33,29 @@ export function registerPipelineTools(server: McpServer) {
           return { content: [{ type: "text", text: "⏹️ Abbruchsignal wurde an alle Hintergrund-Worker gesendet." }] };
         }
 
+        if (action === "SYNC_NOW") {
+          const res = requestXIngestionRun();
+          return {
+            content: [{
+              type: "text",
+              text: res.running
+                ? "🚀 Sofortiger X-Ingestion-Lauf angefordert – der Loop startet ihn innerhalb weniger Sekunden (er läuft gerade)."
+                : "🚀 Sofortiger X-Ingestion-Lauf angefordert – der Loop startet ihn innerhalb weniger Sekunden.",
+            }],
+          };
+        }
+
         if (action === "STATUS") {
           const status = await manager.getStatus();
+          const schedule = {
+            next_run: status.pipeline.x_ingestion.next_run
+              ? new Date(status.pipeline.x_ingestion.next_run).toLocaleString("de-DE", { timeZone: X_DAILY_RUN_TZ })
+              : null,
+            manual_pending: status.pipeline.x_ingestion.manual_run_pending,
+            last_cycle_finished: status.pipeline.x_ingestion.last_cycle_finished
+              ? new Date(status.pipeline.x_ingestion.last_cycle_finished).toLocaleString("de-DE", { timeZone: X_DAILY_RUN_TZ })
+              : null,
+          };
           const lines = [
             `=== CCO Sync & Embedding Pipeline Status ===`,
             ``,
@@ -48,7 +70,8 @@ export function registerPipelineTools(server: McpServer) {
             `  •  davon Legacy-Status 'categorized': ${status.backlog.x_posts.stage_legacy_categorized ?? 0} Posts`,
             `  • Gesamtanzahl X Posts: ${status.backlog.x_posts.total}`,
             `  • Ticker-Coverage: ${status.backlog.x_posts.with_tickers ?? 0} mit Tickern | ${status.backlog.x_posts.empty_tickers ?? 0} ohne Ticker | ${status.backlog.x_posts.metadata_failed ?? 0} fehlgeschlagen (Retry) | ${status.backlog.x_posts.metadata_failed_permanent ?? 0} endgültig`,
-            `  • Aktive Influencer: ${status.backlog.x_posts.active_influencers}`,
+            `  • Influencer: ${status.backlog.x_posts.active_influencers} aktiv · davon ${status.backlog.x_posts.favorite_influencers ?? 0} ⭐ im Regel-Sync (Suche + Abgleich)`,
+            `  • Interaktive X-Abrufe heute (Tier 2/3, Live-Suche): ${status.pipeline.x_ingestion.cost?.interactive?.used ?? 0} / ${status.pipeline.x_ingestion.cost?.interactive?.limit ?? 0} Credits (${status.pipeline.x_ingestion.cost?.interactive?.calls ?? 0} Calls)`,
             ``,
             `📺 YouTube Pipeline (yt_videos & agent_workspace):`,
             `  • Aktive Kanäle: ${status.backlog.youtube.active_channels}`,
@@ -60,8 +83,14 @@ export function registerPipelineTools(server: McpServer) {
             ``,
             `⚙️ Worker Durchsatz & Status:`,
             `  • X Ingestion: ${status.pipeline.x_ingestion.running ? 'LÄUFT 🟢' : 'GESTOPPT 🔴'} (Zyklen: ${status.pipeline.x_ingestion.cycle_count}, Ingested: ${status.pipeline.x_ingestion.total_ingested})`,
-            `    └ Modus: ${X_INGESTION_MODE === 'timeline' ? `Timeline (${X_DISCOVERY_INTERVAL_SEC}s, Liveness ${X_LIVENESS_CHECK ? 'an' : 'aus'})` : `Suche (${X_SEARCH_INTERVAL_SEC}s) + Timeline-Abgleich alle ${Math.round(X_RECONCILE_INTERVAL_SEC / 3600)}h`}`,
+            `    └ Modus: ${X_INGESTION_MODE === 'timeline' ? `Timeline (${X_DISCOVERY_INTERVAL_SEC}s, Liveness ${X_LIVENESS_CHECK ? 'an' : 'aus'})` : X_DAILY_RUN_AT ? `Suche TÄGLICH um ${X_DAILY_RUN_AT} ${X_DAILY_RUN_TZ} (oder SYNC_NOW) + Timeline-Abgleich alle ${Math.round(X_RECONCILE_INTERVAL_SEC / 3600)}h` : `Suche (${X_SEARCH_INTERVAL_SEC}s) + Timeline-Abgleich alle ${Math.round(X_RECONCILE_INTERVAL_SEC / 3600)}h`}`,
             `    └ Letzter Zyklus: ${status.pipeline.x_ingestion.cost?.last_search_saved ?? status.pipeline.x_ingestion.cost?.last_cycle_users_synced ?? 0} neue Posts, ${status.pipeline.x_ingestion.cost?.last_cycle_tweets_fetched ?? 0} Tweets geladen, ~${status.pipeline.x_ingestion.cost?.last_cycle_credits ?? 0} Credits (~$${(((status.pipeline.x_ingestion.cost?.last_cycle_credits ?? 0) / 100000)).toFixed(4)})`,
+            `    └ Kosten letzter Zyklus nach Quelle: ${Object.entries(status.pipeline.x_ingestion.cost?.last_cycle_credits_by_source ?? {}).filter(([, c]: any) => c > 0).map(([s, c]: any) => `${s}=${c}`).join(", ") || "keine"}`,
+            `    └ Letzte Suche: ${status.pipeline.x_ingestion.cost?.last_search_tweets_fetched ?? 0} Tweets / ${status.pipeline.x_ingestion.cost?.last_search_credits ?? 0} Credits | Letzter Abgleich: ${status.pipeline.x_ingestion.cost?.last_reconcile_tweets_fetched ?? 0} Tweets / ${status.pipeline.x_ingestion.cost?.last_reconcile_credits ?? 0} Credits (${status.pipeline.x_ingestion.cost?.last_reconcile_skipped ?? 0} übersprungen)`,
+            `    └ Kostenbremse: Budget ${status.pipeline.x_ingestion.cost?.max_credits_per_cycle ?? 0} Credits/Zyklus, Stopps: ${status.pipeline.x_ingestion.cost?.budget_stops ?? 0}${status.pipeline.x_ingestion.cost?.last_budget_stop ? ` (zuletzt: ${status.pipeline.x_ingestion.cost.last_budget_stop.source}, ${status.pipeline.x_ingestion.cost.last_budget_stop.credits} Credits)` : ""}`,
+            `    └ Guthaben: ${status.pipeline.x_ingestion.cost?.payment_blocked_until ? `⛔ 402-Sperre bis ${status.pipeline.x_ingestion.cost.payment_blocked_until} – bitte TwitterAPI.io-Credits aufladen` : "🟢 keine 402-Sperre"}${status.pipeline.x_ingestion.cost?.payment_errors_402 ? ` (402-Fehler: ${status.pipeline.x_ingestion.cost.payment_errors_402})` : ""}`,
+            `    └ Laufzeitplan: ${schedule.next_run ? `nächster Lauf ${schedule.next_run}` : "Intervallbetrieb"}${schedule.manual_pending ? " | 🚀 manueller Lauf angefordert" : ""}${schedule.last_cycle_finished ? ` | letzter Zyklus fertig ${schedule.last_cycle_finished}` : ""}`,
+            `    └ Abdeckung: letzte Suche ${status.pipeline.x_ingestion.cost?.last_search_truncated ? "⚠️ UNVOLLSTÄNDIG" : "✅ vollständig"} | Lücken-Schließer: ${status.pipeline.x_ingestion.cost?.gap_closer_runs ?? 0} Läufe, ${status.pipeline.x_ingestion.cost?.gap_closer_saved ?? 0} Posts nachgeholt | offene Abdeckungsfehler: ${status.pipeline.x_ingestion.cost?.coverage_failures ?? 0}`,
             `    └ Suchfenster ab: ${status.pipeline.x_ingestion.persisted_state?.search_since_iso || status.pipeline.x_ingestion.cost?.last_search_since || 'n/a'} | Suche-Fehler: ${status.pipeline.x_ingestion.cost?.last_search_failed ?? 0}`,
             `    └ Letzter Timeline-Abgleich: ${status.pipeline.x_ingestion.persisted_state?.last_reconcile_iso || 'noch keiner'}`,
             `    └ Nächster Abgleich fällig: ${status.pipeline.x_ingestion.persisted_state?.last_reconcile ? new Date(status.pipeline.x_ingestion.persisted_state.last_reconcile + X_RECONCILE_INTERVAL_SEC * 1000).toLocaleString('de-DE') : 'sofort (Erstlauf)'}`,

@@ -64,27 +64,7 @@ def read_chart_data(symbol: str, timeframe: str = "1D", limit: int = DEFAULT_CAN
                 cols += ", " + ", ".join(f'"{c}"' for c in extra_cols)
                 columns.extend(extra_cols)
 
-        # --- Lab-RS (Testlab, reversibel): separate <TF>_lab_rs.parquet, Praefix lab_ ---
-        lab_path = PARQUET_BASE / symbol / f"{timeframe}_lab_rs.parquet"
-        lab_cols = []
-        if has_features and lab_path.exists():
-            try:
-                lab_schema = db.execute(f"DESCRIBE SELECT * FROM read_parquet('{lab_path}') LIMIT 1").fetchall()
-                lab_cols = [r[0] for r in lab_schema if r[0] not in ("timestamp", "t", "ticker")]
-            except Exception as e:
-                logger.warning("lab_rs schema read failed for %s: %s", symbol, e)
-
-        if lab_cols:
-            lab_select = ", ".join(f'l."{c}"' for c in lab_cols)
-            query = (
-                f"SELECT b.*, {lab_select} FROM "
-                f"(SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}) b "
-                f"LEFT JOIN read_parquet('{lab_path}') l ON b.timestamp = l.timestamp "
-                f"ORDER BY b.timestamp DESC"
-            )
-            columns.extend(lab_cols)
-        else:
-            query = f"SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}"
+        query = f"SELECT {cols} FROM read_parquet('{target_path}') ORDER BY timestamp DESC LIMIT {limit}"
         rows = db.execute(query).fetchall()
         db.close()
 
@@ -248,6 +228,18 @@ def _supabase_post(table: str, payload: dict):
             logger.error("Response: %s", e.response.text)
         raise HTTPException(status_code=500, detail=f"Database insert failed: {e}")
 
+def _supabase_patch(table: str, params: str, payload: dict):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{params}"
+    try:
+        resp = httpx.patch(url, headers=_supabase_headers(), json=payload, timeout=5.0)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error("Supabase PATCH failed (%s): %s", table, e)
+        if hasattr(e, 'response') and e.response:
+            logger.error("Response: %s", e.response.text)
+        raise HTTPException(status_code=500, detail=f"Database update failed: {e}")
+
+
 def _supabase_delete(table: str, params: str):
     url = f"{SUPABASE_URL}/rest/v1/{table}?{params}"
     try:
@@ -348,12 +340,44 @@ class PresetMember(BaseModel):
     # 'none' = nur Topbar-Metrik. None = aus pca_features.plot_type ableiten.
     pane: Optional[str] = None
 
+# Erlaubte Y-Achsen-Skalierungen je Pane (Chart-Viewer: Tank-/Log-Taste im Pane).
+_PANE_SCALE_VALUES = ("linear", "log")
+
+
+def normalize_pane_scales(raw: Any) -> Dict[str, str]:
+    """Y-Achsen-Skalierung je Pane validieren.
+
+    Eingabe: {"main": "log", "volume": "linear"}. Schlüssel sind Pane-IDs
+    (lowercase, wie der Viewer sie adressiert). Unbekannte Skalen-Werte werden
+    auf 'linear' gezogen, unbrauchbare Einträge verworfen - ein Preset darf nie
+    an einem Tippfehler scheitern.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: Dict[str, str] = {}
+    for key, value in raw.items():
+        pane_id = str(key or "").strip().lower()
+        if not pane_id:
+            continue
+        scale = str(value or "").strip().lower()
+        clean[pane_id] = scale if scale in _PANE_SCALE_VALUES else "linear"
+    return clean
+
+
 class PresetCreate(BaseModel):
     id: str
     display_name: str
     description: str = ""
     topbar_metrics: list[str] = []
     members: list[PresetMember] = []
+    # Linear/Log je Pane. None = Feld nicht anfassen (PUT), {} = alles linear.
+    pane_scales: Optional[Dict[str, str]] = None
+
+
+class PaneScalesUpdate(BaseModel):
+    """Teil-Update: nur die Y-Skalen, Member bleiben unangetastet."""
+
+    pane_scales: Dict[str, str] = {}
 
 @router.get("/presets")
 async def get_presets():
@@ -388,7 +412,8 @@ async def create_preset(preset: PresetCreate):
         "id": preset.id,
         "display_name": preset.display_name,
         "description": preset.description,
-        "topbar_metrics": preset.topbar_metrics
+        "topbar_metrics": preset.topbar_metrics,
+        "pane_scales": normalize_pane_scales(preset.pane_scales),
     }
     _supabase_post("pca_feature_sets", set_payload)
     
@@ -408,19 +433,18 @@ async def update_preset(preset_name: str, preset: PresetCreate):
     for m in preset.members:
         _auto_create_feature_if_missing(m.feature_id)
         
-    url = f"{SUPABASE_URL}/rest/v1/pca_feature_sets?id=eq.{preset_name}"
     set_payload = {
         "display_name": preset.display_name,
         "description": preset.description,
         "topbar_metrics": preset.topbar_metrics
     }
-    try:
-        resp = httpx.patch(url, headers=_supabase_headers(), json=set_payload, timeout=5.0)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error("Supabase PATCH failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to update preset")
-        
+    # pane_scales ist optional: fehlt das Feld im Request, bleibt der bisherige
+    # Stand erhalten (ein Preset-Update darf die Y-Skalen nicht versehentlich
+    # zurücksetzen). Explizit {} setzt alle Panes auf linear.
+    if preset.pane_scales is not None:
+        set_payload["pane_scales"] = normalize_pane_scales(preset.pane_scales)
+    _supabase_patch("pca_feature_sets", f"id=eq.{preset_name}", set_payload)
+
     _supabase_delete("pca_feature_set_members", f"set_id=eq.{preset_name}")
     
     for m in preset.members:
@@ -433,6 +457,27 @@ async def update_preset(preset_name: str, preset: PresetCreate):
         }
         _supabase_post("pca_feature_set_members", member_payload)
     return {"status": "success", "id": preset_name}
+
+@router.patch("/presets/{preset_name}/pane_scales")
+async def update_preset_pane_scales(preset_name: str, update: PaneScalesUpdate):
+    """Nur die Y-Achsen-Skalierung eines Presets aendern (Member bleiben unberuehrt).
+
+    Wird vom Chart-Viewer benutzt, wenn der Nutzer im Pane zwischen linear und
+    log umschaltet: der Agent schickt genau diesen Aufruf, damit die Einstellung
+    im Preset landet und beim naechsten Symbolwechsel/Preset-Apply wieder greift.
+
+    Die uebergebenen Panes werden in den bestehenden Stand gemerged - nicht
+    genannte Panes behalten ihre Skalierung.
+    """
+    rows = _supabase_get("pca_feature_sets", f"id=eq.{preset_name}&select=id,pane_scales")
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Preset '{preset_name}' not found.")
+
+    merged = normalize_pane_scales(rows[0].get("pane_scales"))
+    merged.update(normalize_pane_scales(update.pane_scales))
+    _supabase_patch("pca_feature_sets", f"id=eq.{preset_name}", {"pane_scales": merged})
+    return {"status": "success", "id": preset_name, "pane_scales": merged}
+
 
 @router.delete("/presets/{preset_name}")
 async def delete_preset(preset_name: str):
@@ -519,6 +564,9 @@ async def get_preset(preset_name: str):
         "description": preset.get("description", ""),
         "indicators": indicators,
         "topbar_metrics": preset.get("topbar_metrics", []),
+        # Y-Achsen-Skalierung je Pane: {"main": "log", "volume": "linear"}.
+        # Fehlende Panes = linear (Viewer-Default).
+        "pane_scales": normalize_pane_scales(preset.get("pane_scales")),
     }
 
 

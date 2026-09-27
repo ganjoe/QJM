@@ -1,0 +1,15 @@
+[Unit]
+Description=DeepSeek Harness (Native Host Instance)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/daniel
+ExecStart=/home/daniel/start-dsh-native.sh
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/daniel
+
+[Install]
+WantedBy=default.target

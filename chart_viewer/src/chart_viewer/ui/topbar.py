@@ -11,26 +11,32 @@ from chart_viewer.models.entities import TopBarBlock
 class TopBarWidget(QWidget):
     """Freeform grid widget displaying sanitized metadata and status blocks with optional TTL."""
 
+    # Info-Zeile: 22 px bold statt der alten 11 px. Die feste Hoehe waechst im
+    # selben Verhaeltnis mit, sonst schneidet das Label den groesseren Text ab.
+    FONT_SIZE_PX = 22
+    ROW_HEIGHT_PX = 68
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setFixedHeight(34)
+        self.setFixedHeight(self.ROW_HEIGHT_PX)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.layout = QGridLayout(self)
-        self.layout.setContentsMargins(8, 4, 8, 4)
+        self.layout.setContentsMargins(8, 8, 8, 8)
         self.layout.setSpacing(12)
         self._blocks: Dict[str, QLabel] = {}
 
         # Default dark styling
-        self.setStyleSheet("""
-            QWidget {
+        self.setStyleSheet(f"""
+            QWidget {{
                 background-color: #1E222D;
                 border-bottom: 1px solid #2A2E39;
-            }
-            QLabel {
+            }}
+            QLabel {{
                 color: #D1D4DC;
-                font-size: 11px;
+                font-size: {self.FONT_SIZE_PX}px;
+                font-weight: bold;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            }
+            }}
         """)
 
     def set_block(self, block: TopBarBlock | dict) -> None:

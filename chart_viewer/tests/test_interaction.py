@@ -269,7 +269,11 @@ def test_thin_indicator_line_is_crisp_one_pixel(qapp):
         with_line = render(crisp, True)
         without = render(crisp, False)
         per_col = []
-        for x in range(with_line.width()):
+        # Only the plot area: the Y-axis gutter carries the crosshair value
+        # boxes, and the extra "diag" box differs between the two renders.
+        from chart_viewer.ui.pane import Y_AXIS_WIDTH
+        chart_w = with_line.width() - int(Y_AXIS_WIDTH)
+        for x in range(chart_w):
             rows = 0
             for y in range(with_line.height()):
                 pa, pb = with_line.pixelColor(x, y), without.pixelColor(x, y)

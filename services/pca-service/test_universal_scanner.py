@@ -66,7 +66,7 @@ def run_all_tests():
     field_names = {f["name"] for f in fields}
     required = {
         "ticker", "close", "high", "low", "open", "volume",
-        "shares_outstanding", "currency", "eps", "revenue", "earnings",
+        "shares_outstanding", "currency", "eps", "revenue", "earnings", "next_earnings",
         "market_cap", "dcr", "wcr", "pe_ratio", "days_to_earnings",
         "price_to_sma50_pct", "price_to_sma200_pct",
     }
@@ -246,6 +246,15 @@ def run_all_tests():
     })
     if rec.get("days_to_earnings") != 15:
         fail(f"days_to_earnings falsch: {rec.get('days_to_earnings')}")
+    # next_earnings (vorwärtsgerichtet) muss Vorrang vor dem letzten Termin haben
+    past = (datetime.now(timezone.utc).date() - timedelta(days=40)).isoformat()
+    future = (datetime.now(timezone.utc).date() + timedelta(days=9)).isoformat()
+    rec2 = load_ticker_record("AAPL", {
+        "shares_outstanding": 3844000, "eps": 6.5, "currency": "USD",
+        "earnings": past + "T20:00:00+00:00", "next_earnings": future + "T20:00:00+00:00",
+    })
+    if rec2.get("days_to_earnings") != 9:
+        fail(f"next_earnings wird nicht bevorzugt: {rec2.get('days_to_earnings')}")
     if round(rec["close"] * 3844000, 2) != rec.get("market_cap"):
         fail(f"market_cap falsch: {rec.get('market_cap')} vs close={rec.get('close')}")
     ok()

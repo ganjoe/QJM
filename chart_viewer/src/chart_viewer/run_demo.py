@@ -9,11 +9,13 @@ from chart_viewer.transport.in_process import create_in_process_pair
 from chart_viewer.agent.agent_client import ChartAgent
 from chart_viewer.agent.synthetic_feed import generate_synthetic_bars
 from chart_viewer.ui.app import ViewerApp
+from chart_viewer.ui.theme import apply_dark_theme
 from chart_viewer.config import ViewerConfig
 
 
 def main():
     app = QApplication(sys.argv)
+    apply_dark_theme(app)
 
     viewer_transport, agent_transport = create_in_process_pair()
     agent = ChartAgent(transport=agent_transport)

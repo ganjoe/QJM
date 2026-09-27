@@ -291,6 +291,10 @@ export function registerAnalysisTools(server: McpServer) {
         "- 'minervini_trend': Minervini Trend Template (score 0-6, matched at >= 5: 200 SMA trending up, price above the 150 & 200 SMA, 50 SMA above the 150 & 200 SMA, >= 25% above the 52-week low, within 25% of the 52-week high). Needs 252 bars.\n" +
         "- 'sma_cross': 50/200 SMA golden cross active; score is the spread in percent. Needs 200 bars.\n" +
         "- 'phoenix': Phoenix — RS Rating Rebirth: the IBD Relative Strength rating (ibd_rs, 1-99) fell to or below 'rs_from' (default 30) at some point inside the last 'days' bars (default 20) and has since climbed to or above 'rs_to' (default 80). Flags relative-strength turnarounds from laggard to leadership. Params via scanner_params: { phoenix: { days, rs_from, rs_to } }. Score = RS rating on the matched bar. Needs 30 bars + the feature parquet.\n\n" +
+        "The three 'ww_bdoh_*' scanners use the stochastic with FIXED parameters period 10 / slowing 1 — the common 14/3/3 defaults are never used and conflicting scanner_params overrides (k_period/slowing) are refused and reported in the hit details.\n" +
+        "- 'ww_bdoh_1': Stochastik (10/1) — the fast %K crosses above 20. Only the transition bar is a signal (a bar that merely stays above 20 does not fire). Params via scanner_params: { ww_bdoh_1: { level: 20 } }. Score = %K on the trigger bar. Needs 12 bars.\n" +
+        "- 'ww_bdoh_2': Stochastik (10/1) — %K jumps from below 20 to above 80; the sub-20 reading may be at most 'max_gap_bars' bars old (default 1 = a direct one-bar jump). Params: { ww_bdoh_2: { low_level: 20, high_level: 80, max_gap_bars: 1 } }. Score = %K on the trigger bar. Needs 13 bars.\n" +
+        "- 'ww_bdoh_3': the FIRST ww_bdoh_2 jump since the most recent all-time high (highest high of the complete history; every new all-time high resets the count). Params: { ww_bdoh_3: { low_level: 20, high_level: 80, max_gap_bars: 1, min_history_bars: 252 } }. Score = %K on the trigger bar. Needs 253 bars — shorter histories are reported as skipped.\n" +
         "WHEN TO USE: whenever asked to screen or scan a watchlist/ticker list for a pattern, or to find out WHEN a setup triggered inside a period.\n" +
         "WHEN NOT TO USE: for raw candle history use `get_timeseries`; for the live price use `get_quote`.",
       inputSchema: {
@@ -680,7 +684,7 @@ export function registerAnalysisTools(server: McpServer) {
           const dte = r.days_to_earnings;
           const earn = dte !== null && dte !== undefined
             ? (dte > 0 ? `in ${dte}d` : (dte < 0 ? `vor ${-dte}d` : "heute"))
-            : (r.earnings ? String(r.earnings).slice(0, 10) : "-");
+            : (r.next_earnings || r.earnings ? String(r.next_earnings || r.earnings).slice(0, 10) : "-");
 
           return `| **${t}** | ${px} | ${cap} | ${dvol} | ${rs} | ${dcr} | ${wcr} | ${adr} | ${eps} | ${earn} |`;
         }).join("\n");
