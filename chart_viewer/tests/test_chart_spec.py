@@ -99,7 +99,29 @@ def _resolve_column(column):
     return column if column in COL_IDX else None
 
 
-def _no_calc(symbol, indicator_type, periods, timeframe, limit):
+def _calc_spec_for_sma(series):
+    """Testaufloesung wie der Orchestrator: sma_7 -> SMA mit Ergebnisname sma_7."""
+    column = str(series.get("column") or series.get("canonical_id") or "")
+    if column.startswith("sma_"):
+        return {
+            "indicator_type": "SMA",
+            "params": {"result": column, "period": int(column.split("_")[1])},
+        }
+    return None
+
+
+def _calc_spec_for_spread(series):
+    """Testaufloesung: Spread-Serie -> SPREAD-Auftrag aus calc_params."""
+    params = dict(series.get("calc_params") or {})
+    if str(series.get("calc_type") or "").upper() != "SPREAD":
+        return None
+    return {
+        "indicator_type": "SPREAD",
+        "params": {"a": params.get("a"), "b": params.get("b"), "mode": params.get("mode") or "rel"},
+    }
+
+
+def _no_calc(requests, symbol, timeframe, limit):
     raise AssertionError("calculate darf hier nicht aufgerufen werden")
 
 
@@ -318,12 +340,19 @@ def test_build_overlays_calculates_missing_columns():
     ts = [int(r[0]) for r in rows]
     calls = []
 
-    def fake_calc(symbol, indicator_type, periods, timeframe, limit):
-        calls.append((indicator_type, tuple(periods)))
-        return {"timestamps": ts, "series": {"sma_7": [None, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]}}
+    def fake_calc(requests, symbol, timeframe, limit):
+        calls.append(tuple(r["key"] for r in requests))
+        return {
+            "series": {
+                r["key"]: {"timestamps": ts, "values": [None, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]}
+                for r in requests
+            },
+            "errors": [],
+        }
 
-    built = chart_spec.build_overlays(spec, _bars(rows), rows, COL_IDX, _resolve_column, fake_calc, "NVDA", "1D", 2000)
-    assert calls == [("SMA", (7,))]
+    built = chart_spec.build_overlays(spec, _bars(rows), rows, COL_IDX, _resolve_column, fake_calc,
+                                      "NVDA", "1D", 2000, calc_spec_for=_calc_spec_for_sma)
+    assert calls == [("sma_7",)]
     line = [ov for ov in built["overlays"] if ov["overlay_id"] == "sma_7"][0]
     assert len(line["values"]) == 7  # der None-Wert fehlt
     assert built["missing"] == []
@@ -562,6 +591,74 @@ def test_invalid_pane_range_is_reported():
     meta = [p for p in built["panes"] if p["pane_id"] == "breite"][0]
     assert meta["range"] is None
     assert [w for w in built["warnings"] if w["code"] == "invalid_pane_range"]
+
+
+def test_spread_series_uses_its_own_timestamps_and_reports_partial_history():
+    preset = {
+        "id": "spread", "display_name": "SPY-RSP", "role": "value",
+        "series": [{
+            "canonical_id": "spread_rel_SPY_RSP", "column": "spread_rel_SPY_RSP",
+            "calc_type": "SPREAD", "calc_params": {"a": "SPY", "b": "RSP", "mode": "rel"},
+            "style": {"color": "#2962FF"},
+        }],
+        "refs": [{"value": 0}], "derives": [], "zones": [],
+    }
+    spec = chart_spec.normalize_chart_spec(
+        {"id": "x", "panes": [{"pane_id": "spread", "pane_preset_id": "p", "preset": preset}]}
+    )
+    rows = _rs_rows()
+    ts = [int(r[0]) for r in rows]
+    seen = {}
+
+    def calc(requests, symbol, timeframe, limit):
+        seen["requests"] = requests
+        # Erster Bar fehlt (Leg erst spaeter gelistet) -> partial_history
+        return {
+            "series": {
+                r["key"]: {"timestamps": ts[1:], "values": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]}
+                for r in requests
+            },
+            "errors": [],
+        }
+
+    built = chart_spec.build_overlays(spec, _bars(rows), rows, COL_IDX, _resolve_column, calc,
+                                      "SPY", "1D", 2000, calc_spec_for=_calc_spec_for_spread)
+    assert seen["requests"][0]["indicator_type"] == "SPREAD"
+    assert seen["requests"][0]["key"] == "spread_rel_SPY_RSP"
+    line = [ov for ov in built["overlays"] if ov["overlay_id"] == "spread_rel_SPY_RSP"][0]
+    assert line["values"][0]["value"] == 1.0
+    assert any(w["code"] == "partial_history" for w in built["warnings"])
+    # Nullinie aus refs bleibt erhalten
+    assert any(ov["type"] == "level" and ov["values"][0]["value"] == 0.0 for ov in built["overlays"])
+
+
+def test_calc_errors_become_warnings():
+    preset = {
+        "id": "spread", "display_name": "SPY-RSP", "role": "value",
+        "series": [{
+            "canonical_id": "spread_rel_SPY_IWM", "column": "spread_rel_SPY_IWM",
+            "calc_type": "SPREAD", "calc_params": {"a": "SPY", "b": "IWM", "mode": "rel"},
+            "style": {"color": "#FF9800"},
+        }],
+        "refs": [], "derives": [], "zones": [],
+    }
+    spec = chart_spec.normalize_chart_spec(
+        {"id": "x", "panes": [{"pane_id": "spread", "pane_preset_id": "p", "preset": preset}]}
+    )
+    rows = _rs_rows()
+
+    def calc(requests, symbol, timeframe, limit):
+        return {
+            "series": {},
+            "errors": [{"key": r["key"], "code": "unknown_instrument", "detail": "Leg ohne Daten: IWM"}
+                       for r in requests],
+        }
+
+    built = chart_spec.build_overlays(spec, _bars(rows), rows, COL_IDX, _resolve_column, calc,
+                                      "SPY", "1D", 2000, calc_spec_for=_calc_spec_for_spread)
+    codes = {w["code"] for w in built["warnings"]}
+    assert "unknown_instrument" in codes
+    assert built["missing"] == ["spread_rel_SPY_IWM"] or "spread_rel_SPY_IWM" in built["missing"]
 
 
 def test_build_overlays_uses_the_overrides():

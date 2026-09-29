@@ -3,7 +3,8 @@
 **Erstellt:** 21.09.2026
 **Auftrag:** Code des Feature-Service ins QJM-Projekt überführen — **ohne** Legacy-Ballast
 (insbesondere ohne Bezüge auf das `/openbrain/`-Projekt).
-**Status:** Plan. Es wurde **nichts** verschoben, geschrieben oder gestoppt.
+**Status:** ✅ **umgesetzt am 29.09.2026** — Ergebnis siehe [03-aequivalenzprotokoll.md](03-aequivalenzprotokoll.md) und [04-abnahmeprotokoll.md](04-abnahmeprotokoll.md).
+Dieses Dokument bleibt als Entscheidungsgrundlage (E1–E7, L1–L12) stehen; der Zeitplan und die Zeitschätzung sind historisch.
 
 ---
 

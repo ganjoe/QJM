@@ -344,16 +344,22 @@ def build_overlays(
     rows: List[List[Any]],
     col_idx: Dict[str, int],
     resolve_column: Callable[[str], Optional[str]],
-    calculate: Callable[..., Dict[str, Any]],
-    symbol: str,
-    timeframe: str,
-    limit: int,
+    calculate: Optional[Callable[..., Dict[str, Any]]] = None,
+    symbol: str = "",
+    timeframe: str = "1D",
+    limit: int = 2000,
+    calc_spec_for: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     """Chart-Definition + Datenzeilen -> Overlays, Pane-Metadaten, Skalen.
 
-    Fehlende Spalten werden gebuendelt on-the-fly berechnet (SMA/EMA/Bollinger/
-    ADR). Was auch dann fehlt, landet in missing und wird im Topbar ausgewiesen -
-    eine Pane bleibt nie stillschweigend leer.
+    Die Quelle einer Serie entscheidet der Aufrufer, nicht diese Funktion:
+      resolve_column(column)  -> Parquet-Spalte (gewinnt immer, wenn vorhanden)
+      calc_spec_for(series)   -> {"indicator_type", "params"} fuer die Rechnung
+      calculate(requests, ...) -> {"series": {key: {timestamps, values}}, "errors": []}
+
+    Diese Funktion raet damit keine Namen mehr (frueher: _calc_spec/_calc_key per
+    Regex). Was fehlt, landet in missing UND im Warnkanal - eine Pane bleibt nie
+    stillschweigend leer.
     """
     ts_of_idx = [int(r[col_idx["timestamp"]]) for r in rows]
     overlays: List[Dict[str, Any]] = []
@@ -363,7 +369,9 @@ def build_overlays(
     warnings: List[Dict[str, Any]] = list(spec.get("override_warnings") or [])
 
     plan: List[Dict[str, Any]] = []
-    pending: Dict[str, set] = {}
+    # Eine Rechnung je Serie, Schluessel = canonical_id (der Aufrufer benennt
+    # seine Reihe, damit niemand Ergebnisnamen raten muss).
+    pending: Dict[str, Dict[str, Any]] = {}
     for pane in spec["panes"]:
         preset = pane["preset"]
         pane_id = pane["pane_id"]
@@ -401,27 +409,72 @@ def build_overlays(
             resolved = resolve_column(column)
             entry = {"pane_id": pane_id, "series": series, "column": column, "resolved": resolved}
             if resolved is None:
-                spec_calc = _calc_spec(column)
-                if spec_calc:
-                    entry["calc"] = spec_calc
-                    pending.setdefault(spec_calc["indicator_type"], set()).add(spec_calc["period"])
+                calc = calc_spec_for(series) if calc_spec_for else None
+                if calc:
+                    key = str(series.get("canonical_id") or column)
+                    request = {
+                        "key": key,
+                        "indicator_type": str(calc.get("indicator_type") or "").upper(),
+                        "params": dict(calc.get("params") or {}),
+                        "pane_id": pane_id,
+                    }
+                    entry["calc"] = request
+                    pending[key] = request
+                    # Band-Serien brauchen die untere Linie aus derselben Rechnung:
+                    # eine zusaetzliche Reihe mit gleichem Typ, anderem Ergebnisnamen
+                    # (der Rechner liefert oben und unten in einem Aufruf).
+                    result_name = str(request["params"].get("result") or "")
+                    if result_name.endswith("_upper"):
+                        lower = result_name[: -len("_upper")] + "_lower"
+                        lower_key = key + "__lower"
+                        pending[lower_key] = {
+                            "key": lower_key,
+                            "indicator_type": request["indicator_type"],
+                            "params": {**request["params"], "result": lower},
+                            "pane_id": pane_id,
+                            "sibling": key,
+                        }
                 else:
                     missing.append(column)
                     _add_warning(warnings, "unknown_column", column, pane_id)
             plan.append(entry)
 
-    calculated: Dict[str, List[Optional[float]]] = {}
-    calc_ts: List[int] = []
-    for indicator_type, periods in pending.items():
+    calculated: Dict[str, Dict[str, Any]] = {}
+    first_bar_ts = int(bars[0]["t_open"]) if bars else 0
+    if pending and calculate:
+        requests = list(pending.values())
         try:
-            result = calculate(symbol, indicator_type, sorted(periods), timeframe, limit)
-            calc_ts = result.get("timestamps") or calc_ts
-            calculated.update(result.get("series") or {})
+            result = calculate(requests, symbol, timeframe, limit) or {}
         except Exception as exc:  # pragma: no cover - Netzwerkfehler
-            logger.error("On-the-fly %s fehlgeschlagen: %s", indicator_type, exc)
+            logger.error("On-the-fly-Rechnung fehlgeschlagen: %s", exc)
+            result = {
+                "series": {},
+                "errors": [
+                    {"key": r["key"], "code": "calculation_failed", "detail": str(exc)[:200]}
+                    for r in requests
+                ],
+            }
+        calculated = result.get("series") or {}
+        reported = set()
+        for err in result.get("errors") or []:
+            key = str(err.get("key") or "")
+            reported.add(key)
+            pane_of = str((pending.get(key) or {}).get("pane_id") or "")
+            _add_warning(warnings, str(err.get("code") or "calculation_failed"), key, pane_of)
+        for key, request in pending.items():
+            item = calculated.get(key)
+            if item is None:
+                if key not in reported:
+                    _add_warning(warnings, "calculation_failed", key, str(request.get("pane_id") or ""))
+                continue
+            ts_list = item.get("timestamps") or []
+            if first_bar_ts and ts_list and int(ts_list[0]) > first_bar_ts:
+                # Reicht die Reihe nicht bis zum ersten Fenster-Bar zurueck (z. B.
+                # Leg erst spaeter gelistet), wird das gemeldet - nicht still gekappt.
+                _add_warning(warnings, "partial_history", key, str(request.get("pane_id") or ""))
 
     for entry in plan:
-        values = _column_values(entry, rows, col_idx, calculated, calc_ts)
+        values = _column_values(entry, rows, col_idx, calculated)
         # Werte ausserhalb der geladenen Bars (z. B. aus einer Berechnung mit
         # anderem Zeitfenster) wuerden beim Zeichnen ins Leere greifen.
         if values:
@@ -625,30 +678,18 @@ def diff_chart_specs(
     return result
 
 
-def _calc_spec(column: str) -> Optional[Dict[str, Any]]:
-    for pattern, indicator_type in (
-        (r"^(?:ma_)?sma_(\d+)$", "SMA"),
-        (r"^(?:ma_)?ema_(\d+)$", "EMA"),
-        (r"^adr_(\d+)_pct$", "ADR_PCT"),
-        (r"^adr_(\d+)_sma$", "ADR_PCT"),
-    ):
-        match = re.match(pattern, column)
-        if match:
-            return {"indicator_type": indicator_type, "period": int(match.group(1))}
-    match = re.match(r"^bb_(\d+)(?:_upper)?$", column)
-    if match:
-        return {"indicator_type": "BOLLINGER", "period": int(match.group(1))}
-    return None
-
-
 def _column_values(
     entry: Dict[str, Any],
     rows: List[List[Any]],
     col_idx: Dict[str, int],
-    calculated: Dict[str, List[Optional[float]]],
-    calc_ts: List[int],
+    calculated: Dict[str, Dict[str, Any]],
 ) -> Optional[List[Tuple[int, float]]]:
-    """Werte einer Serie als (bar_index, value) - aus Parquet oder Berechnung."""
+    """Werte einer Serie als (bar_index, value) - aus Parquet oder Berechnung.
+
+    Eine berechnete Reihe bringt ihre EIGENEN timestamps mit und wird darueber
+    auf die Bars des Fensters abgebildet (der Spread hat z. B. nur die
+    gemeinsamen Handelstage beider Legs - eine Luecke bleibt eine Luecke).
+    """
     series = entry["series"]
     resolved = entry.get("resolved")
     column = str(series.get("column") or entry["column"])
@@ -668,38 +709,30 @@ def _column_values(
 
     if not calc:
         return None
-    values = calculated.get(_calc_key(calc))
-    if values is None:
-        return None
-    ts_index = {int(t): i for i, t in enumerate(calc_ts)}
+    item = calculated.get(calc["key"]) or {}
+    ts_index = {int(r[col_idx["timestamp"]]): i for i, r in enumerate(rows)}
     out = []
-    for pos, value in enumerate(values):
-        if value is None or pos >= len(calc_ts):
+    for t, value in zip(item.get("timestamps") or [], item.get("values") or []):
+        if value is None:
             continue
-        bar_index = ts_index.get(int(calc_ts[pos]))
+        bar_index = ts_index.get(int(t))
         if bar_index is not None:
             out.append((bar_index, float(value)))
     if column.endswith("_upper"):
-        lower_key = "bb_" + str(calc["period"]) + "_lower"
-        lower_values = calculated.get(lower_key)
-        if lower_values is not None:
-            series["column2"] = lower_key
-            series["values2"] = [
-                (ts_index[int(t)], float(v))
-                for t, v in zip(calc_ts, lower_values)
-                if v is not None and int(t) in ts_index
-            ]
+        # Die untere Linie kommt aus derselben Rechnung (eigene Reihe mit
+        # gleichem indicator_type, Ergebnisname ..._lower).
+        lower_item = calculated.get(calc["key"] + "__lower") or {}
+        pairs = []
+        for t, value in zip(lower_item.get("timestamps") or [], lower_item.get("values") or []):
+            if value is None:
+                continue
+            bar_index = ts_index.get(int(t))
+            if bar_index is not None:
+                pairs.append((bar_index, float(value)))
+        if pairs:
+            series["column2"] = column.replace("_upper", "_lower")
+            series["values2"] = pairs
     return out
-
-
-def _calc_key(calc: Dict[str, Any]) -> str:
-    if calc["indicator_type"] == "BOLLINGER":
-        return "bb_" + str(calc["period"]) + "_upper"
-    if calc["indicator_type"] == "ADR_PCT":
-        return "adr_" + str(calc["period"]) + "_pct"
-    if calc["indicator_type"] == "SMA":
-        return "sma_" + str(calc["period"])
-    return "ema_" + str(calc["period"])
 
 
 def _points_for(

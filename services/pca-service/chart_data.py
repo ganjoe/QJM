@@ -17,6 +17,22 @@ MAX_CANDLE_LIMIT = int(os.environ.get("MAX_CANDLE_LIMIT", "10000"))
 BASE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
 
+def normalize_ts(value) -> int:
+    """Epoch-Sekunden aus einem Parquet-Zeitstempel (ms -> s, datetime -> s).
+
+    EINE Stelle fuer beide Endpunkte (Chartdaten und On-the-fly-Rechnung):
+    die Regel stand vorher nur inline in read_chart_data, waehrend
+    load_raw_ohlcv in indicators.py die Rohwerte durchreichte - bei
+    Millisekunden-Dateien haette der Join auf timestamp still nicht gegriffen.
+    """
+    if hasattr(value, "timestamp"):
+        return int(value.timestamp())
+    ts = int(value)
+    if ts > 10_000_000_000:
+        ts //= 1000
+    return ts
+
+
 def _parquet_path(symbol: str, timeframe: str = "1D", features: bool = False) -> Path:
     suffix = f"{timeframe}_features" if features else timeframe
     return PARQUET_BASE / symbol.upper() / f"{suffix}.parquet"
@@ -74,12 +90,7 @@ def read_chart_data(symbol: str, timeframe: str = "1D", limit: int = DEFAULT_CAN
         formatted_data = []
         for r in rows:
             row_list = list(r)
-            ts = row_list[0]
-            if hasattr(ts, "timestamp"):
-                ts = int(ts.timestamp())
-                row_list[0] = ts
-            elif isinstance(ts, int) and ts > 10000000000:
-                row_list[0] = int(ts / 1000)
+            row_list[0] = normalize_ts(row_list[0])
             formatted_data.append(row_list)
 
         # Staleness analysis for features
@@ -227,6 +238,18 @@ def _supabase_post(table: str, payload: dict):
         if hasattr(e, 'response') and e.response:
             logger.error("Response: %s", e.response.text)
         raise HTTPException(status_code=500, detail=f"Database insert failed: {e}")
+
+def _supabase_upsert(table: str, payload: dict):
+    """Insert oder Update ueber den Primary Key (fuer idempotentes Minting)."""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {**_supabase_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"}
+    try:
+        resp = httpx.post(url, headers=headers, json=payload, timeout=5.0)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error("Supabase UPSERT failed (%s): %s", table, e)
+        raise HTTPException(status_code=500, detail=f"Database upsert failed: {e}")
+
 
 def _supabase_patch(table: str, params: str, payload: dict):
     url = f"{SUPABASE_URL}/rest/v1/{table}?{params}"

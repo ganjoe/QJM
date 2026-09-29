@@ -1,0 +1,14 @@
+# Laufzeit- und Testabhaengigkeiten des QJM feature-service.
+# Die numerischen Pins sind bewusst identisch zum Alt-Dienst, damit die Feature-Werte
+# bit-identisch bleiben (siehe README, Abschnitt "Bewusst entfernt").
+fastapi==0.135.1
+uvicorn==0.41.0
+pandas==3.0.1
+numpy==2.4.3
+pyarrow==23.0.1
+pydantic==2.12.5
+pydantic_core==2.41.5
+starlette==0.52.1
+typing_extensions==4.15.0
+httpx==0.28.1
+pytest==9.0.2

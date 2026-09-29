@@ -189,7 +189,23 @@ fuenf eingefrorene Handelstage. Fix = Patch 3 (`apply_breadth_patch3.py`: Dedup 
 `calculator._calc_breadth_sma_raw` und `market_breadth._flags_for_window`) — **noch nicht angewendet**,
 die Sandbox-Freigabe fuer den Schreibzugriff ausserhalb des Workspace lief in den Timeout.
 
-**Befund 2 — die `$STATS`-Zusatzspalten sind NICHT brauchbar (offen):**
+**Befund 2 GELOEST und VERIFIZIERT (2026-09-29, ~21:05):** Zwei Fehler in *meinen* Patches, beide behoben:
+(a) der Aggregations-Schluessel war um `shift` verschoben (`int(k) * 86400` statt `int(k + shift) * 86400`) -
+die Zeile fuer heute griff auf den Eintrag von ~2018 zu; (b) Patch 3 hatte beim Umbau von
+`_flags_for_window` die Funktion `process_ticker_file` **mitgeloescht** → der Batch loggte
+`Failed to generate market breadth: name 'process_ticker_file' is not defined`, die `$STATS`-Datei
+wurde nie neu geschrieben (deshalb blieben die alten falschen Werte stehen). Patch 4 hat die Funktion
+wiederhergestellt. Ergebnis nach dem Batch (Generator laeuft in ~11 s):
+
+| Tag | `$STATS.breadth_40_pct` | Ticker-Spalte | `$STATS.breadth_200_pct` | Ticker-Spalte |
+| :-- | :-- | :-- | :-- | :-- |
+| 2026-09-29 (live) | 27,40 | 27,37 | 41,80 | 41,80 |
+| 2026-09-28 | 28,93 | 28,93 | 43,04 | 43,04 |
+| 2026-09-26 | 33,29 | 33,29 | 44,79 | 44,79 |
+
+`percentage` (50er, Altbestand) unveraendert. **Damit ist die Breiten-Kette vollstaendig verifiziert.**
+
+**Befund 2 alt (historisch) — die `$STATS`-Zusatzspalten waren nicht brauchbar:**
 `breadth_40_pct` zeigt 48,23 % (Vortag) bzw. 54,29 % (letzter Tag) gegen ~29 % aus der Ticker-Spalte;
 `count_40=1.639` impliziert einen Nenner von nur ~3.400 Tickern (erwartet ~13.800 nach Stichprobe:
 78 % der Ticker haben ein volles 40er-Fenster). `breath_200_pct` ist am letzten Tag `None`, obwohl der

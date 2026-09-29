@@ -2,6 +2,8 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
+
+from chart_data import normalize_ts
 import numpy as np
 import pandas as pd
 import duckdb
@@ -24,13 +26,27 @@ class IndicatorRequest(BaseModel):
     timeframe: str = "1D"
     limit: int = Field(default=DEFAULT_CANDLE_LIMIT, ge=1, le=MAX_CANDLE_LIMIT)
     source: str = Field(default="close", description="Column to calculate on: close, open, high, low, volume, or any feature column like breadth_40_pct")
-    indicator_type: str = Field(..., description="SMA, EMA, BOLLINGER, STOCHASTIC, ADR_PCT, or DAYS_BACK")
+    # Im Batch-Modus nicht noetig: dort traegt jeder Request seinen eigenen Typ.
+    # Der Altpfad (ohne requests) prueft weiterhin, dass er gesetzt ist.
+    indicator_type: Optional[str] = Field(default=None, description="SMA, EMA, BOLLINGER, STOCHASTIC, ADR_PCT, or DAYS_BACK")
     period: Optional[int] = Field(default=None, description="Single lookback period (e.g. 20)")
     periods: Optional[List[int]] = Field(default=None, description="Multiple lookback periods for batch calculation (e.g. [10, 20, 50, 200])")
     std_dev: Optional[float] = Field(default=2.0, description="Standard deviation multiplier for Bollinger Bands")
     k_period: Optional[int] = Field(default=None, description="Stochastic %K lookback period (e.g. 14)")
     d_period: Optional[int] = Field(default=None, description="Stochastic %D smoothing period (e.g. 3)")
     slowing: Optional[int] = Field(default=None, description="Stochastic %K slowing period (e.g. 3)")
+    # Batch-Form (Plan CHARTVIEWER_SPREAD_PANES_PLAN.md, Phase 2): der Aufrufer
+    # benennt seine Reihen selbst, ein Render braucht EINEN Aufruf statt vier.
+    requests: Optional[List["CalcRequest"]] = Field(
+        default=None, description="Batch: Liste aus {key, indicator_type, params}. Ohne dieses Feld bleibt das Altverhalten unveraendert."
+    )
+
+
+class CalcRequest(BaseModel):
+    """Eine angeforderte Reihe im Batch-Modus (Schluessel vergibt der Aufrufer)."""
+    key: str = Field(..., description="Name, unter dem die Reihe zurueckkommt (z. B. 'spread_rel_SPY_RSP')")
+    indicator_type: str = Field(..., description="SPREAD | SMA | EMA | BOLLINGER | ADR_PCT | STOCHASTIC | DAYS_BACK")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Parameter, z. B. {a, b, mode} oder {window, source}")
 
 
 def load_raw_ohlcv(symbol: str, timeframe: str = "1D", limit: int = DEFAULT_CANDLE_LIMIT, lookback_buffer: Optional[int] = None) -> pd.DataFrame:
@@ -190,8 +206,156 @@ def calculate_days_back(df: pd.DataFrame, source: str) -> Dict[str, List[Optiona
     return {"days_back": [None if np.isnan(v) else float(v) for v in days_back]}
 
 
+_SPREAD_MODES = ("rel", "ratio", "abs")
+
+
+class CalcDataError(Exception):
+    """Datenproblem EINER angeforderten Reihe - wird zu errors[] statt zu HTTP 4xx."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+def compute_spread(df_a: pd.DataFrame, df_b: pd.DataFrame, mode: str):
+    """Spread zweier Instrumente, ankerfrei und ohne Forward-Fill.
+
+    rel   = 100 * (a / b - 1)   Vorzeichen, 0 = Paritaet (Default)
+    ratio = a / b               immer positiv
+    abs   = a - b               Kurspunkte
+    Inner Join auf timestamp: eine Leg ohne Bar erzeugt eine Luecke, keinen
+    erfundenen Wert. b == 0 oder NaN -> kein Punkt (niemals 0).
+    """
+    a = df_a[["timestamp", "close"]].rename(columns={"close": "a"})
+    b = df_b[["timestamp", "close"]].rename(columns={"close": "b"})
+    a = a.assign(timestamp=[normalize_ts(x) for x in a["timestamp"]])
+    b = b.assign(timestamp=[normalize_ts(x) for x in b["timestamp"]])
+    joined = a.merge(b, on="timestamp", how="inner").sort_values("timestamp")
+    if joined.empty:
+        raise CalcDataError("no_common_history", "keine gemeinsamen Handelstage beider Legs")
+    av = joined["a"].to_numpy(dtype=float)
+    bv = joined["b"].to_numpy(dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if mode == "rel":
+            vals = 100.0 * (av / bv - 1.0)
+        elif mode == "ratio":
+            vals = av / bv
+        else:
+            vals = av - bv
+    vals = np.where(np.isfinite(vals), vals, np.nan)
+    ts = [int(x) for x in joined["timestamp"]]
+    out = [None if np.isnan(v) else round(float(v), 4) for v in vals]
+    return ts, out
+
+
+def _timestamps_of(df: pd.DataFrame, limit: int):
+    tail = df.tail(min(int(limit), len(df)))
+    return [normalize_ts(x) for x in tail["timestamp"]]
+
+
+def _indicator_series(ind_type: str, df: pd.DataFrame, src: str, periods, std_dev=None,
+                      k_period=None, d_period=None, slowing=None) -> Dict[str, List[Optional[float]]]:
+    """Die EINE Rechenstelle je Indikator-Typ - Altpfad und Batch nutzen sie."""
+    if ind_type == "SMA":
+        if not periods:
+            raise HTTPException(status_code=400, detail="Für SMA muss mindestens eine Periode (period oder periods) angegeben werden.")
+        return calculate_sma(df, src, periods)
+    if ind_type == "EMA":
+        if not periods:
+            raise HTTPException(status_code=400, detail="Für EMA muss mindestens eine Periode (period oder periods) angegeben werden.")
+        return calculate_ema(df, src, periods)
+    if ind_type == "BOLLINGER":
+        if not periods:
+            raise HTTPException(status_code=400, detail="Für BOLLINGER muss mindestens eine Periode (period oder periods) angegeben werden.")
+        return calculate_bollinger(df, src, periods, std_dev if std_dev is not None else 2.0)
+    if ind_type == "ADR_PCT":
+        if not periods:
+            raise HTTPException(status_code=400, detail="Für ADR_PCT muss mindestens eine Periode (period oder periods) angegeben werden.")
+        return calculate_adr_pct(df, periods)
+    if ind_type == "STOCHASTIC":
+        return calculate_stochastic(df, k_period or 14, d_period or 3, slowing or 3)
+    if ind_type == "DAYS_BACK":
+        return calculate_days_back(df, src)
+    raise HTTPException(status_code=400, detail=f"Unbekannter indicator_type '{ind_type}'. Gültig: SMA, EMA, BOLLINGER, STOCHASTIC, ADR_PCT, DAYS_BACK.")
+
+
+def _periods_from(params: Dict[str, Any]):
+    periods = [int(p) for p in (params.get("periods") or []) if int(p) > 0]
+    if not periods and params.get("period"):
+        periods = [int(params["period"])]
+    return periods
+
+
+def _calculate_request_batch(req: "IndicatorRequest") -> Dict[str, Any]:
+    """Batch: je Request ein Schluessel; Datenprobleme landen in errors[] (HTTP 200).
+
+    Der Aufrufer benennt seine Reihe (key), damit der Viewer keine Ergebnisnamen
+    raten muss. Jede Reihe bringt ihre eigenen timestamps mit (beim Spread sind
+    das die gemeinsamen Handelstage beider Legs).
+    """
+    tf = req.timeframe.upper()
+    limit = min(max(1, req.limit), MAX_CANDLE_LIMIT)
+    symbol = (req.symbol or "").upper()
+    out_series: Dict[str, Any] = {}
+    latest: Dict[str, Any] = {}
+    errors: List[Dict[str, Any]] = []
+    for item in req.requests or []:
+        it = (item.indicator_type or "").upper()
+        p = dict(item.params or {})
+        try:
+            if it == "SPREAD":
+                a = str(p.get("a") or "").upper()
+                b = str(p.get("b") or "").upper()
+                mode = str(p.get("mode") or "rel").lower()
+                if not a or not b:
+                    raise CalcDataError("invalid_request", "SPREAD braucht params.a und params.b")
+                if mode not in _SPREAD_MODES:
+                    raise CalcDataError("invalid_request", f"unbekannter Spread-Modus '{mode}' (rel|ratio|abs)")
+                try:
+                    df_a = load_raw_ohlcv(a, tf, limit)
+                    df_b = load_raw_ohlcv(b, tf, limit)
+                except HTTPException as exc:
+                    raise CalcDataError("unknown_instrument", f"Leg ohne Daten ({tf}): {exc.detail}")
+                ts, values = compute_spread(df_a, df_b, mode)
+                ts, values = ts[-limit:], values[-limit:]
+            else:
+                df = load_raw_ohlcv(symbol, tf, limit)
+                src = str(p.get("source") or req.source or "close").lower()
+                col_map = {c.lower(): c for c in df.columns}
+                if src not in col_map:
+                    raise CalcDataError("unknown_source_column", f"Quelle '{src}' fehlt in den Daten")
+                series_dict = _indicator_series(
+                    it, df, src, _periods_from(p), p.get("std_dev"),
+                    p.get("k_period"), p.get("d_period"), p.get("slowing"),
+                )
+                values = next(iter(series_dict.values()))
+                ts = _timestamps_of(df, limit)
+                values = values[-len(ts):]
+            out_series[item.key] = {"timestamps": ts, "values": values}
+            latest[item.key] = values[-1] if values else None
+        except CalcDataError as exc:
+            errors.append({"key": item.key, "code": exc.code, "detail": exc.detail})
+        except HTTPException as exc:
+            errors.append({"key": item.key, "code": "no_data", "detail": str(exc.detail)})
+        except Exception as exc:  # noqa: BLE001 - eine kaputte Reihe darf den Rest nicht kippen
+            errors.append({"key": item.key, "code": "calculation_failed", "detail": str(exc)[:200]})
+    return {
+        "symbol": symbol or None,
+        "timeframe": tf,
+        "count": len(out_series),
+        "series": out_series,
+        "latest_values": latest,
+        "errors": errors,
+    }
+
+
 @router.post("/indicators/calculate")
 async def calculate_indicator_endpoint(req: IndicatorRequest):
+    if req.requests:
+        return _calculate_request_batch(req)
+    if not req.indicator_type:
+        raise HTTPException(status_code=400, detail="indicator_type fehlt (Altpfad) - oder requests[] fuer den Batch-Modus nutzen.")
     ind_type = req.indicator_type.upper()
     src = req.source.lower()
 
@@ -229,40 +393,9 @@ async def calculate_indicator_endpoint(req: IndicatorRequest):
     else:
         raise HTTPException(status_code=400, detail="Either 'symbol' or 'values' must be provided.")
 
-    series_dict = {}
-
-    if ind_type == "SMA":
-        if not periods:
-            raise HTTPException(status_code=400, detail="Für SMA muss mindestens eine Periode (period oder periods) angegeben werden.")
-        series_dict = calculate_sma(df, src, periods)
-
-    elif ind_type == "EMA":
-        if not periods:
-            raise HTTPException(status_code=400, detail="Für EMA muss mindestens eine Periode (period oder periods) angegeben werden.")
-        series_dict = calculate_ema(df, src, periods)
-
-    elif ind_type == "BOLLINGER":
-        if not periods:
-            raise HTTPException(status_code=400, detail="Für BOLLINGER muss mindestens eine Periode (period oder periods) angegeben werden.")
-        std = req.std_dev if req.std_dev is not None else 2.0
-        series_dict = calculate_bollinger(df, src, periods, std)
-
-    elif ind_type == "ADR_PCT":
-        if not periods:
-            raise HTTPException(status_code=400, detail="Für ADR_PCT muss mindestens eine Periode (period oder periods) angegeben werden.")
-        series_dict = calculate_adr_pct(df, periods)
-
-    elif ind_type == "STOCHASTIC":
-        k_p = req.k_period or 14
-        d_p = req.d_period or 3
-        sl = req.slowing or 3
-        series_dict = calculate_stochastic(df, k_p, d_p, sl)
-
-    elif ind_type == "DAYS_BACK":
-        series_dict = calculate_days_back(df, src)
-
-    else:
-        raise HTTPException(status_code=400, detail=f"Unbekannter indicator_type '{ind_type}'. Gültig: SMA, EMA, BOLLINGER, STOCHASTIC, ADR_PCT, DAYS_BACK.")
+    series_dict = _indicator_series(
+        ind_type, df, src, periods, req.std_dev, req.k_period, req.d_period, req.slowing
+    )
 
     # Slice to requested limit (from the end)
     req_limit = min(req.limit, len(df))

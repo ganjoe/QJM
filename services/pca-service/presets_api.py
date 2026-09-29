@@ -26,6 +26,7 @@ from chart_data import (
     _supabase_get,
     _supabase_patch,
     _supabase_post,
+    _supabase_upsert,
 )
 
 logger = logging.getLogger("pca.presets")
@@ -124,6 +125,9 @@ def _series_entry(feature: Dict[str, Any], member: Dict[str, Any]) -> Dict[str, 
         "alias": feature.get("alias"),
         "display_name": feature.get("display_name") or canonical_id,
         "calc_type": feature.get("calc_type"),
+        # calc_params muessen bis zum Viewer durch: dort entscheidet der
+        # calc_type (z. B. SPREAD) zusammen mit ihnen, WIE gerechnet wird.
+        "calc_params": feature.get("calc_params") or {},
         "mode": feature.get("mode"),
         "plot_type": feature.get("plot_type"),
         "style": _merge_style(feature, member.get("style_override")),
@@ -147,13 +151,72 @@ def _pane_summary(labels: List[str]) -> str:
 
 
 class PaneMember(BaseModel):
-    feature_id: str
+    """Eine Serie eines Panes - ENTWEDER bestehendes Feature ODER deklariert.
+
+    feature_id            -> bestehende Registry-Zeile (Spalte oder online)
+    calc_type+calc_params -> deklarierte, gerechnete Serie; der Service mintet
+                             die kanonische Id und legt die Registry-Zeile an.
+    Genau eines von beiden, sonst 422. Gespeichert wird immer eine feature_id
+    (der FK der Member-Tabelle bleibt unveraendert gueltig).
+    """
+    feature_id: Optional[str] = None
+    calc_type: Optional[str] = None
+    calc_params: dict = {}
     sort_order: int = 0
     style_override: dict = {}
     rules: dict = {}
     # Nur in der Altform (ChartPresetIn.members) benutzt: Ziel-Pane als String.
     # In einem Pane-Preset ist das Pane implizit - das Feld wird dort ignoriert.
     pane: Optional[str] = None
+
+
+def mint_derived_feature(calc_type: str, calc_params: dict, style: dict) -> dict:
+    """Registry-Zeile fuer eine deklarierte Serie - idempotent ueber die Id.
+
+    SPREAD: Id kodiert die Richtung (a - b), damit a/b nie vertauscht werden.
+    """
+    if calc_type != "SPREAD":
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported_calc_type: '{calc_type}' kann nicht deklariert werden (derzeit nur SPREAD).",
+        )
+    a = str(calc_params.get("a") or "").strip().upper()
+    b = str(calc_params.get("b") or "").strip().upper()
+    mode = str(calc_params.get("mode") or "rel").strip().lower()
+    if not a or not b:
+        raise HTTPException(status_code=422, detail="SPREAD braucht calc_params.a und calc_params.b.")
+    if mode not in ("rel", "ratio", "abs"):
+        raise HTTPException(status_code=422, detail=f"SPREAD-Modus '{mode}' unbekannt (rel|ratio|abs).")
+    canonical_id = f"spread_{mode}_{a}_{b}"
+    return {
+        "canonical_id": canonical_id,
+        "alias": canonical_id,
+        "display_name": f"{a} - {b} ({mode})",
+        "calc_type": "SPREAD",
+        "calc_params": {"a": a, "b": b, "mode": mode},
+        "plot_type": "sub_line",
+        "default_style": {
+            "color": style.get("color") or "#2962FF",
+            "width": style.get("width") or 2,
+        },
+        "mode": "online",
+    }
+
+
+def resolve_member_feature(member: PaneMember) -> str:
+    """Eingabeform -> kanonische feature_id (mintet bei Bedarf die Registry-Zeile)."""
+    has_id = bool(str(member.feature_id or "").strip())
+    has_calc = bool(str(member.calc_type or "").strip())
+    if has_id == has_calc:
+        raise HTTPException(
+            status_code=422,
+            detail="invalid_member: genau eines von feature_id oder calc_type+calc_params angeben.",
+        )
+    if has_id:
+        return str(member.feature_id).strip()
+    row = mint_derived_feature(str(member.calc_type).strip().upper(), member.calc_params or {}, member.style_override or {})
+    _supabase_upsert("pca_features", row)
+    return row["canonical_id"]
 
 
 class PanePresetIn(BaseModel):
@@ -191,12 +254,13 @@ def _store_pane_members(pane_id: str, members: List[PaneMember], replace: bool =
     if replace:
         _supabase_delete("pca_pane_preset_members", f"pane_preset_id=eq.{pane_id}")
     for idx, member in enumerate(members):
-        _auto_create_feature_if_missing(member.feature_id)
+        feature_id = resolve_member_feature(member)
+        _auto_create_feature_if_missing(feature_id)
         _supabase_post(
             "pca_pane_preset_members",
             {
                 "pane_preset_id": pane_id,
-                "feature_id": member.feature_id,
+                "feature_id": feature_id,
                 "sort_order": member.sort_order if member.sort_order else idx,
                 "style_override": member.style_override or {},
                 "rules": member.rules or {},

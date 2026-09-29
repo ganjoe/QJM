@@ -509,6 +509,34 @@ services:
           - llm-gw-mcp-drawio
 
   # ============================================
+  # Feature Service — technische Kennzahlen (Producer der *_features.parquet)
+  # Ersetzt den Alt-Dienst openbrain-features-service (Port 8003 bleibt gleich,
+  # damit der Trigger aus stock-data-node unveraendert funktioniert).
+  # ============================================
+  feature-service:
+    build:
+      context: ../services/feature-service
+      dockerfile: Dockerfile
+    image: qjm-feature-service:latest
+    container_name: qjm-feature-service
+    restart: unless-stopped
+    environment:
+      - APP_BASE_DIR=/app
+      - FEATURES_API_PORT=8003
+      - SUPABASE_URL=${SUPABASE_URL:-http://host.docker.internal:8001}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    volumes:
+      # Code/Konfiguration hot-editierbar wie pca-service
+      - ../services/feature-service/src:/app/src
+      - ../services/feature-service/config:/app/config
+      # Datenvertrag: liest <TICKER>/1D.parquet, schreibt <TICKER>/1D_features.parquet
+      - /home/daniel/stock-data-node/data:/app/data
+      - ../services/feature-service/logs:/app/logs
+    ports:
+      - "8003:8003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  # ============================================
   # Stock Data Node — OHLCV Market Data Pipeline
   # ============================================
   stock-data-node:

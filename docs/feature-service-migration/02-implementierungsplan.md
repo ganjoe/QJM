@@ -2,6 +2,7 @@
 
 **Erstellt:** 21.09.2026
 **Gehört zu:** [`01-migrationsplan.md`](01-migrationsplan.md) (Entscheidungen E1–E7, Legacy-Liste L1–L12)
+**Status:** ✅ **umgesetzt am 29.09.2026** (Phasen 0–5; Phase 6 offen: Alt-Eintrag im openBrain-Compose, siehe [04-abnahmeprotokoll.md](04-abnahmeprotokoll.md) §6).
 **Charakter:** Ausführbarer Schritt-für-Schritt-Plan. Reihenfolge ist verbindlich.
 **Regel:** Nach jeder Phase wird das jeweilige Abnahmekriterium geprüft, **bevor** die
 nächste beginnt. Kein Phase-5-Cutover ohne bestandene Phase 4.

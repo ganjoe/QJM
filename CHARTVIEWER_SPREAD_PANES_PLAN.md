@@ -274,6 +274,24 @@ POST /api/indicators/calculate
 
 ---
 
+## 8a. Umsetzungsstand (Rev. 5, 2026-09-29 abends) — Phasen 1–4 gebaut und am lebenden System verifiziert
+
+| Phase | Zustand | Beleg |
+| :-- | :-- | :-- |
+| 1 Registry/Minting | **gebaut** — `PaneMember` akzeptiert `feature_id` ODER `calc_type`+`calc_params` (genau eines, sonst 422); `mint_derived_feature` + `resolve_member_feature`; `_series_entry` reicht `calc_params` durch | [presets_api.py](services/pca-service/presets_api.py); live: `POST /api/panes` mit Spread-Member hat `spread_rel_SPY_RSP` und `spread_rel_IWM_SPY` in `pca_features` angelegt |
+| 2 Rechenweg SPREAD | **gebaut** — `requests[]`-Envelope, `compute_spread` (rel/ratio/abs, Inner Join auf timestamp, kein Forward-Fill, b=0/NaN ⇒ Luecke), `errors[]` statt 4xx fuer Datenprobleme, `normalize_ts` als eine Stelle | [indicators.py](services/pca-service/indicators.py), [chart_data.py](services/pca-service/chart_data.py); Smoke-Test: 3 Reihen + `unknown_instrument` fuer ein fehlendes Leg |
+| 3 Viewer-Naht | **gebaut** — `_calc_spec`/`_calc_key` entfernt; `build_overlays` bekommt `calculate(requests)` (ein Aufruf) + `calc_spec_for` (Keyword); jede Reihe bringt eigene `timestamps` mit; `errors[]` ⇒ `warnings[]`; `partial_history` neu | [chart_spec.py](chart_viewer/src/chart_viewer/chart_spec.py), [orchestrator.py](chart_viewer/src/chart_viewer/orchestrator.py); 33 Tests in [test_chart_spec.py](chart_viewer/tests/test_chart_spec.py) gruen |
+| 4 Panes + Chart | **gebaut** — `market_monitor__main` (nur SMA 50), `spx_equal_spread`, `small_vs_big`, `tc2000_breite`, `breadth_mm`; Chart `market_monitor` | `GET /api/charts/market_monitor`; `GET_CHART_STATE` zeigt 5 Panes |
+| E2E | **verifiziert** — `DISPLAY_STOCK SPY chart=market_monitor`: 12 Overlays, Warnungen nur `partial_history` (SPY−RSP-Linie deckt nicht das ganze 2000-Bar-Fenster, weil RSP spaeter beginnt); Zahlennachweis: Pane 265,84 vs Rechnung `100*(765,11/209,065-1)` = 265,80 | Screenshot `dsh_playground/screenshot_snap_20260929_191334_82c553_win_spy_1d.png` |
+
+**Deploy-Regel (wichtig):** `services/pca-service` und `chart_viewer/src` sind in ihre Container **gemountet** — ein `docker restart qjm-pca-service` bzw. `qjm-chart-viewer-server` genuegt, kein Rebuild (im Gegensatz zum features-service, dessen `src` im Image steckt).
+
+**Befund aus Phase 1:** `pca_features` hat einen **Unique-Index auf `(calc_type, calc_params)`**. Fuer Spreads unkritisch (Parameter unterscheiden sich), aber zwei Auspraegungen desselben Typs mit gleichen Parametern sind nicht als zwei Zeilen moeglich — `breadth_minervini_pct` brauchte deshalb `calc_params={aggregation: all, mode: pct}`.
+
+**Noch offen:** Phase 5a (Topbar-Katalog: `selectable`/`reason` aus dem Spalten-Check) ist **nicht** gebaut.
+
+---
+
 ## 9. Nicht-Ziele (bewusst, mit deinen Entscheidungen)
 
 - **Kein Prozentzeichen an Achse/Crosshair** (deine Entscheidung). Sachlich richtig waere es ohnehin keine Spread-Eigenschaft, sondern eine **allgemeine Pane-Eigenschaft** (`pane.params.unit`) — ADR ist genauso ein Prozentwert und haette denselben Anspruch. Spaeter, in einem eigenen Schritt.

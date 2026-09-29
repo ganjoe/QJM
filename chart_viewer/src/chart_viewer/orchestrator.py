@@ -181,6 +181,69 @@ def calculate_indicators_on_the_fly(
     return _pca_post("/api/indicators/calculate", payload)
 
 
+def calc_spec_from_series(series: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Serie -> Rechenauftrag fuer den On-the-fly-Endpunkt.
+
+    Die Registry (calc_type + calc_params) gewinnt; die Namens-Regex bleibt
+    Fallback fuer Serien ohne Registry-Zeile (Altdaten). Der Ergebnisname
+    ("result") wird mitgeschickt, damit der Viewer keine Schluessel raten muss.
+    """
+    ctype = str(series.get("calc_type") or "").strip().upper()
+    params = dict(series.get("calc_params") or {})
+    if ctype == "SPREAD":
+        return {
+            "indicator_type": "SPREAD",
+            "params": {
+                "a": str(params.get("a") or "").upper(),
+                "b": str(params.get("b") or "").upper(),
+                "mode": str(params.get("mode") or "rel").lower(),
+            },
+        }
+    column = str(series.get("column") or series.get("canonical_id") or "")
+    spec = _column_to_indicator_spec(column)
+    if not spec:
+        return None
+    source = str(params.get("source") or "close").lower()
+    if spec["indicator_type"] == "BOLLINGER":
+        return {
+            "indicator_type": "BOLLINGER",
+            "params": {"period": spec["period"], "source": source, "result": spec["result_col_upper"]},
+        }
+    return {
+        "indicator_type": spec["indicator_type"],
+        "params": {"period": spec["period"], "source": source, "result": spec["result_col"]},
+    }
+
+
+def calculate_indicator_requests(
+    requests: List[Dict[str, Any]],
+    symbol: str,
+    timeframe: str = "1D",
+    limit: int = DEFAULT_CHART_LIMIT,
+) -> Dict[str, Any]:
+    """EIN Aufruf fuer alle on-the-fly-Reihen eines Renders (Batch-Envelope).
+
+    Der Aufrufer benennt seine Reihen (key); Datenprobleme einer Reihe kommen
+    als errors[] zurueck und werden im Viewer zu warnings - kein stiller Ausfall.
+    """
+    return _pca_post(
+        "/api/indicators/calculate",
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "limit": limit,
+            "requests": [
+                {
+                    "key": str(r.get("key") or ""),
+                    "indicator_type": str(r.get("indicator_type") or "").upper(),
+                    "params": dict(r.get("params") or {}),
+                }
+                for r in requests
+            ],
+        },
+    )
+
+
 def _column_to_indicator_spec(column: str) -> Optional[Dict[str, Any]]:
     """Parse a column name like 'ma_sma_50' or 'sma_50' into an on-the-fly calculation spec.
 
@@ -559,10 +622,11 @@ def build_display_stock(
             rows,
             col_idx,
             resolve_column,
-            calculate_indicators_on_the_fly,
+            calculate_indicator_requests,
             symbol,
             timeframe,
             limit,
+            calc_spec_for=calc_spec_from_series,
         )
         overlays = built["overlays"]
         pane_scales = built["pane_scales"]
