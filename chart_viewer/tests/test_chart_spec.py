@@ -264,7 +264,8 @@ def test_build_overlays_rs_monitor():
     # Panes-Metadaten: genau die Definition - kein implizites Volumen-Pane.
     assert [p["pane_id"] for p in built["panes"]] == ["main", "rs"]
     assert built["panes"][1] == {"pane_id": "rs", "role": "value", "title": "RS-Monitor",
-                                 "weight": 3, "scale": "linear", "preset_id": "rs_monitor"}
+                                 "weight": 3, "scale": "linear", "preset_id": "rs_monitor",
+                                 "range": None}  # Vertrag: range ist immer da, None = Auto-Fit
     assert "volume_volume" not in by_id
     assert built["pane_scales"] == {"main": "log", "rs": "linear"}
     assert built["missing"] == []
@@ -534,6 +535,33 @@ def test_diff_chart_specs_detects_removed_and_override_changes():
     main = diff["changed"][0]
     assert main["pane_id"] == "main"
     assert main["fields"]["overrides"] == {"window": {}, "chart": {"title": "Neu"}}
+
+
+def _pane_range_spec(range_value):
+    preset = {
+        "id": "tc2000_breite", "display_name": "TC2000 Breite", "role": "value",
+        "series": [_series("breadth_40_pct")], "refs": [], "derives": [], "zones": [],
+        "params": {"range": range_value},
+    }
+    return chart_spec.normalize_chart_spec(
+        {"id": "x", "panes": [{"pane_id": "breite", "pane_preset_id": "tc2000_breite", "preset": preset}]}
+    )
+
+
+def test_pane_range_reaches_panes_meta():
+    built = chart_spec.build_overlays(_pane_range_spec([0, 100]), _bars(_rs_rows()), _rs_rows(),
+                                      COL_IDX, _resolve_column, _no_calc, "SPY", "1D", 2000)
+    meta = [p for p in built["panes"] if p["pane_id"] == "breite"][0]
+    assert meta["range"] == [0.0, 100.0]
+    assert not [w for w in built["warnings"] if w["code"] == "invalid_pane_range"]
+
+
+def test_invalid_pane_range_is_reported():
+    built = chart_spec.build_overlays(_pane_range_spec([0]), _bars(_rs_rows()), _rs_rows(),
+                                      COL_IDX, _resolve_column, _no_calc, "SPY", "1D", 2000)
+    meta = [p for p in built["panes"] if p["pane_id"] == "breite"][0]
+    assert meta["range"] is None
+    assert [w for w in built["warnings"] if w["code"] == "invalid_pane_range"]
 
 
 def test_build_overlays_uses_the_overrides():

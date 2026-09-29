@@ -19,6 +19,8 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from chart_viewer.models.validation import sanitize_pane_range
+
 logger = logging.getLogger("chart_viewer.chart_spec")
 
 VOLUME_PRESET = "builtin:volume"
@@ -366,6 +368,13 @@ def build_overlays(
         preset = pane["preset"]
         pane_id = pane["pane_id"]
         role = preset.get("role") or "any"
+        # Feste Y-Spanne aus dem Pane-Preset ("params.range", z. B. [0, 100] fuer
+        # eine Breiten-Pane). Fehlt sie, skaliert der Client automatisch; ist sie
+        # vorhanden aber unbrauchbar, wird das gemeldet statt still verworfen.
+        raw_range = (preset.get("params") or {}).get("range")
+        pane_range = sanitize_pane_range(raw_range)
+        if raw_range is not None and pane_range is None:
+            _add_warning(warnings, "invalid_pane_range", str(preset.get("id") or ""), pane_id)
         panes_meta.append(
             {
                 "pane_id": pane_id,
@@ -374,6 +383,7 @@ def build_overlays(
                 "weight": pane["weight"],
                 "scale": pane["scale"],
                 "preset_id": preset.get("id"),
+                "range": list(pane_range) if pane_range else None,
             }
         )
         pane_scales[pane_id] = pane["scale"]

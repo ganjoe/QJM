@@ -2,6 +2,12 @@
 
 **Stand:** 29.09.2026 · **Ziel:** Claude Code läuft auf dem QJM-Server und arbeitet wie DSH am Projekt `/home/daniel/QJM`, bedient über eine Website vom Client aus — ohne Arbeit in der Claude-CLI. Subscription: **Claude Pro**.
 
+> **Umsetzungsstand (29.09.2026, verifiziert).** Weg A läuft. Login (Pro/claude.ai), Workspace-Trust, `remoteControlAtStartup` und die systemd-User-Unit `claude-rc.service` sind eingerichtet; der Dienst läuft stabil und die Session **QJM** ist von claude.ai/code aus erreichbar. Ende-zu-Ende-Test bestanden: ein aus dem Browser gegebener Auftrag hat `dsh_playground/rc-smoke.txt` **auf dem Server** angelegt.
+>
+> Artefakte in `scripts/`: `claude-rc.sh` (Launcher), `claude-rc.service` (User-Unit), `setup-claude-rc.sh` (Einrichtung), `rc-status.sh` (Diagnose), `README-claude-rc.md` (Runbook).
+>
+> Zwei Erkenntnisse, die den Aufbau bestimmen: (1) `claude setup-token` ist für Remote Control **unbrauchbar** — es braucht einen Full-Scope-Login. (2) Ohne TTY bleibt der Server an der einmaligen Frage `Enable Remote Control? (y/n)` hängen und legt **nie** eine Session an; es gibt keinen `--yes`-Schalter, der Launcher beantwortet sie deshalb über einen FIFO.
+
 ---
 
 ## 1. Empfehlung in einem Absatz

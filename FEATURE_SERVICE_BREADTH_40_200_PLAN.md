@@ -1,7 +1,7 @@
 # Implementationsplan: Market Breadth 40/200 zurueck in die Panes (vorgerechnet)
 
-**Erstellt:** 2026-09-29 · **Rev. 1**
-**Status:** Entwurf — nichts umgesetzt
+**Erstellt:** 2026-09-29 · **Rev. 3**
+**Status:** **in Umsetzung** — Schritte 1, 2 und 4.1 sind gebaut (Producer-Patch im Container, Registry-Zeilen geschrieben, Batch laeuft); Schritt 3 (`$STATS`) und 4.2/4.3 (Pane + Chart) stehen noch aus.
 **Geltungsbereich:** features-service (Producer) -> Parquet -> Pane-Presets/Chart
 **Betroffene Repos:** [openBrain/features-service](/home/daniel/openBrain/features-service) (Code), QJM (Registry-Zeile, Panes, Chart, Doku)
 
@@ -86,6 +86,22 @@ Die drei SMA-Breiten sind untereinander verwandt (gleiche Rechenart, anderer Zei
 
 ---
 
+## 4a. Umsetzungsstand (Rev. 3, 2026-09-29)
+
+| Was | Zustand | Beleg |
+| :-- | :-- | :-- |
+| Producer-Patch (Schritte 1+2) | **gebaut** — `config_parser.py` (`BREADTH_SMA`), `calculator.py` (`_calc_breadth_sma_raw`, NaN-basiert ohne MA-Padding), `processor.py` (Rohspalten-Cache je Typ+Fenster, Warnkommentar am `share_key`), `features.json` (zwei Features) | Skript `dsh_playground/breadth_patch/apply_breadth_patch.py`, Backups in `.../backup/`, `py_compile` + JSON-Check ok |
+| Deploy | **im Container** — Image neu gebaut (`c9daa34774d5`), Container recreated, `/app/src` enthaelt `BREADTH_SMA` und `_calc_breadth_sma_raw` | `dsh_playground/breadth_patch/build.log` |
+| Batch | **gestartet** (`POST /features/calculate?priority=SPY`, HTTP 202) — Pass 0 mit den zwei neuen Aggregationen durchlaufen | `verify.log` / `/features/status` |
+| Registry (Schritt 4.1) | **geschrieben** — `breadth_200_pct` neu, `breadth_40_pct` auf `calc_type=BREADTH_SMA`, `calc_params={sma_window:40}`, Anzeigename "Breadth 40 SMA" | Supabase `pca_features` live geprueft |
+| Feste Y-Achse 0–100 | **gebaut** — `params.range` -> `chart_spec.panes_meta.range` (mit Warnung `invalid_pane_range` bei Murks) -> `canvas._sync_panes` -> `ChartPane.set_fixed_range`; wirkt nur, wenn gesetzt, Auto-Fit bleibt Default | `models/validation.py`, `chart_spec.py`, `ui/canvas.py`, `ui/pane.py`, Vertrag §4.1, zwei neue Tests |
+| Schritt 3 (`$STATS.MARKET_BREADTH` +40/200) | **offen** — braucht einen zweiten Patch + Rebuild | — |
+| Pane-Preset `tc2000_breite` | **offen** — wird nach der Spalten-Verifikation angelegt (MCP-Tool fehlt in meiner Session, daher ueber denselben HTTP-Endpunkt `POST /api/panes`) | — |
+
+**Deploy-Falle (wichtig, hat mich gekostet):** beim features-service ist nur `config/` und `data/` gemountet — `src/` steckt im Image. Eine Code-Aenderung auf dem Host ist **nicht** live; es braucht `docker compose build features-service && docker compose up -d --no-deps features-service`. Konfigurationsaenderungen (`features.json`) sind dagegen sofort live. Und: der Docker-Build braucht Schreibzugriff auf `~/.docker/buildx` (ausserhalb des Workspace).
+
+---
+
 ## 5. Kosten & Messlatten
 
 | Posten | Aufwand | Quelle |
@@ -135,3 +151,76 @@ Wenn dir +70 s pro Stunde zu viel sind, gibt es genau eine saubere Optimierung: 
 4. **Erledigt:** kein `breadth_50_pct` — Artefakt (TC2000 hat 40 und 200). Die 50er-Breite bleibt nur dort, wo sie schon ist (`$STATS.MARKET_BREADTH.percentage`), ohne neue Spalte.
 
 **Entschieden (Rev. 2):** Pane `tc2000_breite` mit 40+200 · feste Y-Achse 0–100 (Feld `params.range`) · Minervini-Breite als eigene 5. Pane im `market_monitor` · Umsetzung startet beim Producer.
+
+---
+
+## 9. Pruefprotokoll (Rev. 4, 2026-09-29)
+
+**Gebaut und live:**
+- `breadth_40_pct` + `breadth_200_pct` in **jedem** Ticker-Parquet (SPY: 30 Spalten), Broadcast-Invariante ueber 5 Ticker identisch, 40 != 200, Werte in 0-100.
+- Registry-Zeilen gepflegt; Pane-Preset `tc2000_breite` angelegt (role=value, `params.range=[0,100]`, refs 20/50/80, Serien 40 + 200).
+- Feste Y-Achse im Viewer: `params.range` -> `panes_meta.range` -> `Pane.set_fixed_range`; Tests gruen.
+- `$STATS.MARKET_BREADTH` traegt jetzt zusaetzlich `breadth_40_pct`, `breadth_200_pct`, `count_40`, `count_200` (alte Spalten unveraendert).
+
+**Befund 1 GELOEST und VERIFIZIERT (2026-09-29, ~21:20):** Der urspruenglich gemessene Offset
+(+0,72 pp / +0,13 pp) war **kein Producer-Fehler**, sondern ein Tie-Break-Artefakt meiner Nachrechnung:
+~124 Sub-Penny-/OTC-Titel (z. B. ATTBF mit close 0.0, GGLXF mit konstant 0.005) liegen **exakt auf ihrer
+SMA**; pandas' rolling mean trifft den Wert exakt (striktes `>` ⇒ "nicht darueber", korrekt), meine
+numpy-Faltung erzeugt Float-Dust und zaehlte sie als "darueber". Mit einer Toleranz von 1e-9:
+**0 Abweichungen von 422 Tickern** im Einzelvergleich, und im Aggregat:
+
+| Tag | nachgerechnet b40 | gespeichert | Δ | nachgerechnet b200 | gespeichert | Δ |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| 2026-09-24 | 33,60 | 33,63 | −0,03 | 45,20 | 45,20 | 0,00 |
+| 2026-09-25 | 32,23 | 32,27 | −0,04 | 44,42 | 44,42 | 0,00 |
+| 2026-09-26 | 33,26 | 33,29 | −0,03 | 44,78 | 44,79 | −0,01 |
+| 2026-09-28 | 28,90 | 28,93 | −0,03 | 43,03 | 43,04 | −0,01 |
+| 2026-09-29 (live) | 27,18 | 27,25 | −0,07 | 41,71 | 41,73 | −0,02 |
+
+Rest ≤ 0,04 pp auf eingefrorenen Tagen = die Toleranz selbst (meine Variante ist minimal strenger).
+Damit sind Spalten, Broadcast, Dedup und Formel **verifiziert**; der laufende Tag driftet erwartungsgemaess
+mit dem Live-Kurs.
+
+**Befund 1 alt (historisch) — doppelte Tageszeilen:**
+1.183 der 41.575 Chartdateien tragen **zwei Zeilen fuer denselben UTC-Tag** (settled + Live-Bar).
+Pass 0 rollt die SMA ueber die Rohzeilen und dedupliziert erst danach je Tag -> systematische
+Abweichung gegen eine saubere Nachrechnung: **+0,72 pp (40er) / +0,13 pp (200er)**, stabil ueber
+fuenf eingefrorene Handelstage. Fix = Patch 3 (`apply_breadth_patch3.py`: Dedup **vor** der SMA, in
+`calculator._calc_breadth_sma_raw` und `market_breadth._flags_for_window`) — **noch nicht angewendet**,
+die Sandbox-Freigabe fuer den Schreibzugriff ausserhalb des Workspace lief in den Timeout.
+
+**Befund 2 — die `$STATS`-Zusatzspalten sind NICHT brauchbar (offen):**
+`breadth_40_pct` zeigt 48,23 % (Vortag) bzw. 54,29 % (letzter Tag) gegen ~29 % aus der Ticker-Spalte;
+`count_40=1.639` impliziert einen Nenner von nur ~3.400 Tickern (erwartet ~13.800 nach Stichprobe:
+78 % der Ticker haben ein volles 40er-Fenster). `breath_200_pct` ist am letzten Tag `None`, obwohl der
+Nenner da sein muesste. Ursache noch nicht lokalisiert — **bis dahin die beiden Spalten ignorieren**;
+die Pane liest sie nicht (sie kommt aus den Ticker-Spalten).
+
+**Stand 21:xx — was der Container jetzt kann:** `calculator.py` traegt den Tages-Dedup-Fix
+(gebaut + deployed), `market_breadth.py` traegt Patch 2 + Dedup, aber **noch nicht den Schluessel-Fix**
+(`int(k) * 86400` statt `int(k + shift) * 86400`). Ursache des falschen `$STATS`-Werts, bewiesen:
+`shift` ist der **kleinste** Tagesindex und **negativ** (fuenf Titel reichen bis 1962), der Schluessel war
+damit um `shift` Tage verschoben - die Zeile fuer heute griff auf den Eintrag von ~2018 zu (kleine
+Nenner 1.841/17.660, deshalb 48 %/54 % statt ~29 %/44 %).
+
+**Einmal-Befehl fuer den Schluessel-Fix (Nutzer-Shell, weil Schreibzugriff ausserhalb des Workspace):**
+```bash
+python3 - <<'PY'
+import py_compile
+from pathlib import Path
+p = Path('/home/daniel/openBrain/features-service/src/market_breadth.py')
+t = p.read_text(encoding='utf-8')
+old = "            int(k) * 86400: (int(abo_arr[k]), int(tot_arr[k])) for k in present"
+new = "            int(k + shift) * 86400: (int(abo_arr[k]), int(tot_arr[k])) for k in present"
+assert t.count(old) == 1, t.count(old)
+p.write_text(t.replace(old, new, 1), encoding='utf-8')
+py_compile.compile(str(p), doraise=True)
+print('key fix ok')
+PY
+cd /home/daniel/openBrain && docker compose build features-service && docker compose up -d --no-deps features-service
+curl -s -X POST "http://127.0.0.1:8003/features/calculate?priority=SPY"
+```
+
+**Neustart des Hosts (vom Nutzer auszufuehren):** `systemctl --user restart dsh-native-017`
+(Unit bestaetigt: ExecStart=/home/daniel/start-dsh-native-017.sh, DSH_HOME=/home/daniel/.dsh-017).
+Danach eine **neue** Session — die hat dann alle 14 pca-Tools inkl. `manage_pane_presets`.

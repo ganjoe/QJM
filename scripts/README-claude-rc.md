@@ -31,14 +31,24 @@ sudo loginctl enable-linger daniel
 
 ## Flag-Entscheidungen (bewusst)
 
-* `--continue` holt nach einem Neustart **dieselbe** Session zurueck. Ohne das
-  erzeugt jeder Reboot eine neue Session, und alte bleiben in der Oberflaeche
-  als "connected" stehen, bis sie serverseitig auslaufen.
-  `--continue` ist **nicht** mit `--capacity`, `--spawn` oder
-  `--create-session-in-dir` kombinierbar.
-* Wer stattdessen viele parallele Sessions will, tauscht in `claude-rc.sh`
-  `--continue` gegen `--capacity 4` (dann aber obige Alt-Session-Besonderheit
-  akzeptieren).
+* **Zustimmung wird automatisch gegeben:** `claude remote-control` fragt beim
+  ersten Start `Enable Remote Control? (y/n)`. Ohne TTY wartet der Server
+  endlos auf diese Antwort und legt **nie** eine Session an - genau das war am
+  29.09.2026 der Fehler. Einen `--yes`-Schalter gibt es nicht (siehe
+  `claude remote-control --help`). Der Launcher hält deshalb einen FIFO mit
+  beiden Enden offen, in dem `y` bereitliegt.
+* **Kein `--continue`** (bewusst): `--continue` unterdrueckt
+  `--create-session-in-dir`. Beim allerersten Start gibt es aber keine
+  Vorgaenger-Session zum Fortsetzen - der Server legt dann **gar keine** Session
+  an, und in der Oberflaeche ist nichts zu sehen. Genau das ist am 29.09.
+  passiert. Ohne den Schalter legt der Server beim Start eine Session im
+  Projektverzeichnis an (`--create-session-in-dir`, Standard an).
+* Auch **spaeter nicht** `--continue` setzen, obwohl es verlockend klingt:
+  laut `--help` bricht es mit Fehler ab, wenn in diesem Verzeichnis nichts
+  innerhalb der **letzten ~4 Stunden** aufgezeichnet wurde. Bei einem Dienst mit
+  `Restart=always` ergibt das nach laengerer Auszeit eine Neustartschleife -
+  schlimmer als die kosmetischen Alt-Sessions.
+* Parallel-Sessions: Standard-Kapazitaet ist 32, es braucht kein `--capacity`.
 * `--permission-mode acceptEdits`: Datei-Aenderungen laufen ohne Rueckfrage,
   Shell-Kommandos fragen weiterhin nach. Fuer weniger Automatik `default`
   setzen, fuer mehr `bypassPermissions` (nur mit Bedacht - der Agent hat sonst

@@ -136,6 +136,8 @@ class ChartPane(QWidget):
         self.series_style: dict = {}
         self.y_axis_mode: str = "auto"       # "auto" | "manual" (Fit-Verhalten)
         self.y_scale_type: str = "linear"    # "linear" | "log" (Y-Achsen-Skalierung)
+        # Feste Y-Spanne aus dem Pane-Preset ("params.range"); None = Auto-Fit.
+        self.fixed_range: Optional[tuple] = None
         self.watermark_text: str = ""
         self.base_timestamp: int = 0
         self.bar_duration: int = 86400
@@ -264,6 +266,14 @@ class ChartPane(QWidget):
         if not self.bars and not self.overlays:
             return
 
+        # Feste Spanne schlaegt den Auto-Fit: eine Breiten-Pane soll ueber Tage
+        # vergleichbar bleiben (0-100), nicht auf die sichtbaren Werte zoomen.
+        if self.fixed_range is not None:
+            self.y_trans.fit_range(
+                self.fixed_range[0], self.fixed_range[1], requested_mode=self.y_scale_type
+            )
+            return
+
         min_idx = max(0, int(math.floor(self.x_trans.x_to_bar(0.0) - 1)))
         chart_w = max(10.0, self.width() - Y_AXIS_WIDTH)
         max_idx_val = min(len(self.bars) - 1, int(math.ceil(self.x_trans.x_to_bar(chart_w) + 1))) if self.bars else int(self.x_trans.right_index)
@@ -357,6 +367,19 @@ class ChartPane(QWidget):
             if notify:
                 self.y_scale_type_changed.emit(self.pane_id, normalized)
         return changed
+
+    def set_fixed_range(self, rng) -> None:
+        """Feste Y-Spanne setzen oder entfernen (Pane-Preset "params.range").
+
+        None = Auto-Fit wie bisher. Aendert sich nichts, wird nicht neu gefittet:
+        der Snapshot kommt bei jedem Render, ein Refit waere sonst Dauerlast.
+        """
+        new = tuple(float(v) for v in rng) if rng else None
+        if new == self.fixed_range:
+            return
+        self.fixed_range = new
+        self.update_y_range()
+        self.mark_dirty()
 
     def toggle_y_scale_type(self) -> None:
         """LOG/LIN button clicked: switch the scale and report it to the canvas."""

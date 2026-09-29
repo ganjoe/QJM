@@ -1,0 +1,10 @@
+# Snapshotted from .venv on 2026-09-29
+# Recreate: python3 -m venv .venv && .venv/bin/pip install -r requirements.lock.txt
+# Note: PySide6/Qt comes as a wheel from PyPI (large, no local build needed)
+
+psycopg==3.3.6
+psycopg-binary==3.3.6
+PySide6==6.11.2
+PySide6_Addons==6.11.2
+PySide6_Essentials==6.11.2
+shiboken6==6.11.2

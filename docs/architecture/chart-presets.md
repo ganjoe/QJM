@@ -169,7 +169,8 @@ fehlen oder leer bleiben:
 ```
 
 Warncodes: `unknown_column`, `series_without_data`, `pane_without_series`,
-`unknown_override`, `invalid_override`, `unknown_series_override`.
+`unknown_override`, `invalid_override`, `unknown_series_override`,
+`invalid_pane_range`.
 Fehlercodes: `invalid_request`, `unknown_window`, `unknown_pane`, `unknown_preset`,
 `protected_pane`, `pane_set_mismatch`, `already_exists`, `not_found`, `chart_in_use`,
 `backend_unreachable`.

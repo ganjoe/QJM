@@ -60,6 +60,28 @@ def sanitize_pane_scales(raw) -> dict:
     return clean
 
 
+def sanitize_pane_range(raw):
+    """Feste Y-Achsen-Spanne eines Panes: (min, max) oder None.
+
+    Vertrag: Pane-Preset `params.range = [min, max]` (z. B. [0, 100] fuer eine
+    Breiten-Pane). Gueltig ist nur ein Paar endlicher Zahlen mit min < max -
+    alles andere wird verworfen, statt eine Achse kaputt zu skalieren.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    try:
+        lo, hi = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    if lo != lo or hi != hi:                     # NaN
+        return None
+    if abs(lo) == float("inf") or abs(hi) == float("inf"):
+        return None
+    if lo >= hi:
+        return None
+    return (lo, hi)
+
+
 def is_log_compatible(prices: Sequence[float]) -> bool:
     """Prices > 0 mandatory for Log-Y axis.
 

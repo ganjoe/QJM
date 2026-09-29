@@ -54,3 +54,6 @@ backups/
 
 # Powermeter runtime data (rolling Parquet time-series)
 powermeter/data/
+
+# Parquet data files (rolling chart/cache data, never versioned)
+*.parquet

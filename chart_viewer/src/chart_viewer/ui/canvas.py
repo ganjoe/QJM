@@ -211,6 +211,9 @@ class ChartCanvas(QWidget):
                 "role": role if role in ("price", "value", "volume") else "",
                 "title": str(title),
                 "weight": self._coerce_weight(weight),
+                # Feste Y-Spanne je Pane (Pane-Preset "params.range"): vom
+                # Server validiert, hier unveraendert durchgereicht.
+                "range": entry.get("range") if isinstance(entry, dict) else None,
             })
 
         if not specs:
@@ -309,6 +312,7 @@ class ChartCanvas(QWidget):
                     pane.title = spec["title"]
                     pane.mark_dirty()
                 pane.weight = spec["weight"]
+            pane.set_fixed_range(spec.get("range"))
             # insertWidget MOVES an existing widget to the new position instead
             # of rebuilding it — a reorder never deletes the running panes.
             self._splitter.insertWidget(index, pane)
