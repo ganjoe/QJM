@@ -307,7 +307,7 @@ def test_catalog_fills_price_pane_and_add_dropdowns(qapp):
     assert add_ids == ["rs_monitor", "rsi_14"]
     labels = [panel.add_pane_combo.itemText(i) for i in range(panel.add_pane_combo.count())]
     assert "RS-Monitor — IBD RS + Revival" in labels
-    assert panel.add_pane_combo.lineEdit().placeholderText() == "Preset wählen…"
+    assert panel.add_pane_combo.lineEdit().placeholderText() == "Preset…"
 
     switch_ids = [
         panel.pane_preset_combo.itemData(i) for i in range(panel.pane_preset_combo.count())
@@ -316,11 +316,11 @@ def test_catalog_fills_price_pane_and_add_dropdowns(qapp):
 
     rows = [panel.builder_pane_list.item(i).text() for i in range(panel.builder_pane_list.count())]
     assert rows == [
-        "main · SMA 10-200 · LIN · Gewicht 7",
-        "rs_monitor · RS-Monitor · LIN · Gewicht 2",
+        "main · SMA 10-200 · LIN · h7",
+        "rs_monitor · RS-Monitor · LIN · h2",
     ]
-    assert panel.builder_target_label.text() == "Ziel: win_nvda_1d · NVDA"
-    assert panel.builder_draft_label.text() == "• unbenannt"
+    assert panel.builder_target_label.text() == "→ win_nvda_1d · NVDA"
+    assert panel.builder_draft_label.text() == "● draft"
 
 
 def test_catalog_is_cached_and_reloaded_on_demand(qapp):
@@ -390,7 +390,7 @@ def test_selected_pane_preset_switch_keeps_slot_and_weight(qapp):
     assert [p["pane_id"] for p in panes] == ["main", "rs_monitor"], "die Slot-Id bleibt"
     assert [p["pane_preset_id"] for p in panes] == ["qmaggi__main", "rsi_14"]
     assert panes[1]["weight"] == 2, "das Gewicht bleibt"
-    assert panel.builder_pane_list.item(1).text() == "rs_monitor · RSI 14 · LIN · Gewicht 2"
+    assert panel.builder_pane_list.item(1).text() == "rs_monitor · RSI 14 · LIN · h2"
     assert panel.pane_preset_combo.currentData() == "rsi_14"
 
 
@@ -835,7 +835,7 @@ def test_discard_reloads_the_server_state_and_renders_the_saved_chart(qapp):
 def test_builder_widgets_are_disabled_without_a_chart_window(qapp):
     panel, fake = _panel(qapp, windows=False)
 
-    assert "kein Chartfenster" in panel.builder_target_label.text()
+    assert "no chart window" in panel.builder_target_label.text()
     for widget in (
         panel.builder_pane_list,
         panel.price_pane_combo,
@@ -854,7 +854,7 @@ def test_builder_widgets_are_disabled_without_a_chart_window(qapp):
 
     panel.set_chart_windows([dict(WINDOW)])
     qapp.processEvents()
-    assert panel.builder_target_label.text() == "Ziel: win_nvda_1d · NVDA"
+    assert panel.builder_target_label.text() == "→ win_nvda_1d · NVDA"
     assert panel.add_pane_btn.isEnabled()
     assert fake.ops().count("get_chart_state") == 1
 
@@ -871,7 +871,7 @@ def test_target_is_sticky_across_window_refreshes(qapp):
 
     panel.set_target_window("win_amd_1d")
     assert panel._builder_target == "win_amd_1d"
-    assert panel.builder_target_label.text() == "Ziel: win_amd_1d · AMD"
+    assert panel.builder_target_label.text() == "→ win_amd_1d · AMD"
 
     panel.set_chart_windows(list(windows))
     qapp.processEvents()
@@ -887,7 +887,7 @@ def test_target_is_sticky_across_window_refreshes(qapp):
     panel.set_chart_windows([])
     qapp.processEvents()
     assert panel._builder_target == ""
-    assert "kein Chartfenster" in panel.builder_target_label.text()
+    assert "no chart window" in panel.builder_target_label.text()
     assert not panel.add_pane_btn.isEnabled()
 
 
@@ -986,7 +986,7 @@ def test_app_forwards_window_activation_and_clears_the_target(qapp):
     else:  # pragma: no cover - fallback while the window strand is in flight
         app._on_chart_window_activated("win_nvda_1d")
     assert panel._builder_target == "win_nvda_1d"
-    assert panel.builder_target_label.text() == "Ziel: win_nvda_1d · NVDA"
+    assert panel.builder_target_label.text() == "→ win_nvda_1d · NVDA"
 
     # A panel refresh (snapshot, window list) must never steal the sticky target.
     app._refresh_panel_chart_windows()
@@ -1000,7 +1000,7 @@ def test_app_forwards_window_activation_and_clears_the_target(qapp):
     app.windows["win_amd_1d"].close()
     qapp.processEvents()
     assert panel._builder_target == ""
-    assert "kein Chartfenster" in panel.builder_target_label.text()
+    assert "no chart window" in panel.builder_target_label.text()
 
 
 def test_agent_snapshot_refreshes_the_builder_panes(qapp):

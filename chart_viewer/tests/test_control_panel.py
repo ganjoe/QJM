@@ -608,7 +608,7 @@ def test_new_watchlist_as_copy_of_an_existing_one(qapp, monkeypatch):
         watchlist_dialogs, "ask_new_watchlist", lambda *a, **k: ("30_copy", "10_favorite")
     )
 
-    panel.new_watchlist_btn.click()
+    panel.new_watchlist_btn.trigger()
     assert stub.last("mutate_watchlist")["params"] == {
         "action": "copy_list",
         "list_name": "10_favorite",
@@ -625,7 +625,7 @@ def test_new_empty_watchlist_is_kept_until_the_first_ticker(qapp, monkeypatch):
     panel = app.control_panel
     monkeypatch.setattr(watchlist_dialogs, "ask_new_watchlist", lambda *a, **k: ("40_leer", ""))
 
-    panel.new_watchlist_btn.click()
+    panel.new_watchlist_btn.trigger()
     assert "mutate_watchlist" not in stub.ops(), "an empty list needs no backend call"
     assert panel._pending_watchlists == ["40_leer"]
     assert panel._current_watchlist == "40_leer"
@@ -657,7 +657,7 @@ def test_delete_watchlist_button_confirms_and_reselects(qapp, monkeypatch):
     monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", lambda *a, **k: picks.pop(0) if picks else None)
     monkeypatch.setattr(watchlist_dialogs, "confirm_delete", lambda *a, **k: True)
 
-    panel.delete_watchlist_btn.click()
+    panel.delete_watchlist_btn.trigger()
     assert stub.last("mutate_watchlist")["params"] == {"action": "delete", "list_name": "scan_latest"}
     qapp.processEvents()
 
@@ -674,7 +674,7 @@ def test_delete_watchlist_aborts_without_confirmation(qapp, monkeypatch):
     monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", lambda *a, **k: "scan_latest")
     monkeypatch.setattr(watchlist_dialogs, "confirm_delete", lambda *a, **k: False)
 
-    panel.delete_watchlist_btn.click()
+    panel.delete_watchlist_btn.trigger()
     assert "mutate_watchlist" not in stub.ops()
 
 
@@ -738,3 +738,211 @@ def test_backend_error_is_shown_and_buttons_reset(qapp):
     panel._request("mutate_watchlist", {"action": "add"}, {"kind": "add"})
     assert "geschützt" in panel.status_label.text()
     assert panel._pending == {}
+
+
+# ── ergonomics: copy/move shortcuts, layout at the default width ──────────
+
+
+def _key(key: Qt.Key, modifiers=Qt.KeyboardModifier.NoModifier) -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, key, modifiers)
+
+
+def _no_dialog(*_args, **_kwargs):
+    raise AssertionError("C/V with a remembered target must not open the picker dialog")
+
+
+def _favorites_with_targets(qapp, stub, panel):
+    """10_favorite (VICR, HOOD, NVDA) selected; scan_latest and 20_swing as targets."""
+    stub.watchlists.append({"name": "20_swing", "editable": True})
+    stub.tickers["20_swing"] = []
+    stub.tickers["10_favorite"] = ["VICR", "HOOD", "NVDA"]
+    panel.refresh_watchlists(select="10_favorite")
+    qapp.processEvents()
+    assert _tickers_in_panel(panel) == ["VICR", "HOOD", "NVDA"]
+
+
+def test_transfer_target_combo_offers_other_editable_lists(qapp):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    targets = [panel.transfer_target_combo.itemData(i) for i in range(panel.transfer_target_combo.count())]
+    assert targets == ["scan_latest", "20_swing"], "neither the source nor read-only lists are targets"
+
+
+def test_c_copies_to_the_remembered_target_and_moves_on(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", _no_dialog)
+    panel.transfer_target_combo.setCurrentIndex(panel.transfer_target_combo.findData("20_swing"))
+    panel.watchlist_list.setCurrentRow(0)  # VICR
+
+    assert panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_C)) is True
+    assert stub.last("mutate_watchlist")["params"] == {
+        "action": "copy",
+        "list_name": "10_favorite",
+        "ticker": "VICR",
+        "target_list": "20_swing",
+    }
+    assert panel.watchlist_list.currentRow() == 1, "the marker moves on to the next ticker"
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_C))
+    assert stub.tickers["20_swing"] == ["VICR", "HOOD"]
+    assert _tickers_in_panel(panel) == ["VICR", "HOOD", "NVDA"], "copy leaves the source untouched"
+    assert QSettings("QJM", "ChartViewer").value("panel/transfer_target") == "20_swing"
+
+
+def test_v_moves_to_the_remembered_target_and_selects_the_next_row(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", _no_dialog)
+    panel.transfer_target_combo.setCurrentIndex(panel.transfer_target_combo.findData("scan_latest"))
+    panel.watchlist_list.setCurrentRow(1)  # HOOD
+
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_V))
+    assert stub.last("mutate_watchlist")["params"]["action"] == "move"
+    assert _tickers_in_panel(panel) == ["VICR", "NVDA"]
+    assert panel.watchlist_list.currentItem().text() == "NVDA"
+
+    # A second V hits the next ticker, not HOOD again.
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_V))
+    assert stub.last("mutate_watchlist")["params"]["ticker"] == "NVDA"
+    assert _tickers_in_panel(panel) == ["VICR"]
+    assert stub.tickers["scan_latest"] == ["AMD", "HOOD", "NVDA"]
+    assert "verschoben" in panel.status_label.text()
+
+
+def test_shift_v_asks_for_the_target_and_remembers_it(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    asked: List[Any] = []
+
+    def pick(*args, **kwargs):
+        asked.append(args)
+        return "20_swing"
+
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", pick)
+    panel.watchlist_list.setCurrentRow(0)
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_V, Qt.KeyboardModifier.ShiftModifier))
+    assert len(asked) == 1
+    assert stub.last("mutate_watchlist")["params"]["target_list"] == "20_swing"
+    assert panel._transfer_target() == "20_swing", "the picked target becomes the default for C/V"
+
+
+def test_ctrl_c_is_not_a_copy_shortcut(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", _no_dialog)
+    panel.watchlist_list.setCurrentRow(0)
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier))
+    assert "mutate_watchlist" not in stub.ops()
+
+
+def test_c_and_v_do_nothing_in_a_read_only_list(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", _no_dialog)
+    panel._on_watchlist_activated(panel.watchlist_combo.findData("all"))
+    qapp.processEvents()
+    panel.eventFilter(panel.watchlist_list, _key(Qt.Key.Key_V))
+    assert "mutate_watchlist" not in stub.ops()
+
+
+def test_context_menu_lists_recent_targets_first(qapp, monkeypatch):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    monkeypatch.setattr(watchlist_dialogs, "ask_watchlist", _no_dialog)
+    panel.watchlist_list.setCurrentRow(0)
+    panel._transfer_selected_ticker("copy", target="20_swing")
+
+    menu = panel._build_watchlist_context_menu()
+    assert menu is not None
+    labels = [action.text() for action in menu.actions() if action.text()]
+    assert labels == ["Copy to", "Move to", "Remove"]
+    move_menu = menu.actions()[1].menu()
+    names = [a.text() for a in move_menu.actions() if not a.isSeparator()]
+    assert names == ["20_swing", "scan_latest"], "the last used target is on top"
+
+    panel.watchlist_list.setCurrentRow(0)
+    [a for a in move_menu.actions() if a.text() == "scan_latest"][0].trigger()
+    assert stub.last("mutate_watchlist")["params"]["action"] == "move"
+    assert stub.last("mutate_watchlist")["params"]["target_list"] == "scan_latest"
+
+
+def test_failed_move_reloads_the_list(qapp):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    _favorites_with_targets(qapp, stub, panel)
+    original = stub.handle
+
+    def failing_move(request_id: str, op: str, params: Any) -> None:
+        if op != "mutate_watchlist":
+            original(request_id, op, params)
+            return
+        stub.requests.append({"request_id": request_id, "op": op, "params": params or {}})
+        stub.agent.transport.send_command(
+            make_envelope(
+                msg_type="control.response",
+                payload={
+                    "request_id": request_id,
+                    "op": op,
+                    "ok": False,
+                    "data": None,
+                    "error": {"code": "db", "message": "kaputt"},
+                },
+                kind=MessageKind.EVENT,
+            )
+        )
+
+    stub.handle = failing_move
+    panel.watchlist_list.setCurrentRow(0)
+    panel._transfer_selected_ticker("move")
+    qapp.processEvents()
+    assert _tickers_in_panel(panel) == ["VICR", "HOOD", "NVDA"], "the server state comes back"
+    assert "kaputt" in panel.status_label.text()
+
+
+def test_search_results_fold_open_only_while_searching(qapp):
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    assert not panel.results_section.is_expanded()
+    panel.search_edit.setText("NV")
+    assert panel.results_section.is_expanded()
+    panel._emit_search()
+    assert panel.results_section.title() == "Results (2)"
+    panel.search_edit.setText("")
+    assert not panel.results_section.is_expanded()
+
+
+def test_control_panel_fits_the_default_width(qapp):
+    """At 360 px nothing may be cut off: no page wider than its tab, no clipped button."""
+    from PySide6.QtWidgets import QAbstractButton, QLabel, QScrollArea
+
+    agent, app, stub = _setup(qapp)
+    panel = app.control_panel
+    panel.resize(360, 720)
+    panel.search_edit.setText("NV")
+    panel._emit_search()
+    for section in (panel.template_section, panel.panes_section, panel.pane_section):
+        section.set_expanded(True)
+    qapp.processEvents()
+    assert panel.width() <= 360
+
+    for index in range(panel.tabs.count()):
+        panel.tabs.setCurrentIndex(index)
+        qapp.processEvents()
+        scroll = panel.tabs.widget(index)
+        assert isinstance(scroll, QScrollArea)
+        page = scroll.widget()
+        assert page.minimumSizeHint().width() <= scroll.viewport().width(), (
+            f"tab {panel.tabs.tabText(index)} is wider than the panel"
+        )
+        for widget in page.findChildren(QAbstractButton) + page.findChildren(QLabel):
+            if not widget.isVisibleTo(page) or not widget.text():
+                continue
+            assert widget.width() >= widget.minimumSizeHint().width(), (
+                f"'{widget.text()}' is clipped ({widget.width()} < {widget.minimumSizeHint().width()})"
+            )

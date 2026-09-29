@@ -14,10 +14,11 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from PySide6.QtCore import QEvent, Qt, QSettings, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QFontMetrics, QKeyEvent
+from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QFontMetrics, QKeyEvent, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QCompleter,
@@ -28,9 +29,15 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +45,7 @@ from PySide6.QtWidgets import (
 from chart_viewer.config import ViewerConfig
 from chart_viewer.ui import theme
 from chart_viewer.ui import watchlist_dialogs
+from chart_viewer.ui.collapsible import CollapsibleSection
 from chart_viewer.ui.color_flag import ColorFlagButton
 
 # Panel-specific selectors only. The generic widget rules (labels, inputs, buttons,
@@ -49,7 +57,7 @@ from chart_viewer.ui.color_flag import ColorFlagButton
 # escaped, and one missed escape turns into a KeyError at import time).
 PANEL_STYLESHEET = (
     """
-QMainWindow, QWidget#panelRoot, QScrollArea, QScrollArea > QWidget > QWidget {
+QMainWindow, QWidget#panelRoot, QWidget#panelPage, QScrollArea, QScrollArea > QWidget > QWidget {
     background-color: """
     + theme.BG_WINDOW
     + """;
@@ -102,10 +110,62 @@ QPushButton {
     background-color: """ + theme.BG_SURFACE + """;
     color: """ + theme.TEXT + """;
     border: 1px solid """ + theme.BORDER + """;
+    padding: 2px 8px;
 }
 QPushButton:disabled {
     color: """ + theme.DISABLED_TEXT + """;
     border: 1px solid """ + theme.DISABLED_BORDER + """;
+}
+QPushButton#toolButton, QPushButton#pinButton, QPushButton#scaleButton, QToolButton {
+    padding: 0px;
+}
+QPushButton#scaleButton[log="true"] {
+    border: 1px solid """ + theme.ACCENT + """;
+    color: """ + theme.ACCENT + """;
+}
+QToolButton {
+    background-color: """ + theme.BG_SURFACE + """;
+    color: """ + theme.TEXT + """;
+    border: 1px solid """ + theme.BORDER + """;
+}
+QToolButton:disabled {
+    color: """ + theme.DISABLED_TEXT + """;
+    border: 1px solid """ + theme.DISABLED_BORDER + """;
+}
+QToolButton::menu-indicator {
+    image: none;
+}
+QToolButton#sectionHeader {
+    background-color: transparent;
+    border: none;
+    color: """ + theme.TEXT_DIM + """;
+    font-size: 11px;
+    font-weight: bold;
+}
+QToolButton#sectionHeader:hover {
+    color: """ + theme.TEXT + """;
+}
+QLabel#draftLabel {
+    color: #FFCA28;
+    font-size: 11px;
+}
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid """ + theme.BORDER + """;
+}
+QTabBar::tab {
+    background-color: """ + theme.BG_WINDOW + """;
+    color: """ + theme.TEXT_DIM + """;
+    padding: 4px 14px;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+QTabBar::tab:selected {
+    color: """ + theme.TEXT + """;
+    border-bottom: 2px solid """ + theme.ACCENT + """;
+}
+QTabBar::tab:hover {
+    color: """ + theme.TEXT + """;
 }
 QPushButton#pinButton[pinned="true"] {
     border: 1px solid #FFCA28;
@@ -114,6 +174,73 @@ QPushButton#pinButton[pinned="true"] {
 }
 """
 )
+
+# Kurze englische Feldlabels der Builder-/Transferzeilen (eine feste Spalte).
+FIELD_LABELS = ("Price", "Add", "Preset", "Title", "Height", "Load")
+TARGET_NONE_TEXT = "→ no chart window"
+DRAFT_TEXT = "● draft"
+# Mindestens so viele Zeichen zeigt eine Combo; laengere Namen kuerzt sie mit "…"
+# statt das Panel zu verbreitern (die Aufklappliste zeigt sie vollstaendig).
+COMBO_MIN_CHARS = 8
+
+
+def _shrinkable_combo(combo: QComboBox) -> None:
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(COMBO_MIN_CHARS)
+    view = combo.view()
+    if view is not None:
+        view.setTextElideMode(Qt.TextElideMode.ElideNone)
+
+
+def _shift_pressed() -> bool:
+    return bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+class _ElidingComboBox(QComboBox):
+    """Nicht editierbare Combo, die einen zu langen Eintrag mit "…" kuerzt.
+
+    Eine normale QComboBox schneidet den Text am Rand hart ab. Die Aufklappliste
+    zeigt die Namen weiterhin vollstaendig, der Tooltip ebenfalls.
+    """
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        field = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, self
+        )
+        option.currentText = self.fontMetrics().elidedText(
+            option.currentText, Qt.TextElideMode.ElideRight, max(0, field.width() - 4)
+        )
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+
+class _ElidedLabel(QLabel):
+    """Einzeiliges Label, das zu langen Text mit "…" kuerzt statt das Panel zu verbreitern.
+
+    text() liefert weiterhin den vollen Text; gekuerzt wird nur beim Zeichnen.
+    """
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt naming)
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), text)
+
 
 # Virtual panes without a database row (contract: docs/architecture/chart-presets.md §1).
 BUILTIN_PANE_NAMES = {"builtin:volume": "Volumen"}
@@ -182,6 +309,8 @@ class ControlPanelWindow(QMainWindow):
         # neuer Stand angefragt wurde: nach dem Eintreffen einmal nachlesen.
         self._chart_state_pending_more = False
         self._populating = False
+        # Zuletzt benutzte Ziele fuer Copy/Move (oben im Rechtsklick-Menue).
+        self._recent_targets: List[str] = []
         # Breite der Label-Spalte im Builder (aus der Schrift berechnet, _field_label).
         self._label_column_width = 0
         self._settings = QSettings("QJM", "ChartViewer")
@@ -211,27 +340,30 @@ class ControlPanelWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("panelRoot")
-        # Der Builder braucht mehr Hoehe, als das Panel konfiguriert ist. Ein
-        # Scrollbereich haelt alle Sektionen auch auf kleinen Bildschirmen
-        # erreichbar, statt sie unten abzuschneiden.
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(root)
-        self.setCentralWidget(scroll)
+        self.setCentralWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 6)
         layout.setSpacing(6)
 
-        # Header: colour flag + pin toggle
+        # Fester Kopf (in beiden Tabs gleich): Flag, Zielfenster des Builders,
+        # Entwurfsmarke und Pin.
         header = QHBoxLayout()
         header.setSpacing(6)
-        header.addWidget(QLabel("FLAG", root))
         self.flag_btn = ColorFlagButton(initial_flag=0, parent=self)
+        self.flag_btn.setToolTip(
+            "Flag-Gruppe: Ticker öffnen sich in den Charts dieser Farbe (Klick wechselt die Farbe)"
+        )
         self.flag_btn.flag_changed.connect(self._on_flag_changed)
         header.addWidget(self.flag_btn)
-        header.addStretch(1)
+        self.builder_target_label = _ElidedLabel(TARGET_NONE_TEXT, root)
+        self.builder_target_label.setToolTip(
+            "Fokussiertes Chartfenster (klebrig – bleibt stehen, auch wenn das Panel den Fokus hat)"
+        )
+        header.addWidget(self.builder_target_label, 1)
+        self.builder_draft_label = QLabel("", root)
+        self.builder_draft_label.setObjectName("draftLabel")
+        self.builder_draft_label.setToolTip("Noch nicht gespeicherter Entwurf (Speichern: Ctrl+S)")
+        header.addWidget(self.builder_draft_label)
         self.pin_btn = QPushButton("📌", root)
         self.pin_btn.setObjectName("pinButton")
         self.pin_btn.setFixedWidth(28)
@@ -240,59 +372,92 @@ class ControlPanelWindow(QMainWindow):
         header.addWidget(self.pin_btn)
         layout.addLayout(header)
 
-        # Ticker search
-        layout.addWidget(self._section_label("TICKER-SUCHE"))
-        self.search_edit = QLineEdit(root)
-        self.search_edit.setPlaceholderText("Ticker suchen (z. B. NV…)")
+        self.tabs = QTabWidget(root)
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setDrawBase(False)
+        self.tabs.addTab(self._scroll_page(self._build_symbols_tab()), "Symbols")
+        self.tabs.addTab(self._scroll_page(self._build_chart_tab()), "Chart")
+        self.tabs.setTabToolTip(0, "Ticker-Suche und Watchlists (Ctrl+1)")
+        self.tabs.setTabToolTip(1, "Chart-Builder des Zielfensters (Ctrl+2)")
+        self.tabs.currentChanged.connect(lambda index: self._settings.setValue("panel/tab", index))
+        layout.addWidget(self.tabs, 1)
+
+        # Statuszeile: offene Charts der Flag-Gruppe + letzte Meldung.
+        self.charts_label = QLabel("Charts: –", root)
+        self.charts_label.setObjectName("statusLabel")
+        self.charts_label.setWordWrap(True)
+        layout.addWidget(self.charts_label)
+        self.status_label = QLabel("", root)
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self._install_shortcuts()
+        self.setStyleSheet(PANEL_STYLESHEET)
+        self._update_buttons()
+
+    def _scroll_page(self, page: QWidget) -> QScrollArea:
+        """Tab-Seite nur senkrecht scrollbar: nichts wird seitlich abgeschnitten.
+
+        Die Seiten sind so gebaut, dass ihre Mindestbreite ins 360-px-Panel passt
+        (siehe test_control_panel_fits_the_default_width); lange Namen kuerzen die
+        Combos und Listen mit "…" statt das Panel zu verbreitern.
+        """
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        return scroll
+
+    def _build_symbols_tab(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("panelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 6, 4, 0)
+        layout.setSpacing(6)
+
+        # Ticker search: die Trefferliste nimmt nur Platz ein, solange gesucht wird.
+        self.search_edit = QLineEdit(page)
+        self.search_edit.setPlaceholderText("Search ticker…")
+        self.search_edit.setToolTip("Ticker suchen (Ctrl+F) – Enter öffnet den ersten Treffer im Chart")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.search_edit.returnPressed.connect(self._on_search_return)
         layout.addWidget(self.search_edit)
 
-        self.result_list = QListWidget(root)
+        self.results_section = CollapsibleSection("Results", page, expanded=False)
+        self.result_list = QListWidget(page)
         self.result_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.result_list.setFixedHeight(96)
         self.result_list.itemSelectionChanged.connect(self._update_buttons)
         self.result_list.itemDoubleClicked.connect(lambda _item: self._activate_selected_symbol())
-        layout.addWidget(self.result_list)
-
+        self.results_section.content_layout.addWidget(self.result_list)
         search_buttons = QHBoxLayout()
         search_buttons.setSpacing(6)
-        self.open_chart_btn = QPushButton("▸ Chart", root)
+        self.open_chart_btn = QPushButton("Open", page)
         self.open_chart_btn.setToolTip("Ticker im Chart der Flag-Gruppe öffnen (Enter)")
         self.open_chart_btn.clicked.connect(self._activate_selected_symbol)
         search_buttons.addWidget(self.open_chart_btn)
-        self.add_btn = QPushButton("＋ Watchlist", root)
-        self.add_btn.setToolTip("Ausgewählten Ticker zur Watchlist hinzufügen (Ctrl+Enter)")
+        self.add_btn = QPushButton("Add", page)
+        self.add_btn.setToolTip("Ausgewählten Ticker zur aktuellen Watchlist hinzufügen")
         self.add_btn.clicked.connect(self._add_selected_ticker)
         search_buttons.addWidget(self.add_btn)
         search_buttons.addStretch(1)
-        self.search_status = QLabel("", root)
+        self.search_status = QLabel("", page)
         self.search_status.setObjectName("statusLabel")
         search_buttons.addWidget(self.search_status)
-        layout.addLayout(search_buttons)
+        self.results_section.content_layout.addLayout(search_buttons)
+        layout.addWidget(self.results_section)
 
-        # Watchlist
-        wl_header = QHBoxLayout()
-        wl_header.setSpacing(6)
-        wl_header.addWidget(self._section_label("WATCHLIST"))
-        wl_header.addStretch(1)
-        self.new_watchlist_btn = QPushButton("＋ Neu", root)
-        self.new_watchlist_btn.setToolTip("Neue Watchlist anlegen (leer oder als Kopie einer bestehenden)")
-        self.new_watchlist_btn.clicked.connect(self._create_watchlist)
-        wl_header.addWidget(self.new_watchlist_btn)
-        self.delete_watchlist_btn = QPushButton("− Löschen", root)
-        self.delete_watchlist_btn.setToolTip("Watchlist mit allen Tickern löschen")
-        self.delete_watchlist_btn.clicked.connect(self._delete_watchlist)
-        wl_header.addWidget(self.delete_watchlist_btn)
-        layout.addLayout(wl_header)
-
+        # Watchlist: Auswahl + Menue fuer die seltenen Aktionen (neu/loeschen/laden).
+        layout.addWidget(self._section_label("WATCHLIST"))
         wl_row = QHBoxLayout()
         wl_row.setSpacing(6)
-        self.watchlist_combo = QComboBox(root)
+        self.watchlist_combo = QComboBox(page)
         self.watchlist_combo.setEditable(True)
         self.watchlist_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.watchlist_combo.setSizePolicy(self.watchlist_combo.sizePolicy().horizontalPolicy(), self.watchlist_combo.sizePolicy().verticalPolicy())
+        _shrinkable_combo(self.watchlist_combo)
         completer = self.watchlist_combo.completer()
         if completer is not None:
             completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -306,209 +471,302 @@ class ControlPanelWindow(QMainWindow):
             self.watchlist_combo.lineEdit().installEventFilter(self)
             self.watchlist_combo.lineEdit().returnPressed.connect(self._commit_watchlist_text)
         wl_row.addWidget(self.watchlist_combo, 1)
-        self.watchlist_reload_btn = QPushButton("⟳", root)
-        self.watchlist_reload_btn.setFixedWidth(28)
+
+        self.watchlist_menu_btn = QToolButton(page)
+        self.watchlist_menu_btn.setText("⋯")
+        self.watchlist_menu_btn.setFixedWidth(28)
+        self.watchlist_menu_btn.setToolTip("Watchlist anlegen, löschen oder neu laden")
+        self.watchlist_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        wl_menu = QMenu(self.watchlist_menu_btn)
+        self.new_watchlist_btn = wl_menu.addAction("New list…")
+        self.new_watchlist_btn.setToolTip("Neue Watchlist anlegen (leer oder als Kopie einer bestehenden)")
+        self.new_watchlist_btn.triggered.connect(self._create_watchlist)
+        self.delete_watchlist_btn = wl_menu.addAction("Delete list…")
+        self.delete_watchlist_btn.setToolTip("Watchlist mit allen Tickern löschen")
+        self.delete_watchlist_btn.triggered.connect(self._delete_watchlist)
+        wl_menu.addSeparator()
+        self.watchlist_reload_btn = wl_menu.addAction("Reload")
         self.watchlist_reload_btn.setToolTip("Watchlisten neu laden")
-        self.watchlist_reload_btn.clicked.connect(self.refresh_watchlists)
-        wl_row.addWidget(self.watchlist_reload_btn)
+        self.watchlist_reload_btn.triggered.connect(lambda: self.refresh_watchlists())
+        self.watchlist_menu_btn.setMenu(wl_menu)
+        wl_row.addWidget(self.watchlist_menu_btn)
         layout.addLayout(wl_row)
 
-        self.watchlist_list = QListWidget(root)
+        self.watchlist_list = QListWidget(page)
         self.watchlist_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.watchlist_list.setToolTip(
+            "C kopieren · V verschieben (Ziel unten) · Shift+C/V mit Zielauswahl · "
+            "T Ziel wählen · Entf entfernen · Rechtsklick für alle Ziele"
+        )
         # Marking a row is enough to load it - no double click required.
         self.watchlist_list.itemSelectionChanged.connect(self._on_watchlist_selection_changed)
         self.watchlist_list.installEventFilter(self)
+        self.watchlist_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.watchlist_list.customContextMenuRequested.connect(self._show_watchlist_context_menu)
         layout.addWidget(self.watchlist_list, 1)
 
         wl_buttons = QHBoxLayout()
         wl_buttons.setSpacing(6)
-        self.remove_btn = QPushButton("− Entfernen", root)
-        self.remove_btn.setToolTip("Ausgewählten Ticker aus der Watchlist entfernen (Del)")
+        self.remove_btn = QPushButton("Remove", page)
+        self.remove_btn.setToolTip("Ausgewählten Ticker aus der Watchlist entfernen (Entf)")
         self.remove_btn.clicked.connect(self._remove_selected_ticker)
         wl_buttons.addWidget(self.remove_btn)
-        self.copy_btn = QPushButton("⧉ Kopieren", root)
-        self.copy_btn.setToolTip("Ausgewählten Ticker in eine andere Watchlist kopieren")
-        self.copy_btn.clicked.connect(self._copy_selected_ticker)
-        wl_buttons.addWidget(self.copy_btn)
-        self.move_btn = QPushButton("⇄ Verschieben", root)
-        self.move_btn.setToolTip("Ausgewählten Ticker in eine andere Watchlist verschieben")
-        self.move_btn.clicked.connect(self._move_selected_ticker)
-        wl_buttons.addWidget(self.move_btn)
         wl_buttons.addStretch(1)
-        self.watchlist_info = QLabel("", root)
+        self.watchlist_info = QLabel("", page)
         self.watchlist_info.setObjectName("statusLabel")
         wl_buttons.addWidget(self.watchlist_info)
         layout.addLayout(wl_buttons)
 
-        # Chart builder: pane presets + chart definition of the focused chart window.
-        builder_header = QHBoxLayout()
-        builder_header.setSpacing(6)
-        builder_header.addWidget(self._section_label("CHART-BUILDER"))
-        builder_header.addStretch(1)
-        self.builder_reload_btn = QPushButton("⟳", root)
+        # Kopieren/Verschieben ohne Dialog: das Ziel steht fest und wird gemerkt.
+        transfer_row = QHBoxLayout()
+        transfer_row.setSpacing(6)
+        transfer_row.addWidget(QLabel("To", page))
+        self.transfer_target_combo = _ElidingComboBox(page)
+        _shrinkable_combo(self.transfer_target_combo)
+        self.transfer_target_combo.setToolTip(
+            "Ziel-Watchlist für Copy/Move (T in der Liste springt hierher)"
+        )
+        self.transfer_target_combo.activated.connect(self._on_transfer_target_activated)
+        self.transfer_target_combo.currentTextChanged.connect(
+            lambda text: self.transfer_target_combo.setToolTip(
+                f"Ziel für Copy (C) / Move (V): {text}\nT in der Liste springt hierher"
+                if text
+                else "Ziel-Watchlist für Copy/Move"
+            )
+        )
+        transfer_row.addWidget(self.transfer_target_combo, 1)
+        self.copy_btn = QPushButton("Copy", page)
+        self.copy_btn.setToolTip(
+            "Ausgewählten Ticker in die Ziel-Watchlist kopieren (C) – Shift: anderes Ziel wählen"
+        )
+        self.copy_btn.clicked.connect(self._copy_selected_ticker)
+        transfer_row.addWidget(self.copy_btn)
+        self.move_btn = QPushButton("Move", page)
+        self.move_btn.setToolTip(
+            "Ausgewählten Ticker in die Ziel-Watchlist verschieben (V) – Shift: anderes Ziel wählen"
+        )
+        self.move_btn.clicked.connect(self._move_selected_ticker)
+        transfer_row.addWidget(self.move_btn)
+        layout.addLayout(transfer_row)
+        return page
+
+    def _build_chart_tab(self) -> QWidget:
+        """Chart builder: pane presets + chart definition of the focused chart window."""
+        page = QWidget()
+        page.setObjectName("panelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 6, 4, 0)
+        layout.setSpacing(8)
+
+        # Vorlage: gespeichertes Chart laden und den Entwurf speichern - beides an
+        # einer Stelle, weil es denselben Chart-Bestand betrifft.
+        self.template_section = self._section("template", "Template")
+        load_row = QHBoxLayout()
+        load_row.setSpacing(6)
+        load_row.addWidget(self._field_label("Load", page))
+        self.preset_combo = QComboBox(page)
+        self.preset_combo.setEditable(True)
+        self.preset_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.preset_combo.setToolTip("Gespeichertes Chart auf die Charts der Flag-Gruppe anwenden")
+        _shrinkable_combo(self.preset_combo)
+        preset_completer = self.preset_combo.completer()
+        if preset_completer is not None:
+            preset_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            preset_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.preset_combo.activated.connect(self._on_preset_activated)
+        load_row.addWidget(self.preset_combo, 1)
+        self.template_section.content_layout.addLayout(load_row)
+
+        save_chart_row = QHBoxLayout()
+        save_chart_row.setSpacing(6)
+        self.save_inplace_btn = QPushButton("Save", page)
+        self.save_inplace_btn.setToolTip("Entwurf im aktuellen Chart speichern, ohne Namensdialog (Ctrl+S)")
+        self.save_inplace_btn.clicked.connect(self._save_chart_in_place)
+        save_chart_row.addWidget(self.save_inplace_btn)
+        self.save_chart_btn = QPushButton("Save as…", page)
+        self.save_chart_btn.setToolTip("Entwurf als neue Chart-Definition speichern")
+        self.save_chart_btn.clicked.connect(self._save_chart_as)
+        save_chart_row.addWidget(self.save_chart_btn)
+        self.discard_chart_btn = QPushButton("Revert", page)
+        self.discard_chart_btn.setToolTip("Änderungen verwerfen und letzten gespeicherten Stand rendern")
+        self.discard_chart_btn.clicked.connect(self._discard_builder)
+        save_chart_row.addWidget(self.discard_chart_btn)
+        save_chart_row.addStretch(1)
+        self.template_section.content_layout.addLayout(save_chart_row)
+        layout.addWidget(self.template_section)
+
+        # Panes des Zielcharts: Preispane, Liste mit Werkzeugleiste, Anhaengen.
+        self.panes_section = self._section("panes", "Panes")
+        self.volume_check = QCheckBox("Volume", page)
+        self.volume_check.setToolTip("Eingebautes Volumen-Pane hinzufügen/entfernen")
+        self.volume_check.toggled.connect(self._on_volume_toggled)
+        self.panes_section.add_header_widget(self.volume_check)
+        self.builder_reload_btn = QToolButton(page)
+        self.builder_reload_btn.setText("⟳")
         self.builder_reload_btn.setFixedWidth(28)
         self.builder_reload_btn.setToolTip("Pane- und Chart-Katalog neu laden")
         self.builder_reload_btn.clicked.connect(self.refresh_catalog)
-        builder_header.addWidget(self.builder_reload_btn)
-        layout.addLayout(builder_header)
-
-        self.builder_target_label = QLabel("Ziel: kein Chartfenster", root)
-        self.builder_target_label.setToolTip(
-            "Fokussiertes Chartfenster (klebrig – bleibt stehen, auch wenn das Panel den Fokus hat)"
-        )
-        layout.addWidget(self.builder_target_label)
-
-        self.builder_draft_label = QLabel("", root)
-        self.builder_draft_label.setObjectName("statusLabel")
-        self.builder_draft_label.setToolTip("Noch nicht gespeicherter Entwurf")
-        layout.addWidget(self.builder_draft_label)
+        self.panes_section.add_header_widget(self.builder_reload_btn)
+        panes_layout = self.panes_section.content_layout
 
         price_row = QHBoxLayout()
         price_row.setSpacing(6)
-        price_row.addWidget(self._field_label("Preispane", root))
-        self.price_pane_combo = QComboBox(root)
+        price_row.addWidget(self._field_label("Price", page))
+        self.price_pane_combo = _ElidingComboBox(page)
         self.price_pane_combo.setToolTip("Pane-Preset für das Preispane (pane_id 'main')")
+        _shrinkable_combo(self.price_pane_combo)
         self.price_pane_combo.activated.connect(self._on_price_pane_activated)
         price_row.addWidget(self.price_pane_combo, 1)
-        layout.addLayout(price_row)
+        panes_layout.addLayout(price_row)
 
-        self.builder_pane_list = QListWidget(root)
+        list_row = QHBoxLayout()
+        list_row.setSpacing(6)
+        self.builder_pane_list = QListWidget(page)
         self.builder_pane_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        # Shrinkable: the panel is only 360x560 by default and the builder must not
-        # push its minimum height through the roof.
-        self.builder_pane_list.setMinimumHeight(56)
-        self.builder_pane_list.setMaximumHeight(140)
-        self.builder_pane_list.setToolTip("Panes dieses Charts in Reihenfolge (eine Zeile je Pane)")
-        layout.addWidget(self.builder_pane_list, 1)
+        # Lange Zeilen werden mit "…" gekuerzt (voller Text im Tooltip), statt eine
+        # horizontale Scrollleiste zu erzwingen.
+        self.builder_pane_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.builder_pane_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.builder_pane_list.setMinimumHeight(96)
+        self.builder_pane_list.setMaximumHeight(160)
+        self.builder_pane_list.setToolTip(
+            "Panes dieses Charts in Reihenfolge – Alt+↑/↓ verschiebt die markierte Pane"
+        )
+        self.builder_pane_list.installEventFilter(self)
+        list_row.addWidget(self.builder_pane_list, 1)
+        tools = QVBoxLayout()
+        tools.setSpacing(4)
+        self.pane_up_btn = self._tool_button("▲", "Markierte Pane nach oben (Alt+↑)", page)
+        self.pane_up_btn.clicked.connect(lambda: self._move_selected_pane(-1))
+        tools.addWidget(self.pane_up_btn)
+        self.pane_down_btn = self._tool_button("▼", "Markierte Pane nach unten (Alt+↓)", page)
+        self.pane_down_btn.clicked.connect(lambda: self._move_selected_pane(1))
+        tools.addWidget(self.pane_down_btn)
+        self.duplicate_pane_btn = self._tool_button(
+            "⧉", "Markierte Pane duplizieren (eigener Slot, gleiche Einstellungen)", page
+        )
+        self.duplicate_pane_btn.clicked.connect(self._on_duplicate_pane_clicked)
+        tools.addWidget(self.duplicate_pane_btn)
+        self.remove_pane_btn = self._tool_button("✕", "Markierte Pane entfernen (das Preispane bleibt)", page)
+        self.remove_pane_btn.clicked.connect(self._on_remove_pane_clicked)
+        tools.addWidget(self.remove_pane_btn)
+        tools.addStretch(1)
+        list_row.addLayout(tools)
+        panes_layout.addLayout(list_row)
 
         add_pane_row = QHBoxLayout()
         add_pane_row.setSpacing(6)
-        add_pane_row.addWidget(self._field_label("Hinzufügen", root))
-        self.add_pane_combo = QComboBox(root)
+        add_pane_row.addWidget(self._field_label("Add", page))
+        self.add_pane_combo = QComboBox(page)
         self.add_pane_combo.setEditable(True)
         self.add_pane_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.add_pane_combo.setToolTip("Pane-Preset wählen und mit ＋ ans Ende anhängen (Enter im Feld)")
+        _shrinkable_combo(self.add_pane_combo)
         add_completer = self.add_pane_combo.completer()
         if add_completer is not None:
             add_completer.setFilterMode(Qt.MatchFlag.MatchContains)
             add_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
             add_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         if self.add_pane_combo.lineEdit() is not None:
-            self.add_pane_combo.lineEdit().setPlaceholderText("Preset wählen…")
+            self.add_pane_combo.lineEdit().setPlaceholderText("Preset…")
             self.add_pane_combo.lineEdit().returnPressed.connect(self._on_add_pane_clicked)
         add_pane_row.addWidget(self.add_pane_combo, 1)
-        self.add_pane_btn = QPushButton("＋", root)
-        self.add_pane_btn.setFixedWidth(28)
-        self.add_pane_btn.setToolTip("Pane ans Ende anhängen (Enter im Feld)")
+        self.add_pane_btn = self._tool_button("＋", "Pane ans Ende anhängen (Enter im Feld)", page)
         self.add_pane_btn.clicked.connect(self._on_add_pane_clicked)
         add_pane_row.addWidget(self.add_pane_btn)
-        layout.addLayout(add_pane_row)
+        panes_layout.addLayout(add_pane_row)
+        layout.addWidget(self.panes_section)
 
-        pane_actions = QHBoxLayout()
-        pane_actions.setSpacing(6)
-        self.remove_pane_btn = QPushButton("− Pane", root)
-        self.remove_pane_btn.setToolTip("Markierte Pane entfernen (das Preispane bleibt)")
-        self.remove_pane_btn.clicked.connect(self._on_remove_pane_clicked)
-        pane_actions.addWidget(self.remove_pane_btn)
-        self.pane_up_btn = QPushButton("▲", root)
-        self.pane_up_btn.setFixedWidth(28)
-        self.pane_up_btn.setToolTip("Markierte Pane nach oben")
-        self.pane_up_btn.clicked.connect(lambda: self._move_selected_pane(-1))
-        pane_actions.addWidget(self.pane_up_btn)
-        self.pane_down_btn = QPushButton("▼", root)
-        self.pane_down_btn.setFixedWidth(28)
-        self.pane_down_btn.setToolTip("Markierte Pane nach unten")
-        self.pane_down_btn.clicked.connect(lambda: self._move_selected_pane(1))
-        pane_actions.addWidget(self.pane_down_btn)
-        self.scale_toggle_btn = QPushButton("LIN/LOG", root)
-        self.scale_toggle_btn.setToolTip("Y-Skala der markierten Pane umschalten")
-        self.scale_toggle_btn.clicked.connect(self._toggle_selected_pane_scale)
-        pane_actions.addWidget(self.scale_toggle_btn)
-        self.duplicate_pane_btn = QPushButton("⧉ Pane", root)
-        self.duplicate_pane_btn.setToolTip("Markierte Pane duplizieren (eigener Slot, gleiche Einstellungen)")
-        self.duplicate_pane_btn.clicked.connect(self._on_duplicate_pane_clicked)
-        pane_actions.addWidget(self.duplicate_pane_btn)
-        self.volume_check = QCheckBox("≡ Volumen", root)
-        self.volume_check.setToolTip("Eingebautes Volumen-Pane hinzufügen/entfernen")
-        self.volume_check.toggled.connect(self._on_volume_toggled)
-        pane_actions.addWidget(self.volume_check)
-        pane_actions.addStretch(1)
-        layout.addLayout(pane_actions)
-
-        # Pane-Editor: Preset, Hoehe (Gewicht) und Titel der markierten Pane. Der
-        # Preset-Wechsel referenziert ein anderes geteiltes Preset, der Titel landet
+        # Pane-Editor: Preset, Titel, Hoehe (Gewicht) und Skala der markierten Pane.
+        # Der Preset-Wechsel referenziert ein anderes geteiltes Preset, der Titel landet
         # als Override nur in diesem Chart - das Preset selbst bleibt sauber.
+        self.pane_section = self._section("pane", "Selected pane")
+        pane_layout = self.pane_section.content_layout
         pane_preset_row = QHBoxLayout()
         pane_preset_row.setSpacing(6)
-        pane_preset_row.addWidget(self._field_label("Preset", root))
-        self.pane_preset_combo = QComboBox(root)
+        pane_preset_row.addWidget(self._field_label("Preset", page))
+        self.pane_preset_combo = _ElidingComboBox(page)
         self.pane_preset_combo.setToolTip(
             "Pane-Preset der markierten Pane wechseln - der Slot bleibt, das Preispane "
-            "wechselt oben"
+            "wechselt oben (Price)"
         )
+        _shrinkable_combo(self.pane_preset_combo)
         self.pane_preset_combo.activated.connect(self._on_pane_preset_activated)
         pane_preset_row.addWidget(self.pane_preset_combo, 1)
-        layout.addLayout(pane_preset_row)
+        pane_layout.addLayout(pane_preset_row)
+
+        pane_title_row = QHBoxLayout()
+        pane_title_row.setSpacing(6)
+        pane_title_row.addWidget(self._field_label("Title", page))
+        self.pane_title_edit = QLineEdit(page)
+        self.pane_title_edit.setToolTip("Titel der markierten Pane (Override nur in diesem Chart)")
+        self.pane_title_edit.editingFinished.connect(self._on_pane_title_changed)
+        pane_title_row.addWidget(self.pane_title_edit, 1)
+        pane_layout.addLayout(pane_title_row)
 
         pane_edit_row = QHBoxLayout()
         pane_edit_row.setSpacing(6)
-        pane_edit_row.addWidget(self._field_label("Höhe", root))
-        self.pane_weight_spin = QSpinBox(root)
+        pane_edit_row.addWidget(self._field_label("Height", page))
+        self.pane_weight_spin = QSpinBox(page)
         self.pane_weight_spin.setRange(1, 20)
         self.pane_weight_spin.setFixedWidth(52)
         self.pane_weight_spin.setToolTip("Gewicht der markierten Pane (sofort angewendet)")
         self.pane_weight_spin.editingFinished.connect(self._on_pane_weight_changed)
         pane_edit_row.addWidget(self.pane_weight_spin)
-        pane_edit_row.addWidget(self._field_label("Titel", root))
-        self.pane_title_edit = QLineEdit(root)
-        self.pane_title_edit.setToolTip("Titel der markierten Pane (Override nur in diesem Chart)")
-        self.pane_title_edit.editingFinished.connect(self._on_pane_title_changed)
-        pane_edit_row.addWidget(self.pane_title_edit, 1)
-        layout.addLayout(pane_edit_row)
+        pane_edit_row.addStretch(1)
+        pane_edit_row.addWidget(QLabel("Scale", page))
+        self.scale_toggle_btn = QPushButton("LIN", page)
+        self.scale_toggle_btn.setObjectName("scaleButton")
+        self.scale_toggle_btn.setToolTip("Y-Skala der markierten Pane umschalten (LIN ↔ LOG)")
+        self.scale_toggle_btn.setFixedWidth(
+            QFontMetrics(self.scale_toggle_btn.font()).horizontalAdvance("LOG") + 24
+        )
+        self.scale_toggle_btn.clicked.connect(self._toggle_selected_pane_scale)
+        pane_edit_row.addWidget(self.scale_toggle_btn)
+        pane_layout.addLayout(pane_edit_row)
+        layout.addWidget(self.pane_section)
 
         self.builder_pane_list.itemSelectionChanged.connect(self._on_pane_selection_changed)
+        layout.addStretch(1)
+        return page
 
-        save_chart_row = QHBoxLayout()
-        save_chart_row.setSpacing(6)
-        self.save_chart_btn = QPushButton("Speichern unter…", root)
-        self.save_chart_btn.setToolTip("Entwurf als Chart-Definition speichern")
-        self.save_chart_btn.clicked.connect(self._save_chart_as)
-        save_chart_row.addWidget(self.save_chart_btn)
-        self.save_inplace_btn = QPushButton("Speichern", root)
-        self.save_inplace_btn.setToolTip("Entwurf im aktuellen Chart speichern (ohne Namensdialog)")
-        self.save_inplace_btn.clicked.connect(self._save_chart_in_place)
-        save_chart_row.addWidget(self.save_inplace_btn)
-        self.discard_chart_btn = QPushButton("Verwerfen", root)
-        self.discard_chart_btn.setToolTip("Änderungen verwerfen und letzten gespeicherten Stand rendern")
-        self.discard_chart_btn.clicked.connect(self._discard_builder)
-        save_chart_row.addWidget(self.discard_chart_btn)
-        save_chart_row.addStretch(1)
-        layout.addLayout(save_chart_row)
+    def _section(self, key: str, title: str) -> CollapsibleSection:
+        """Aufklappbarer Bereich, dessen Zustand ueber Neustarts erhalten bleibt."""
+        expanded = _as_bool(self._settings.value(f"panel/section/{key}", True), True)
+        section = CollapsibleSection(title, expanded=expanded)
+        section.toggled.connect(lambda state: self._settings.setValue(f"panel/section/{key}", state))
+        return section
 
-        # Keep the stored-chart combo of the old CHART-PRESET section.
-        layout.addWidget(self._section_label("GESPEICHERTES CHART ANWENDEN"))
-        self.preset_combo = QComboBox(root)
-        self.preset_combo.setEditable(True)
-        self.preset_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        preset_completer = self.preset_combo.completer()
-        if preset_completer is not None:
-            preset_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-            preset_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.preset_combo.activated.connect(self._on_preset_activated)
-        layout.addWidget(self.preset_combo)
+    @staticmethod
+    def _tool_button(text: str, tooltip: str, parent: QWidget) -> QPushButton:
+        button = QPushButton(text, parent)
+        button.setObjectName("toolButton")
+        button.setFixedWidth(28)
+        button.setToolTip(tooltip)
+        return button
 
-        self.charts_label = QLabel("Charts: –", root)
-        self.charts_label.setObjectName("statusLabel")
-        layout.addWidget(self.charts_label)
+    def _install_shortcuts(self) -> None:
+        """Panel-weite Tastenkuerzel (nur solange das Panel den Fokus hat)."""
+        bindings = (
+            ("Ctrl+1", lambda: self.tabs.setCurrentIndex(0)),
+            ("Ctrl+2", lambda: self.tabs.setCurrentIndex(1)),
+            ("Ctrl+F", self._focus_search),
+            ("Ctrl+S", self._save_shortcut),
+        )
+        self._shortcuts = []
+        for keys, slot in bindings:
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(slot)
+            self._shortcuts.append(shortcut)
 
-        # Status line
-        self.status_label = QLabel("", root)
-        self.status_label.setObjectName("statusLabel")
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+    def _focus_search(self) -> None:
+        self.tabs.setCurrentIndex(0)
+        self.search_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search_edit.selectAll()
 
-        self.setStyleSheet(PANEL_STYLESHEET)
-        self._update_buttons()
+    def _save_shortcut(self) -> None:
+        if self.save_inplace_btn.isEnabled():
+            self._save_chart_in_place()
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
@@ -519,8 +777,8 @@ class ControlPanelWindow(QMainWindow):
     def _field_label(self, text: str, parent: Optional[QWidget] = None) -> QLabel:
         """Label einer Builder-Zeile in einer festen Spalte.
 
-        Eine feste Spalte haelt Combos und Spinboxen untereinander ausgerichtet und
-        kostet weniger Breite als ein Praefix-Label: das Panel ist nur ~360 px breit,
+        Eine feste Spalte haelt Combos und Spinboxen untereinander ausgerichtet; die
+        kurzen englischen Labels kosten wenig Breite: das Panel ist nur ~360 px breit,
         die Preset-Zusammenfassungen brauchen den Platz im Combo. Die Breite kommt
         aus der Schrift, damit sie bei anderer Skalierung nicht abschneidet.
         """
@@ -529,7 +787,7 @@ class ControlPanelWindow(QMainWindow):
             self._label_column_width = (
                 max(
                     metrics.horizontalAdvance(text)
-                    for text in ("Preispane", "Hinzufügen", "Preset", "Höhe", "Titel")
+                    for text in FIELD_LABELS
                 )
                 + 6
             )
@@ -593,6 +851,14 @@ class ControlPanelWindow(QMainWindow):
             # preview stays, "Verwerfen" resynchronises it with the server.
             hint = " (Verwerfen lädt den Serverstand)" if op in ("compose_chart", "apply_chart") else ""
             self._set_status(f"⚠ {op}: {message}{hint}", error=True)
+            if (
+                op == "mutate_watchlist"
+                and meta.get("kind") == "move"
+                and meta.get("list_name") == self._current_watchlist
+            ):
+                # Move nimmt die Zeile sofort heraus; schlaegt er fehl, zeigt die
+                # neu geladene Liste wieder den Serverstand.
+                self._select_watchlist(self._current_watchlist, reload_content=True)
             if op == "search_symbols":
                 self._search_inflight = None
             self._update_buttons()
@@ -642,7 +908,7 @@ class ControlPanelWindow(QMainWindow):
             for w in self._chart_windows
             if int(w.get("color_flag") or 0) == flag
         ]
-        self.charts_label.setText(f"Charts (Flag {flag}): {', '.join(symbols) if symbols else '–'}")
+        self.charts_label.setText(f"Charts (flag {flag}): {', '.join(symbols) if symbols else '–'}")
 
         target_changed = False
         if self._builder_target and self._builder_target not in self._chart_symbols:
@@ -766,8 +1032,11 @@ class ControlPanelWindow(QMainWindow):
             self._debounce.stop()
             self.result_list.clear()
             self.search_status.setText("")
+            self.results_section.set_title("Results")
+            self.results_section.set_expanded(False)
             self._update_buttons()
             return
+        self.results_section.set_expanded(True)
         self._debounce.start(self.config.control_search_debounce_ms)
 
     def _on_search_return(self) -> None:
@@ -814,6 +1083,8 @@ class ControlPanelWindow(QMainWindow):
                 )
                 self.result_list.addItem(item)
             self.search_status.setText(f"{len(results)} Treffer")
+            self.results_section.set_title(f"Results ({len(results)})")
+            self.results_section.set_expanded(True)
             if results:
                 self.result_list.setCurrentRow(0)
 
@@ -896,6 +1167,7 @@ class ControlPanelWindow(QMainWindow):
                 self.watchlist_combo.addItem(label, name)
         finally:
             self._populating = False
+        self._populate_transfer_combo()
 
     def _watchlist_names(self, editable_only: bool = False) -> List[str]:
         names: List[str] = []
@@ -962,6 +1234,7 @@ class ControlPanelWindow(QMainWindow):
         self._current_watchlist = name
         entry = next((w for w in self._watchlists if str(w.get("name")) == name), {"editable": True})
         self._watchlist_editable = bool(entry.get("editable", True))
+        self._populate_transfer_combo()
         if reload_content:
             with self._selection_guard():
                 self.watchlist_list.clear()
@@ -1010,13 +1283,77 @@ class ControlPanelWindow(QMainWindow):
                 break
 
     def _copy_selected_ticker(self) -> None:
-        self._transfer_selected_ticker("copy")
+        self._transfer_selected_ticker("copy", ask=_shift_pressed())
 
     def _move_selected_ticker(self) -> None:
-        self._transfer_selected_ticker("move")
+        self._transfer_selected_ticker("move", ask=_shift_pressed())
 
-    def _transfer_selected_ticker(self, action: str) -> None:
-        """Copy/move the selected row into another watchlist picked by the user."""
+    # Kopieren/Verschieben: das Ziel steht in transfer_target_combo und wird gemerkt,
+    # damit C/V (bzw. Copy/Move) ohne Dialog arbeiten. Shift fragt nach einem Ziel.
+
+    def _populate_transfer_combo(self) -> None:
+        if not hasattr(self, "transfer_target_combo"):
+            return
+        targets = self._transfer_targets()
+        wanted = self._transfer_target() or str(self._settings.value("panel/transfer_target", "") or "")
+        previous = self._populating
+        self._populating = True
+        try:
+            self.transfer_target_combo.clear()
+            for name in targets:
+                self.transfer_target_combo.addItem(name, name)
+            index = self.transfer_target_combo.findData(wanted) if wanted else -1
+            if index < 0 and targets:
+                index = 0
+            self.transfer_target_combo.setCurrentIndex(index)
+        finally:
+            self._populating = previous
+        self.transfer_target_combo.setEnabled(self._connected and bool(targets))
+
+    def _transfer_target(self) -> str:
+        if not hasattr(self, "transfer_target_combo"):
+            return ""
+        index = self.transfer_target_combo.currentIndex()
+        if index < 0:
+            return ""
+        return str(self.transfer_target_combo.itemData(index) or "")
+
+    def _set_transfer_target(self, name: str) -> None:
+        """Ziel merken (Combo + QSettings) und an die Spitze der Zuletzt-Liste setzen."""
+        if not name:
+            return
+        self._recent_targets = [name] + [n for n in self._recent_targets if n != name][:4]
+        self._settings.setValue("panel/transfer_target", name)
+        index = self.transfer_target_combo.findData(name)
+        if index >= 0:
+            previous = self._populating
+            self._populating = True
+            try:
+                self.transfer_target_combo.setCurrentIndex(index)
+            finally:
+                self._populating = previous
+
+    def _on_transfer_target_activated(self, index: int) -> None:
+        if self._populating or index < 0:
+            return
+        self._set_transfer_target(str(self.transfer_target_combo.itemData(index) or ""))
+        # Zurueck in die Liste, damit gleich weiter mit C/V gearbeitet werden kann.
+        self.watchlist_list.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _focus_transfer_target(self) -> None:
+        if not self.transfer_target_combo.isEnabled():
+            return
+        self.transfer_target_combo.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.transfer_target_combo.showPopup()
+
+    def _transfer_selected_ticker(self, action: str, ask: bool = False, target: str = "") -> None:
+        """Copy/move the selected row into the target watchlist.
+
+        Without an explicit ``target`` the remembered target (transfer_target_combo)
+        is used; ``ask`` (Shift) or a missing target opens the picker dialog. The
+        marker then moves on to the next ticker so a list can be worked through
+        with repeated C/V presses.
+        """
         item = self.watchlist_list.currentItem()
         if item is None or not self._current_watchlist or not self._watchlist_editable:
             return
@@ -1028,15 +1365,35 @@ class ControlPanelWindow(QMainWindow):
             self._set_status("⚠ Keine andere Watchlist als Ziel vorhanden", error=True)
             return
         verb = "kopieren" if action == "copy" else "verschieben"
-        target = watchlist_dialogs.ask_watchlist(
-            self,
-            f"Ticker {verb}",
-            f"Ziel-Watchlist für {ticker}:",
-            targets,
-        )
+        if target not in targets:
+            target = "" if ask else self._transfer_target()
         if not target:
-            return
+            target = watchlist_dialogs.ask_watchlist(
+                self,
+                f"Ticker {verb}",
+                f"Ziel-Watchlist für {ticker}:",
+                self._ordered_targets(),
+                preselect=self._transfer_target(),
+            )
+            if not target:
+                return
+        self._set_transfer_target(target)
         self._set_status(f"{verb} {ticker} nach {target}…")
+        # Die Liste vor dem Request weiterschalten: die Antwort kann synchron kommen
+        # (und die Zeile dann schon entfernen oder die Liste neu laden).
+        row = self.watchlist_list.row(item)
+        if action == "move":
+            # Sofort aus der Liste nehmen: ein zweites V trifft so schon den naechsten
+            # Ticker statt denselben noch einmal (ein Fehler laedt die Liste neu).
+            with self._selection_guard():
+                self.watchlist_list.takeItem(row)
+                self.watchlist_list.setCurrentRow(-1)
+            next_row = min(row, self.watchlist_list.count() - 1)
+        else:
+            next_row = row + 1 if row + 1 < self.watchlist_list.count() else -1
+        if next_row >= 0:
+            # Ohne Guard: der naechste Ticker laedt wie bei ↑/↓ in den Chart.
+            self.watchlist_list.setCurrentRow(next_row)
         self._request(
             "mutate_watchlist",
             {
@@ -1052,6 +1409,44 @@ class ControlPanelWindow(QMainWindow):
                 "target_list": target,
             },
         )
+        self._update_buttons()
+
+    def _ordered_targets(self) -> List[str]:
+        """Transfer targets, recently used ones first."""
+        targets = self._transfer_targets()
+        recent = [n for n in self._recent_targets if n in targets]
+        return recent + [n for n in targets if n not in recent]
+
+    def _build_watchlist_context_menu(self) -> Optional[QMenu]:
+        """Rechtsklick-Menue einer Watchlist-Zeile: Copy to / Move to / Remove."""
+        if self.watchlist_list.currentItem() is None or not self._watchlist_editable:
+            return None
+        menu = QMenu(self)
+        targets = self._ordered_targets()
+        for label, action in (("Copy to", "copy"), ("Move to", "move")):
+            submenu = menu.addMenu(label)
+            submenu.setEnabled(bool(targets) and self._connected)
+            recent = [n for n in self._recent_targets if n in targets]
+            for index, name in enumerate(targets):
+                if recent and index == len(recent):
+                    submenu.addSeparator()
+                entry = submenu.addAction(name)
+                entry.triggered.connect(
+                    lambda _checked=False, a=action, t=name: self._transfer_selected_ticker(a, target=t)
+                )
+        menu.addSeparator()
+        remove = menu.addAction("Remove")
+        remove.setEnabled(self._connected)
+        remove.triggered.connect(self._remove_selected_ticker)
+        return menu
+
+    def _show_watchlist_context_menu(self, pos: QPoint) -> None:
+        item = self.watchlist_list.itemAt(pos)
+        if item is not None and item is not self.watchlist_list.currentItem():
+            self.watchlist_list.setCurrentItem(item)
+        menu = self._build_watchlist_context_menu()
+        if menu is not None:
+            menu.exec(self.watchlist_list.viewport().mapToGlobal(pos))
 
     def _create_watchlist(self) -> None:
         """Ask for a new watchlist (name and optional source) and create it."""
@@ -1662,6 +2057,7 @@ class ControlPanelWindow(QMainWindow):
         previous = self._populating
         self._populating = True
         try:
+            self._show_scale(pane)
             if pane is None:
                 self.pane_weight_spin.setValue(2)
                 self.pane_title_edit.setText("")
@@ -1683,6 +2079,14 @@ class ControlPanelWindow(QMainWindow):
             )
         finally:
             self._populating = previous
+
+    def _show_scale(self, pane: Optional[Dict[str, Any]]) -> None:
+        """Der Skala-Knopf zeigt die aktive Skala der markierten Pane (LIN oder LOG)."""
+        is_log = pane is not None and str(pane.get("scale")) == "log"
+        self.scale_toggle_btn.setText("LOG" if is_log else "LIN")
+        self.scale_toggle_btn.setProperty("log", "true" if is_log else "false")
+        self.scale_toggle_btn.style().unpolish(self.scale_toggle_btn)
+        self.scale_toggle_btn.style().polish(self.scale_toggle_btn)
 
     def _set_pane_preset_selection(
         self,
@@ -1893,10 +2297,11 @@ class ControlPanelWindow(QMainWindow):
         return str(pane.get("title") or pane_preset_id or pane.get("pane_id") or "?")
 
     def _pane_row_text(self, pane: Dict[str, Any]) -> str:
+        """Kompakte Zeile: Slot · Name · Skala · Hoehe (h = Gewicht)."""
         scale = "LOG" if str(pane.get("scale")) == "log" else "LIN"
         return (
             f"{pane.get('pane_id')} · {self._pane_display_name(pane)} · {scale}"
-            f" · Gewicht {pane.get('weight', 2)}"
+            f" · h{pane.get('weight', 2)}"
         )
 
     def _normalize_pane(self, raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -2014,10 +2419,10 @@ class ControlPanelWindow(QMainWindow):
         try:
             if self._builder_target and self._builder_target in self._chart_symbols:
                 symbol = self._chart_symbols.get(self._builder_target) or "?"
-                self.builder_target_label.setText(f"Ziel: {self._builder_target} · {symbol}")
+                self.builder_target_label.setText(f"→ {self._builder_target} · {symbol}")
             else:
-                self.builder_target_label.setText("Ziel: kein Chartfenster")
-            self.builder_draft_label.setText("• unbenannt" if self._builder_draft else "")
+                self.builder_target_label.setText(TARGET_NONE_TEXT)
+            self.builder_draft_label.setText(DRAFT_TEXT if self._builder_draft else "")
 
             current_price = self._main_preset_id()
             self.price_pane_combo.clear()
@@ -2048,6 +2453,10 @@ class ControlPanelWindow(QMainWindow):
             self.builder_pane_list.clear()
             for pane in self._builder_panes:
                 row = QListWidgetItem(self._pane_row_text(pane))
+                row.setToolTip(
+                    f"{self._pane_row_text(pane)}\n"
+                    f"Preset: {pane.get('pane_preset_id') or '?'} · Höhe (Gewicht) {pane.get('weight', 2)}"
+                )
                 row.setData(Qt.ItemDataRole.UserRole, str(pane.get("pane_id") or ""))
                 self.builder_pane_list.addItem(row)
             if selected:
@@ -2154,8 +2563,10 @@ class ControlPanelWindow(QMainWindow):
         self.remove_btn.setEnabled(can_edit_row)
         self.copy_btn.setEnabled(can_edit_row)
         self.move_btn.setEnabled(can_edit_row)
+        self.transfer_target_combo.setEnabled(self._connected and self.transfer_target_combo.count() > 0)
         self.new_watchlist_btn.setEnabled(self._connected)
         self.delete_watchlist_btn.setEnabled(self._connected and bool(self._watchlists))
+        self.watchlist_reload_btn.setEnabled(self._connected)
         self._update_builder_enabled()
 
     def _set_status(self, text: str, error: bool = False) -> None:
@@ -2193,6 +2604,12 @@ class ControlPanelWindow(QMainWindow):
             flag = 0
         self.flag_btn.set_flag(flag)
         self._preset_id = str(self._settings.value("panel/preset", "") or "")
+        try:
+            tab = int(self._settings.value("panel/tab", 0) or 0)
+        except (TypeError, ValueError):
+            tab = 0
+        if 0 <= tab < self.tabs.count():
+            self.tabs.setCurrentIndex(tab)
 
     def _save_settings(self) -> None:
         self._settings.setValue("panel/geometry", self.saveGeometry())
@@ -2210,9 +2627,31 @@ class ControlPanelWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt naming)
-        if obj is self.watchlist_list and event.type() == event.Type.KeyPress:
+        # Waehrend _build_ui laufen schon Events durch den Filter: Widgets, die noch
+        # nicht existieren, per getattr abfragen.
+        if obj is getattr(self, "watchlist_list", None) and event.type() == event.Type.KeyPress:
             if event.key() == Qt.Key.Key_Delete:
                 self._remove_selected_ticker()
+                return True
+            modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+            plain = modifiers in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier)
+            if plain and event.key() in (Qt.Key.Key_C, Qt.Key.Key_V):
+                # C kopiert, V verschiebt in das gemerkte Ziel; Shift fragt nach dem Ziel.
+                action = "copy" if event.key() == Qt.Key.Key_C else "move"
+                ask = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+                if self.copy_btn.isEnabled():
+                    self._transfer_selected_ticker(action, ask=ask)
+                return True
+            if modifiers == Qt.KeyboardModifier.NoModifier and event.key() == Qt.Key.Key_T:
+                self._focus_transfer_target()
+                return True
+        if obj is getattr(self, "builder_pane_list", None) and event.type() == event.Type.KeyPress:
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier and event.key() in (
+                Qt.Key.Key_Up,
+                Qt.Key.Key_Down,
+            ):
+                if self.pane_up_btn.isEnabled():
+                    self._move_selected_pane(-1 if event.key() == Qt.Key.Key_Up else 1)
                 return True
         combo = getattr(self, "watchlist_combo", None)
         if combo is not None and obj is combo.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
