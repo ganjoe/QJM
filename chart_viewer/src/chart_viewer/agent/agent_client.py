@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 # Configurable timeout and debounce interval (via environment variables)
 CV_AUTOSAVE_DEBOUNCE_SEC = float(os.environ.get("CV_AUTOSAVE_DEBOUNCE_SEC", "1.5"))
 
+# Symbolwechsel laufen auf Worker-Threads - nie im WebSocket-Empfangs-Thread.
+# Der Empfangs-Thread muss weiter Nachrichten abnehmen (weitere Klicks,
+# control.request, Keepalive-Pings); wartet er auf den Datenabruf, laeuft der
+# Nachrichtenpuffer voll, Pings bleiben unbeantwortet und die Verbindung wird
+# mit 1011 getrennt ("keine Antwort vom Agent", alle Charts auf einmal).
+CV_SYMBOL_CHANGE_WORKERS = max(1, int(os.environ.get("CV_SYMBOL_CHANGE_WORKERS", "2")))
+# Sicherheitsnetz gegen einen haengenden Datenabruf (der interne POST hatte
+# bisher gar keinen Timeout und konnte den Worker unbegrenzt blockieren).
+CV_SYMBOL_CHANGE_TIMEOUT_SEC = float(os.environ.get("CV_SYMBOL_CHANGE_TIMEOUT_SEC", "60"))
+
+# Eigene Control-API des Agenten (run_server.py). Ueber sie laeuft der
+# vollstaendige Datenabruf + Render eines Symbolwechsels.
+CONTROL_API_URL = os.environ.get("CV_CONTROL_API_URL", "http://127.0.0.1:8766")
+
 
 class ChartAgent:
     """Reference Python Agent: sole authoritative source of truth for layout and data."""
@@ -59,6 +73,15 @@ class ChartAgent:
 
         # Control panel service: symbol search, watchlist CRUD, chart presets
         self.control_service = ControlService(self)
+
+        # Symbolwechsel: je Fenster genau ein offener Wunsch + Worker-Threads.
+        # Der Empfangs-Thread legt nur ab und kehrt sofort zurueck.
+        self._symbol_cv = threading.Condition()
+        self._pending_symbol_changes: Dict[str, tuple] = {}
+        self._symbol_inflight: set = set()
+        self._symbol_workers: list = []
+        self._symbol_workers_lock = threading.Lock()
+        self._window_close_epoch: Dict[str, int] = {}
 
     def start(self) -> None:
         self.transport.connect()
@@ -138,6 +161,9 @@ class ChartAgent:
                 logger.info(f"Agent recorded window {win_id} closed by user")
                 self.layout_ledger.pop(win_id, None)
                 self.series_data.pop(win_id, None)
+                # Ein noch laufender/nachlaufender Symbolwechsel darf das eben
+                # geschlossene Fenster nicht wieder aufreissen.
+                self._forget_symbol_change(win_id)
 
         elif envelope.type == "window.geometry_changed":
             win_id = envelope.window_id or (envelope.payload.get("window_id") if isinstance(envelope.payload, dict) else None)
@@ -159,7 +185,8 @@ class ChartAgent:
             symbol = envelope.payload.get("symbol") if isinstance(envelope.payload, dict) else None
             preset = envelope.payload.get("preset") if isinstance(envelope.payload, dict) else None
             if win_id and symbol:
-                self._handle_window_change_symbol(win_id, symbol, preset=preset)
+                # Nicht hier rendern: der Datenabruf gehoert auf einen Worker.
+                self.request_symbol_change(win_id, symbol, preset=preset)
 
         elif envelope.type == "window.pane_scales_changed":
             payload = envelope.payload if isinstance(envelope.payload, dict) else {}
@@ -257,26 +284,59 @@ class ChartAgent:
         position: Optional[dict] = None,
         size: Optional[dict] = None,
     ) -> None:
-        """Agent opens a new window in the Viewer (Section 8)."""
+        """Agent opens a new window in the Viewer (Section 8).
+
+        `position`/`size` sind eine ausdrueckliche Platzierung (Setup laden,
+        Restore) - nur dann wandern sie in die Nachricht. Ein Re-Render (Chart
+        anwenden, Symbolwechsel, Compose) schickt KEINE Geometrie: sie gehoert dem
+        Client. Der Ledger merkt sich nur den zuletzt gemeldeten Stand, damit
+        Setups und ein Client-Neustart ihn wiederherstellen koennen.
+        """
+        previous = self.layout_ledger.get(window_id) or {}
+        known_window = window_id in self.layout_ledger
         win_info = {
             "window_id": window_id,
             "symbol": symbol,
             "timeframe": {"unit": timeframe_unit, "multiplier": multiplier},
             "sync_group_id": sync_group_id,
-            "position": position or {"x": 100, "y": 100},
-            "size": size or {"width": 900, "height": 600},
+            # Die Geometrie gehoert dem Client: ein Re-Render (Chart anwenden,
+            # Symbolwechsel, Compose) uebernimmt den zuletzt gemeldeten Stand.
+            # Die Startwerte gelten nur fuer ein wirklich neues Fenster - sonst
+            # springt jedes Anwenden auf 100,100 / 900x600.
+            "position": position or previous.get("position") or {"x": 100, "y": 100},
+            "size": size or previous.get("size") or {"width": 900, "height": 600},
         }
         # Farbe und Chart-Definition ueberleben ein Neu-Rendern desselben Fensters
         # (Symbolwechsel): sie gehoeren zum Fenster, nicht zum Datenabruf.
-        previous = self.layout_ledger.get(window_id) or {}
         for key in ("color_flag", "chart", "preset"):
             if key in previous:
                 win_info[key] = previous[key]
         self.layout_ledger[window_id] = win_info
 
+        # Platzieren darf der Agent nur beim ANLEGEN eines Fensters (Startwerte)
+        # oder auf ausdruecklichen Wunsch (Setup laden, Restore). Ein Re-Render
+        # eines offenen Fensters schickt KEINE Geometrie: sie gehoert dem Client -
+        # sonst zieht jedes Anwenden das Fenster auf den (moeglicherweise
+        # veralteten) Ledger-Stand.
+        payload = dict(win_info)
+        if known_window and position is None:
+            payload.pop("position", None)
+        if known_window and size is None:
+            payload.pop("size", None)
+
+        if "position" in payload or "size" in payload:
+            logger.info(
+                "window.open %s platziert: position=%s size=%s",
+                window_id, payload.get("position"), payload.get("size"),
+            )
+        else:
+            logger.info(
+                "window.open %s: ohne Geometrie (der Client behaelt Position/Groesse)", window_id
+            )
+
         env = make_envelope(
             msg_type="window.open",
-            payload=win_info,
+            payload=payload,
             kind=MessageKind.COMMAND,
             window_id=window_id,
         )
@@ -347,13 +407,95 @@ class ChartAgent:
         )
         self.send_command(env)
 
-    def _handle_window_change_symbol(self, window_id: str, new_symbol: str, preset: str | None = None) -> None:
+    # ── Symbolwechsel: nie im Empfangs-Thread, pro Fenster koalesziert ─────
+
+    def request_symbol_change(self, window_id: str, symbol: str, preset: str | None = None) -> None:
+        """Einen Symbolwechsel vormerken und sofort zurueckkehren.
+
+        Der WebSocket-Empfangs-Thread darf nicht auf den Datenabruf warten: er
+        muss weiter Nachrichten abnehmen (weitere Klicks, control.request,
+        Keepalive). Wartet er, laeuft der Nachrichtenpuffer voll, die Pings
+        bleiben unbeantwortet und die Verbindung wird mit 1011 getrennt - die
+        Antworten kommen dann nie oder als Schwall ("alle Charts auf einmal",
+        "keine Antwort vom Agent").
+
+        Pro Fenster gewinnt der letzte Klick; Zwischenstaende werden verworfen.
+        """
+        if not window_id or not symbol:
+            return
+        with self._symbol_cv:
+            if self._pending_symbol_changes.get(window_id) == (symbol, preset):
+                return  # derselbe Wunsch liegt schon in der Warteschlange
+            self._pending_symbol_changes[window_id] = (symbol, preset)
+            self._symbol_cv.notify()
+        self._ensure_symbol_workers()
+
+    def _ensure_symbol_workers(self) -> None:
+        """Worker-Threads beim ersten Bedarf starten (daemon, ein Prozess = ein Agent)."""
+        with self._symbol_workers_lock:
+            if self._symbol_workers:
+                return
+            for idx in range(CV_SYMBOL_CHANGE_WORKERS):
+                worker = threading.Thread(
+                    target=self._symbol_worker, name=f"cv-symbol-{idx}", daemon=True
+                )
+                worker.start()
+                self._symbol_workers.append(worker)
+
+    def _symbol_worker(self) -> None:
+        while True:
+            with self._symbol_cv:
+                window_id = self._next_symbol_job()
+                while window_id is None:
+                    self._symbol_cv.wait()
+                    window_id = self._next_symbol_job()
+                symbol, preset = self._pending_symbol_changes.pop(window_id)
+                epoch = self._window_close_epoch.get(window_id, 0)
+                self._symbol_inflight.add(window_id)
+            try:
+                self._apply_symbol_change(window_id, symbol, preset, epoch)
+            except Exception:  # noqa: BLE001 - ein Job darf den Worker nicht toeten
+                logger.exception("Symbolwechsel %s -> %s fehlgeschlagen", window_id, symbol)
+            finally:
+                with self._symbol_cv:
+                    self._symbol_inflight.discard(window_id)
+                    self._symbol_cv.notify_all()
+
+    def _next_symbol_job(self) -> Optional[str]:
+        """Naechstes faelliges Fenster; dasselbe Fenster laeuft nie doppelt."""
+        for window_id in self._pending_symbol_changes:
+            if window_id not in self._symbol_inflight:
+                return window_id
+        return None
+
+    def _forget_symbol_change(self, window_id: str) -> None:
+        """Fenster geschlossen: offene Wuensche verwerfen und laufende entwerten."""
+        with self._symbol_cv:
+            self._pending_symbol_changes.pop(window_id, None)
+            self._window_close_epoch[window_id] = self._window_close_epoch.get(window_id, 0) + 1
+
+    def _apply_symbol_change(
+        self,
+        window_id: str,
+        new_symbol: str,
+        preset: str | None = None,
+        epoch: int = 0,
+    ) -> None:
         """Fetch new data and send snapshot.full when Chart changes symbol.
 
-        `preset` comes from the viewer control panel and overrides the preset a window
-        was opened with; it is persisted in the layout ledger so later symbol changes
-        keep it.
+        Laeuft auf einem Worker-Thread (siehe request_symbol_change). `preset`
+        comes from the viewer control panel and overrides the preset a window
+        was opened with; it is persisted in the layout ledger so later symbol
+        changes keep it.
         """
+        with self._symbol_cv:
+            if self._window_close_epoch.get(window_id, 0) != epoch:
+                logger.info(
+                    "Symbolwechsel %s -> %s verworfen: Fenster wurde zwischenzeitlich geschlossen",
+                    window_id,
+                    new_symbol,
+                )
+                return
         logger.info(f"Agent processing symbol change for {window_id} -> {new_symbol}")
         
         # We need to preserve the timeframe and preset (if any) from the layout ledger
@@ -376,7 +518,8 @@ class ChartAgent:
             preset = win_info.get("preset")
         if not chart_info and not preset:
             try:
-                import json
+                # Kein lokales "import json" hier: das machte json zur lokalen
+                # Variable der ganzen Funktion (UnboundLocalError weiter unten).
                 with open("/tmp/last_chart_state.json", "r") as f:
                     last_state = json.load(f)
                     preset = last_state.get("preset", "default")
@@ -386,9 +529,6 @@ class ChartAgent:
         # Reconstruct the DISPLAY_STOCK command and send it to our own POST API
         # This is the cleanest way because run_server.py does all the fetching + sending
         try:
-            import urllib.request
-            import json
-            
             payload = {
                 "action": "DISPLAY_STOCK",
                 "window_id": window_id,
@@ -414,19 +554,20 @@ class ChartAgent:
                     payload["chart"] = chart_info.get("id")
             else:
                 payload["preset"] = preset
-            if "position" in win_info:
-                payload["position"] = win_info["position"]
-            if "size" in win_info:
-                payload["size"] = win_info["size"]
-            
+            # Keine Geometrie: der Symbolwechsel rendert ein OFFENES Fenster neu,
+            # seine Position/Groesse gehoert dem Client (siehe open_window).
+            # Der Control-API-Endpunkt ist der einzige Ort, der Daten holt und
+            # rendert. Ohne Timeout konnte ein haengender Datenabruf den Worker
+            # unbegrenzt festhalten (der Client wartete ewig auf den Snapshot).
             req = urllib.request.Request(
-                "http://127.0.0.1:8766/api/command",
+                f"{CONTROL_API_URL.rstrip('/')}/api/command",
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"}
             )
-            urllib.request.urlopen(req)
+            with urllib.request.urlopen(req, timeout=CV_SYMBOL_CHANGE_TIMEOUT_SEC) as resp:
+                resp.read()
         except Exception as e:
-            logger.error(f"Failed to fetch new symbol data: {e}")
+            logger.error(f"Failed to fetch new symbol data for {window_id} -> {new_symbol}: {e}")
 
     def append_bar(self, window_id: str, bar_data: dict) -> None:
         """Push completed candle."""

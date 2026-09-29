@@ -141,10 +141,13 @@ def apply_pane_overrides(
 def normalize_chart_spec(chart: Dict[str, Any], draft: bool = False) -> Dict[str, Any]:
     """Panes eines Charts vereinheitlichen.
 
-    Regeln (Vertrag): genau ein Preispane auf Slot main und zuerst; fehlt es,
-    wird das erste Pane mit role=price genommen, sonst ein Kerzen-Pane ergaenzt.
-    Ein Volumen-Pane wird ergaenzt, wenn keines definiert ist. Slot-Ids sind
-    eindeutig (Kollision => Suffix _2).
+    Regeln (Vertrag, chart-presets.md Abschnitt 1): genau ein Preispane auf Slot
+    main und zuerst; fehlt es, wird das erste Pane mit role=price genommen, sonst
+    ein Kerzen-Pane ergaenzt. Slot-Ids sind eindeutig (Kollision => Suffix _2).
+
+    Die Pane-Liste der Definition ist VOLLSTAENDIG: es wird kein Volumen-Pane
+    ergaenzt. Ein Volumen-Pane ist eine normale Pane mit role=volume; wer sie
+    entfernt, bekommt sie beim naechsten Render nicht zurueck.
     """
     panes: List[Dict[str, Any]] = []
     override_warnings: List[Dict[str, Any]] = []
@@ -183,10 +186,6 @@ def normalize_chart_spec(chart: Dict[str, Any], draft: bool = False) -> Dict[str
                  "weight": None, "overrides": {}, "preset": builtin_preset(CANDLES_PRESET)}
     price["pane_id"] = "main"
     price["weight"] = price["weight"] or 7
-
-    if not any((p["preset"].get("role") == "volume") for p in panes):
-        rest.append({"pane_id": "volume", "pane_preset_id": VOLUME_PRESET, "scale": "linear",
-                     "weight": 2, "overrides": {}, "preset": builtin_preset(VOLUME_PRESET)})
 
     final = [price] + rest
     used: set = set()

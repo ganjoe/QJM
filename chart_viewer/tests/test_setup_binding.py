@@ -79,6 +79,27 @@ def test_save_setup_pins_slots_after_saving():
     assert agent.slots[1]["slot"] == 2 and agent.slots[1]["symbol"] == "amd"
 
 
+def test_save_setup_always_writes_instead_of_being_deduped():
+    """Explizites Speichern darf nicht an der Autosave-Bremse haengen.
+
+    save_setup() ueberspringt einen Schreibvorgang, wenn sich die Geometrie seit
+    dem letzten Autosave nicht geaendert hat - die Bremse ignoriert aber Chart und
+    Symbol. Ein "jetzt als default speichern" waere dann ein stiller No-op.
+    """
+    agent = FakeAgent()
+    calls: List[Dict[str, Any]] = []
+
+    def save_setup(setup_name, geometries=None, monitor_infos=None, force=False):
+        calls.append({"setup_name": setup_name, "force": force})
+        return {"status": "ok", "setup_name": setup_name, "monitor_count": 1, "window_count": 1}
+
+    agent.save_setup = save_setup  # type: ignore[assignment]
+    result = handle_command({"action": "SAVE_SETUP", "setup_name": "default"}, agent, agent.transport)
+
+    assert result["status"] == "ok" and result["window_count"] == 1
+    assert calls == [{"setup_name": "default", "force": True}]
+
+
 def test_assign_setup_slot_rewrites_only_the_target_window(monkeypatch):
     rows = [{
         "id": 7, "setup_name": "desk", "monitor_count": 2,

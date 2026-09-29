@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import time
 from typing import Dict, Optional
 from PySide6.QtCore import QObject, QTimer, Signal, QPointF
 from PySide6.QtWidgets import QApplication
@@ -63,6 +64,14 @@ class ViewerApp(QObject):
         self.render_timer.setInterval(self.config.max_fps_interval_ms)  # ~16ms for 60Hz
         self.render_timer.timeout.connect(self.coalescer.flush)
 
+        # Wache gegen leer geoeffnete Fenster: geht die Antwort auf einen
+        # Symbolwechsel verloren (Verbindungsabbruch, ueberlasteter Agent),
+        # bleibt das Fenster ohne Bars stehen. Dann den Wunsch erneut schicken.
+        self._pending_renders: Dict[str, dict] = {}
+        self.render_watchdog = QTimer(self)
+        self.render_watchdog.setInterval(max(100, self.config.render_watchdog_interval_ms))
+        self.render_watchdog.timeout.connect(self._check_pending_renders)
+
         # Monitor connect/disconnect detection (for multi-monitor setup management)
         gui_app = QGuiApplication.instance()
         if gui_app is not None:
@@ -90,6 +99,7 @@ class ViewerApp(QObject):
         Section 8: Starts with 0 windows. Viewer creates windows only on agent command.
         """
         self.render_timer.start()
+        self.render_watchdog.start()
         if self.control_panel is not None:
             self.control_panel.show()
             if self.control_panel.is_pinned():
@@ -99,6 +109,7 @@ class ViewerApp(QObject):
     def shutdown(self) -> None:
         """Stop viewer-owned timers and the control panel (clean process teardown)."""
         self.render_timer.stop()
+        self.render_watchdog.stop()
         if self.control_panel is not None:
             self.control_panel.shutdown()
 
@@ -157,10 +168,15 @@ class ViewerApp(QObject):
             self._send_ack(envelope.message_id)
 
         elif msg_type == "snapshot.full" and win_id:
+            self._clear_render_watchdog(win_id)
             win_data = self.state_manager.apply_snapshot(win_id, payload)
             if win_id in self.windows:
                 self.windows[win_id].bind_data(win_data)
             self._refresh_panel_chart_windows()
+            # Der Snapshot ist die einzige Nachricht, die einen Chartwechsel des
+            # Fensters ankuendigt (Panel-Anwenden, MCP, Setup, Symbolwechsel):
+            # der Builder muss seinen Stand danach neu lesen.
+            self._notify_panel_content_changed(win_id)
             self._send_ack(envelope.message_id)
 
         elif msg_type == "bar.append" and win_id:
@@ -292,31 +308,47 @@ class ViewerApp(QObject):
                 lambda mode, w_id=win_id: self._send_axis_mode_forced(w_id, mode)
             )
 
-            # Position if provided
-            pos = payload.get("position")
-            if pos and "x" in pos and "y" in pos:
-                win.move(pos["x"], pos["y"])
-            size = payload.get("size")
-            if size and "width" in size and "height" in size:
-                win.resize(size["width"], size["height"])
-
+            self._place_window(win, payload)
             win.show()
+            win.report_geometry()
         else:
-            # Reusing existing window: reposition and resize
+            # Reusing existing window: nur die Geometrie setzen, die sich wirklich
+            # aendert - ein Re-Render schickt den zuletzt gemeldeten Stand mit.
             win = self.windows[win_id]
-            pos = payload.get("position")
-            if pos and "x" in pos and "y" in pos:
-                win.move(pos["x"], pos["y"])
-            size = payload.get("size")
-            if size and "width" in size and "height" in size:
-                win.resize(size["width"], size["height"])
+            self._place_window(win, payload)
             if symbol and symbol != "CHART":
                 win.symbol = symbol
             win.show()
             win.raise_()
+            # Der Client ist Eigentuemer der Geometrie: einmal melden, damit der
+            # Ledger des Agenten nie auf einem veralteten Stand stehen bleibt.
+            win.report_geometry()
 
         self._refresh_panel_chart_windows()
         self._send_ack(message_id)
+
+    @staticmethod
+    def _place_window(win, payload: dict) -> None:
+        """Position/Groesse eines Chartfensters setzen - nur bei echter Aenderung.
+
+        Beide Werte werden VOR dem ersten move()/resize() gelesen: ein move() loest
+        ein geometry_changed aus, und beim In-Process-Transport IST der Ledger-
+        Eintrag des Agenten dieses Payload-Dict - ein spaeteres Lesen saehe die
+        gemeldete (noch alte) Groesse statt der angeforderten.
+
+        Ein move()/resize() mit identischen Werten wird uebersprungen: es erzeugt
+        nur Flackern und kann ein maximiertes Fenster restaurieren.
+        """
+        pos = payload.get("position") or {}
+        size = payload.get("size") or {}
+        if "x" in pos and "y" in pos and (win.x(), win.y()) != (pos["x"], pos["y"]):
+            win.move(pos["x"], pos["y"])
+        if (
+            "width" in size
+            and "height" in size
+            and (win.width(), win.height()) != (size["width"], size["height"])
+        ):
+            win.resize(size["width"], size["height"])
 
     def _handle_watchlist_open(self, payload: dict, message_id: bytes) -> None:
         """Create and show a new watchlist window."""
@@ -431,6 +463,12 @@ class ViewerApp(QObject):
 
     def _on_symbol_change_requested(self, window_id: str, symbol: str, preset: str | None = None) -> None:
         """ChartWindow asking Server for new symbol data (optional preset from the panel)."""
+        self._send_symbol_change_request(window_id, symbol, preset=preset)
+        self._arm_render_watchdog(window_id, symbol, preset)
+
+    def _send_symbol_change_request(
+        self, window_id: str, symbol: str, preset: str | None = None
+    ) -> None:
         payload = {"window_id": window_id, "symbol": symbol}
         if preset:
             payload["preset"] = preset
@@ -444,6 +482,89 @@ class ViewerApp(QObject):
             self.transport.send_command(env)
         except Exception as e:
             logger.warning(f"Could not send window.change_symbol: {e}")
+
+    # ── Wache gegen leer geoeffnete Fenster ────────────────────────────────
+
+    def _arm_render_watchdog(self, window_id: str, symbol: str, preset: str | None = None) -> None:
+        """Nach einem Symbolwechsel pruefen, ob wirklich Daten ankommen."""
+        if not window_id or not symbol:
+            return
+        self._pending_renders[window_id] = {
+            "symbol": symbol,
+            "preset": preset,
+            "sent_at": time.monotonic(),
+            "attempts": 1,
+        }
+
+    def _clear_render_watchdog(self, window_id: str) -> None:
+        self._pending_renders.pop(window_id, None)
+
+    def _resend_pending_renders(self) -> None:
+        """Nach einem Reconnect leer gebliebene Fenster sofort nachfordern.
+
+        Die Antwort auf einen Symbolwechsel kann mit der Verbindung verloren
+        gehen. Ein lokal angelegtes Fenster kennt der Agent dann nicht und
+        schickt von sich aus nichts - es bliebe leer, bis der Nutzer erneut
+        klickt.
+        """
+        for window_id, entry in list(self._pending_renders.items()):
+            if window_id not in self.windows:
+                self._clear_render_watchdog(window_id)
+                continue
+            win_data = self.state_manager.get_window_data(window_id)
+            if win_data is not None and getattr(win_data, "bars", None):
+                self._clear_render_watchdog(window_id)
+                continue
+            entry["sent_at"] = time.monotonic()
+            self._send_symbol_change_request(window_id, entry["symbol"], entry["preset"])
+
+    def _check_pending_renders(self) -> None:
+        """Leer gebliebene Fenster erneut anfordern (Antwort verloren/abgebrochen).
+
+        Nur Fenster ohne jede Kerze werden wiederholt: ein bereits gezeichneter
+        Chart wird nie doppelt angefordert, und nach
+        `render_request_max_attempts` ist Schluss.
+        """
+        if not self._pending_renders:
+            return
+        timeout_s = max(1.0, self.config.render_request_timeout_ms / 1000.0)
+        max_attempts = max(1, self.config.render_request_max_attempts)
+        now = time.monotonic()
+        if not self.transport.is_connected():
+            # Ohne Verbindung wird nichts gesendet - und kein Versuch verbraucht.
+            # Der Reconnect schickt die offenen Wuensche selbst wieder raus.
+            for entry in self._pending_renders.values():
+                entry["sent_at"] = now
+            return
+        for window_id, entry in list(self._pending_renders.items()):
+            if window_id not in self.windows:
+                self._clear_render_watchdog(window_id)  # Fenster wurde geschlossen
+                continue
+            win_data = self.state_manager.get_window_data(window_id)
+            if win_data is not None and getattr(win_data, "bars", None):
+                self._clear_render_watchdog(window_id)
+                continue
+            if now - entry["sent_at"] < timeout_s:
+                continue
+            if entry["attempts"] >= max_attempts:
+                logger.warning(
+                    "Chart %s blieb ohne Daten (%s) - nach %d Versuchen aufgegeben",
+                    window_id,
+                    entry["symbol"],
+                    entry["attempts"],
+                )
+                self._clear_render_watchdog(window_id)
+                continue
+            entry["attempts"] += 1
+            entry["sent_at"] = now
+            logger.info(
+                "Chart %s ohne Daten - Symbolwechsel %s erneut angefordert (Versuch %d/%d)",
+                window_id,
+                entry["symbol"],
+                entry["attempts"],
+                max_attempts,
+            )
+            self._send_symbol_change_request(window_id, entry["symbol"], entry["preset"])
 
     def _on_pane_scale_changed(self, window_id: str, pane_scales: dict) -> None:
         """Pane LOG/LIN button: keep local state in sync and tell the agent.
@@ -489,6 +610,12 @@ class ViewerApp(QObject):
             self.control_panel.set_connection_state(connected)
         if connected:
             self._send_viewer_ready()
+            self._resend_pending_renders()
+
+    def _notify_panel_content_changed(self, window_id: str) -> None:
+        """Tell the control panel that a window's chart content was replaced."""
+        if self.control_panel is not None:
+            self.control_panel.notify_window_content_changed(str(window_id or ""))
 
     def _refresh_panel_chart_windows(self) -> None:
         """Keep the control panel's chart list, symbols and builder target in sync.
@@ -527,6 +654,7 @@ class ViewerApp(QObject):
                 win_data = self.state_manager.apply_snapshot(win_id, win_info)
                 if win_id in self.windows:
                     self.windows[win_id].bind_data(win_data)
+                self._notify_panel_content_changed(win_id)
 
     def _on_tick_flushed(self, win_id: str, tick_data: dict) -> None:
         """Repaint window upon flushed tick."""
@@ -586,6 +714,7 @@ class ViewerApp(QObject):
 
     def _on_window_closed(self, window_id: str) -> None:
         """Informative fire-and-forget event to agent (Section 8)."""
+        self._clear_render_watchdog(window_id)
         if window_id in self.windows:
             win = self.windows[window_id]
             for flag in range(4):

@@ -474,3 +474,123 @@ MCP `DUPLICATE_CHART`/`DELETE_CHART`/`SETUP_ASSIGN` - per Unit-Test abgedeckt.
 - `update_pane_preset`-Op (Pane-Presets aus dem Panel bearbeiten) bleibt optional.
 - Deployment: Chart-Agent und MCP-Container neu starten
   (`docker restart qjm-chart-viewer-server llm-gw-mcp-pca`) - am 2026-09-28 erfolgt.
+
+### Nachtrag: Anwenden-Liste und Builder (ein Chart-Bestand)
+
+- **Befund (Anwender):** Ein ueber "GESPEICHERTES CHART ANWENDEN" gewaehltes Chart
+  wurde im Fenster gerendert, der CHART-BUILDER zeigte aber weiter die Panes des
+  vorherigen Charts (bzw. beim ersten Anwenden eine leere Liste). Ursache: Das Panel
+  liest seinen Stand aus `get_chart_state`, rief den Op nach `apply_preset` aber nie
+  auf; ein Agent-seitiges `APPLY_CHART`/`COMPOSE_CHART` (MCP) ebenso wenig, weil der
+  eintreffende Snapshot nur die Fensterliste aktualisierte.
+- **Fix:** `ControlPanelWindow.notify_window_content_changed(window_id)` +
+  `ViewerApp` ruft es bei jedem `snapshot.full` (und beim `layout.restore`) fuer das
+  Zielfenster; `_on_apply_preset_response` liest den Stand zusaetzlich direkt nach dem
+  Anwenden. `_refresh_chart_state` fasst parallele Anfragen fuer dasselbe Fenster
+  zusammen.
+- **Konsistenz:** Die Anwenden-Liste kommt jetzt aus `list_charts` (derselbe Katalog,
+  den der Builder speichert) statt aus dem Alt-Endpunkt `/api/presets`; sie wird nach
+  jedem Speichern neu geladen und zeigt ohne eigenen Override das Chart des
+  Zielfensters. Damit gilt: was anwendbar ist, kennt der Builder - und was der Builder
+  speichert, ist sofort anwendbar.
+- **Tests:** `test_applying_a_saved_chart_refreshes_the_builder_panes`,
+  `test_saved_charts_are_offered_for_applying_after_save`,
+  `test_agent_snapshot_refreshes_the_builder_panes` (echter `ViewerApp` +
+  In-Process-Transport); `test_control_panel.py` fuehrt den Chart-Katalog als Fake.
+  Live (read-only) geprueft: `dsh_playground/live_builder_check.py` verbindet sich als
+  Viewer-Client, liest `get_chart_state` ueber den echten Panel-Pfad und vergleicht
+  die Builder-Zeilen mit `/api/charts/{id}`.
+
+### Nachtrag: Chart anwenden verschiebt kein Fenster mehr
+
+- **Befund (Anwender):** Beim Anwenden eines gespeicherten Charts sprang das
+  Fenster auf Groesse/Position 1100x750 / 100,100.
+- **Wahre Ursache:** `orchestrator.build_display_stock` fuellte die Geometrie
+  **immer** auf (`position or {"x":100,"y":100}`, `size or {"width":1100,"height":750}`).
+  `command_api` reichte das als "ausdrueckliche Platzierung" an `open_window`
+  weiter - jeder Re-Render (Chart anwenden, COMPOSE, Symbolwechsel, MCP) zog das
+  Fenster damit auf dieselbe Stelle. Die Signatur war im Ledger sichtbar: alle
+  Fenster standen exakt auf 100,100 / 1100x750.
+  Zwei erste Anlaeufe (Ledger-Stand in `open_window` behalten, Client-Guard)
+  konnten das nicht beheben, weil der Wert schon vorher gesetzt wurde - der
+  Live-Test war zudem wirkungslos, weil das Testfenster bereits auf dem
+  Zielwert stand.
+- **Fix:** Der Renderer erfindet keine Geometrie mehr: `build_display_stock`
+  reicht `position`/`size` nur durch, wenn sie angefordert wurden.
+  `open_window` nimmt Geometrie nur noch in die Nachricht, wenn sie ausdruecklich
+  kommt **oder** das Fenster neu angelegt wird (Startwerte). `_render_window` und
+  der Symbolwechsel schicken keine. Der Client setzt move()/resize() nur bei
+  echter Aenderung, liest beide Werte vor dem ersten move() (In-Process-Transport:
+  Ledger-Eintrag == Payload-Dict) und meldet seine Geometrie nach dem Oeffnen
+  aktiv zurueck, damit der Ledger ihm folgt statt umgekehrt.
+- **Tests:** `test_window_lifecycle.py` (Re-Render mit dem **echten**
+  `build_display_stock` laesst Position/Groesse stehen; Platzierung wirkt weiter;
+  Client meldet seine Geometrie), `test_pane_scale.py` (Orchestrator erfindet
+  nichts, explizite Geometrie kommt durch), `test_control_service.py`
+  (`apply_chart` schickt keine Geometrie).
+- **Live verifiziert (00:41):** `DISPLAY_STOCK` mit `preset=rs_monitor_chart` und
+  `COMPOSE_CHART` -> Log `window.open ...: ohne Geometrie (der Client behaelt
+  Position/Groesse)`, Ledger unveraendert, **kein** `geometry_changed`.
+
+### Nachtrag: "Layout als default speichern" ist kein stiller No-op
+
+- **Befund:** `SAVE_SETUP {setup_name:"default"}` antwortete mit
+  `{"status":"ok","skipped":true}` und schrieb nichts. Ursache: `save_setup`
+  vergleicht einen Geometrie-Hash (Fenster, Positionen, Monitore) mit dem letzten
+  Autosave und ueberspringt dann - die Bridge rief es ohne `force` auf. Der Hash
+  kennt Chart und Symbol **nicht**: nach einem reinen Chart-/Symbolwechsel waere
+  "jetzt als default speichern" ein stiller No-op.
+- **Fix:** Der explizite Pfad (`SAVE_SETUP` ueber Bridge/MCP) schreibt immer
+  (`force=True`); die Dedup-Bremse bleibt ausschliesslich fuer den entprellten
+  Autosave. Test: `test_setup_binding.py::test_save_setup_always_writes_instead_of_being_deduped`.
+- **Verifiziert:** `default` (monitor_count 1) enthaelt danach genau den Ledger-Stand
+  (`win_hood_1d`, HOOD, Chart `default`, Position/Groesse, color_flag 0) mit neuem
+  `updated_at`.
+
+### Nachtrag: Volumen-Pane entfernen (die Definition ist vollstaendig)
+
+- **Befund (Anwender):** Das Volumen-Pane liess sich im Builder nicht entfernen - es
+  war beim naechsten Render wieder da. Ursache waren **zwei** stille Ergaenzungen, die
+  dem Vertrag widersprachen (Migration 040: "ab jetzt steht es explizit in der
+  Definition und ist entfernbar"):
+  1. `chart_spec.normalize_chart_spec` haengte ein `builtin:volume` an, sobald keine
+     Pane role=volume hatte - also bei jedem Compose/Render.
+  2. `presets_api._store_chart_panes` tat dasselbe beim **Speichern**, sodass selbst
+     ein korrekt gerendertes Chart beim Persistieren wieder Volumen bekam.
+- **Fix (Invariante):** Die Pane-Liste einer Definition ist VOLLSTAENDIG. Einzige
+  Normalisierung bleibt das Preispane auf Slot `main` (Vertrag Abschnitt 1).
+  `builtin:volume` wird nur gezeichnet, wenn eine Pane mit role=volume dasteht.
+  Die **flache Altform** (`members` mit pane-Strings) kennt keinen Zustand "ohne
+  Volumen" (der alte Viewer zeichnete es immer) - sie bekommt es bei der Uebersetzung
+  weiterhin explizit, wie in Migration 040; danach ist es eine normale, entfernbare
+  Pane.
+- **Tests:** `test_chart_spec.py` (kein implizites Volumen; explizites Volumen-Pane
+  bleibt mit Slot/Gewicht; Histogramm nur bei role=volume),
+  `test_pane_scale.py` (Chart-Definition und Builder-Compose ohne Volumen),
+  PCA-Selbsttest `test_preset_pane_scales.py` (Speichern ergaenzt nichts; Altform
+  ergaenzt es explizit) - 12 Tests im Container.
+- **Live verifiziert (2026-09-28):** `COMPOSE_CHART` ohne Volumen ->
+  `GET_CHART_STATE` ohne Volumen (Screenshot `dsh_playground/screenshot_*win_hood_1d.png`),
+  `APPLY_CHART default` stellt den Definitionsstand wieder her; `POST /api/charts`
+  ohne Volumen speichert ohne Volumen; Altform `members` erhaelt es explizit.
+  Container `qjm-pca-service`, `qjm-chart-viewer-server`, `llm-gw-mcp-pca` neu
+  gestartet; das offene Layout wurde vorher gesichert und mit
+  `dsh_playground/restore_layout.py` (snapshot/replay) exakt wiederhergestellt -
+  inklusive des offenen Builder-Drafts.
+
+### Nachtrag: Panel-Bedienung (Preset-Wechsel, Hinzufuegen-Filter)
+
+- **Preset-Wechsel der markierten Pane** ([control_panel.py](chart_viewer/src/chart_viewer/ui/control_panel.py)):
+  Das Dropdown unter der Pane-Liste referenziert ein anderes geteiltes Preset, ohne die
+  Slot-Id zu wechseln - Gewicht und Titel-Override bleiben, die Skala zieht nur mit, wenn
+  sie noch der Default des alten Presets war (ein bewusstes LIN/LOG bleibt stehen), ein
+  `scale`-Override faellt mit dem alten Preset. Reines Draft-Compose, kein Agent-Op.
+- **Hinzufuegen-Dropdown ohne `role=price`**: die 9 Preispane-Presets des Katalogs standen
+  auch in der Anhaengen-Liste und konnten die Regel "genau ein Preispane" (Vertrag §1)
+  verletzen; getippte Preispane-Namen werden ebenfalls abgewiesen. Beide Dropdowns zeigen
+  jetzt dieselbe, nach Anzeigename sortierte Liste.
+- **Gefunden und behoben**: `_normalize_pane` hat `overrides` verworfen. Titel- und
+  Serien-Overrides waren damit nach jedem `get_chart_state` still verloren - der
+  Titel-Edit wirkte nur bis zum naechsten Compose. Der Override-Titel schlaegt jetzt auch
+  den Preset-Namen in der Pane-Zeile.
+- Clientseitig: kein Container-Neustart, ein Neustart des Viewers genuegt.

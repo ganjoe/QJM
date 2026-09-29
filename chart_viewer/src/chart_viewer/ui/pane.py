@@ -24,7 +24,7 @@ from PySide6.QtGui import (
 from chart_viewer.config import ViewerConfig
 from chart_viewer.coords.x_axis import XAxisTransform
 from chart_viewer.coords.y_axis import YAxisTransform
-from chart_viewer.formatting import format_value, format_volume
+from chart_viewer.formatting import format_axis_value, format_value, format_volume
 from chart_viewer.models.entities import Bar, Overlay, OverlayPoint, Annotation
 from chart_viewer.models.color import resolve_bar_color
 
@@ -530,12 +530,9 @@ class ChartPane(QWidget):
             painter.setPen(tick_pen)
             painter.drawLine(int(chart_w), int(y), int(chart_w + 5), int(y))
 
-            # Price label
+            # Price label (dieselbe k/M/G/T-Regel wie Wert-Box und Topbar)
             painter.setPen(QColor("#9CA3AF"))
-            if abs(price) < 100:
-                price_text = f"{price:.2f}"
-            else:
-                price_text = f"{price:.0f}"
+            price_text = format_axis_value(price)
             painter.drawText(
                 QRectF(chart_w + 7, y - 8, Y_AXIS_WIDTH - 9, 16),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -715,12 +712,9 @@ class ChartPane(QWidget):
             if cy <= content_h:
                 painter.drawLine(0, cy, int(chart_w), cy)
 
-                # Price badge on Y-axis
+                # Price badge on Y-axis (gleiche Regel wie die Achsen-Labels)
                 price = self.y_trans.y_to_price(cy)
-                if abs(price) < 100:
-                    price_str = f"{price:.2f}"
-                else:
-                    price_str = f"{price:.0f}"
+                price_str = format_axis_value(price)
                 badge_w = 60
                 badge_h = 20
                 badge_rect = QRectF(chart_w, cy - badge_h / 2.0, badge_w, badge_h)

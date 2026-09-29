@@ -1,0 +1,19 @@
+# Claude Code Remote Control fuer QJM - angelegt im Rahmen der Installation
+# Steuerung: systemctl --user {status,restart,stop} claude-rc
+# Logs:      journalctl --user -u claude-rc -f
+[Unit]
+Description=Claude Code Remote Control (QJM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/daniel/QJM
+ExecStart=/home/daniel/QJM/scripts/claude-rc.sh
+Restart=always
+RestartSec=15
+Environment=PATH=/home/daniel/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/daniel
+
+[Install]
+WantedBy=default.target

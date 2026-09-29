@@ -100,6 +100,12 @@ class ViewerConfig:
     control_search_limit: int = 20
     control_request_timeout_ms: int = 5000  # Mark unanswered control.request as failed
 
+    # Wache gegen leer geoeffnete Chartfenster: der Symbolwechsel wird erneut
+    # angefordert, wenn nach dieser Zeit kein Snapshot (keine Bars) da ist.
+    render_watchdog_interval_ms: int = 1000  # Tick der Wache
+    render_request_timeout_ms: int = 6000  # Ohne Bars -> Wunsch erneut schicken
+    render_request_max_attempts: int = 3  # danach aufgeben (kein Endlos-Retry)
+
     @classmethod
     def from_env(cls) -> ViewerConfig:
         """Create config populated from environment variables with fallbacks."""
@@ -157,6 +163,9 @@ class ViewerConfig:
             control_search_debounce_ms=int(os.getenv("CV_CONTROL_SEARCH_DEBOUNCE_MS", "150")),
             control_search_limit=int(os.getenv("CV_CONTROL_SEARCH_LIMIT", "20")),
             control_request_timeout_ms=int(os.getenv("CV_CONTROL_REQUEST_TIMEOUT_MS", "5000")),
+            render_watchdog_interval_ms=int(os.getenv("CV_RENDER_WATCHDOG_INTERVAL_MS", "1000")),
+            render_request_timeout_ms=int(os.getenv("CV_RENDER_REQUEST_TIMEOUT_MS", "6000")),
+            render_request_max_attempts=int(os.getenv("CV_RENDER_REQUEST_MAX_ATTEMPTS", "3")),
         )
 
 

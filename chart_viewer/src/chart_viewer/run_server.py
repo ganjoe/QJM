@@ -72,7 +72,8 @@ def main():
                         data=payload,
                         headers={"Content-Type": "application/json"}
                     )
-                    urllib.request.urlopen(req)
+                    # Timeout: ein haengender Render darf den Thread nicht festhalten
+                    urllib.request.urlopen(req, timeout=60).read()
                 except Exception as e:
                     logger.error(f"Failed to load default chart: {e}")
             threading.Thread(target=send_default, daemon=True).start()

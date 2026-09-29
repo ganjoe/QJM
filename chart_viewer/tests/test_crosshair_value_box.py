@@ -98,7 +98,7 @@ def test_value_comes_from_bar_index_not_from_cursor_y(qapp):
     price = _value_map(values)["price"]
     assert price.value == pytest.approx(bars[5].close)
     assert price.text == "105.50"
-    assert price.secondary_text == "12,5 Mio."
+    assert price.secondary_text == "12.5M"
 
     # The cursor Y position does not take part in the layout at all.
     font = pane._value_box_font(QFont())

@@ -121,6 +121,9 @@
           * `'STATUS'`: Checks viewer connection & open windows.
           * `'CLOSE_WINDOW'`: Closes a chart window.
       * **`manage_chart_presets`**: Manage dynamically created chart presets (CRUD) and their overlay indicators (like SMA/EMA). Use `CREATE`, `GET`, `LIST`, `UPDATE`, `DELETE`. Specify `preset_id` and the `members` (features like `sma_10`, `ema_20`, `bb_20`, `adr_1_pct`) to automatically render them.
+      * **`manage_pane_presets`**: Manage **pane presets** (CRUD: `LIST`, `GET`, `CREATE`, `UPDATE`, `DELETE`, `ARCHIVE`) — the content of ONE pane: `role` (`price` | `value` | `volume` | `any`), series (`members` = features like `ibd_rs`, `breadth_minervini_pct`), reference lines (`refs`, e.g. a zero line), zones (`zones`) and `default_scale`.
+        * *Layer rule*: a **pane preset** is the content of one pane; a **chart preset** (`manage_chart_presets`) references it through `panes: [{pane_id, pane_preset_id, weight, scale, overrides}]`. Content goes here, window composition goes there — never both.
+        * *Constraint*: exactly one pane carries `role: "price"` on slot `main`; the viewer's add-dropdown offers only non-price panes.
 
       ### B. Trading, Execution & Portfolio (`openbrain-pta`)
       * **`get_quote`**: Use to fetch the **single real-time current market price** of a ticker from Interactive Brokers (IBKR).

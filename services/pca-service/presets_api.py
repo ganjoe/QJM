@@ -363,9 +363,12 @@ def _assign_pane_ids(pane_ids: List[Optional[str]], preset_ids: List[str]) -> Li
 def _store_chart_panes(chart_id: str, panes: List[Dict[str, Any]]) -> None:
     """Panestruktur eines Charts schreiben.
 
-    Das Preispane (role=price) liegt immer auf dem Slot 'main' und zuerst; ein
-    Volumen-Pane wird ergaenzt, wenn keines definiert ist (Altverhalten: der
-    Viewer zeichnete Volumen bisher immer).
+    Das Preispane (role=price) liegt immer auf dem Slot 'main' und zuerst - das
+    ist die einzige Invariante (chart-presets.md Abschnitt 1). Sonst wird genau
+    die uebergebene Liste persistiert: kein implizites Volumen-Pane, sonst waere
+    "Volumen entfernen" nicht speicherbar. Die Altform (flache Mitglieder) setzt
+    ihr Volumen-Pane in _write_chart, weil sie seine Abwesenheit nicht ausdruecken
+    kann.
     """
     _supabase_delete("pca_chart_preset_panes", f"chart_preset_id=eq.{chart_id}")
     if not panes:
@@ -392,10 +395,6 @@ def _store_chart_panes(chart_id: str, panes: List[Dict[str, Any]]) -> None:
     if price_pane is None:
         price_pane = {"pane_id": "main", "pane_preset_id": CANDLES_PANE_PRESET, "scale": "linear", "weight": 7}
     price_pane = {**price_pane, "pane_id": "main"}
-
-    has_volume = any((roles.get(p.get("pane_preset_id")) or {}).get("role") == "volume" for p in panes)
-    if not has_volume:
-        ordered.append({"pane_id": "volume", "pane_preset_id": VOLUME_PANE_PRESET, "weight": 2, "scale": "linear"})
 
     final = [price_pane] + ordered
     preset_ids = [p.get("pane_preset_id") for p in final]
@@ -490,6 +489,14 @@ def _write_chart(chart_id: str, chart: ChartPresetIn, create: bool) -> None:
         ]
     elif chart.members:
         panes = _panes_from_legacy_members(chart_id, chart.members)
+        # Die flache Altform kennt keinen Zustand "ohne Volumen": der Viewer
+        # zeichnete es fuer jedes Fenster. Bei der Uebersetzung wird es deshalb -
+        # wie in Migration 040 - explizit in die Definition geschrieben. Danach ist
+        # es eine normale, entfernbare Pane.
+        if not any(p.get("pane_preset_id") == VOLUME_PANE_PRESET for p in panes):
+            panes.append(
+                {"pane_id": "volume", "pane_preset_id": VOLUME_PANE_PRESET, "weight": 2, "scale": "linear"}
+            )
     else:
         existing = _chart_panes(chart_id)
         panes = [

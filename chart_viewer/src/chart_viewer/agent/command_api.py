@@ -404,7 +404,11 @@ def handle_command(cmd: Dict[str, Any], agent: Any, server_transport: Any) -> Di
             result = {"error": "Missing 'setup_name' parameter"}
         else:
             try:
-                save_result = agent.save_setup(setup_name)
+                # Explizites Speichern schreibt immer. Die Dedup-Bremse in
+                # save_setup() ist fuer den Autosave gedacht und vergleicht nur die
+                # Geometrie - ein Chart-/Symbolwechsel ohne Geometrieaenderung
+                # wuerde "jetzt als default speichern" sonst still verwerfen.
+                save_result = agent.save_setup(setup_name, force=True)
                 result = save_result
                 # Optionale Slot-Bindungen direkt mitschreiben (Plan Phase 6):
                 # windows=[{window_id|slot, chart_id, symbol, timeframe}]

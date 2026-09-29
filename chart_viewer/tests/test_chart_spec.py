@@ -108,12 +108,35 @@ def _no_calc(symbol, indicator_type, periods, timeframe, limit):
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_keeps_price_pane_first_and_adds_volume():
+def test_normalize_keeps_price_pane_first_without_adding_volume():
+    """Die Pane-Liste der Definition ist vollstaendig - nichts wird ergaenzt.
+
+    Ein implizit ergaenztes Volumen-Pane machte "Volumen entfernen" unmöglich:
+    der naechste Render brachte es zurueck (chart-presets.md Abschnitt 1).
+    """
     spec = _rs_chart_spec()
-    assert [p["pane_id"] for p in spec["panes"]] == ["main", "rs", "volume"]
+    assert [p["pane_id"] for p in spec["panes"]] == ["main", "rs"]
     assert spec["panes"][0]["weight"] == 7
     assert spec["panes"][1]["scale"] == "linear"
+
+
+def test_normalize_keeps_an_explicit_volume_pane():
+    spec = chart_spec.normalize_chart_spec(
+        {
+            "id": "mit_volumen",
+            "panes": [
+                {"pane_id": "rs", "pane_preset_id": "rs_monitor", "preset": _rs_monitor_preset()},
+                {"pane_id": "candles", "pane_preset_id": "builtin:candles",
+                 "preset": chart_spec.builtin_preset("builtin:candles")},
+                {"pane_id": "vol", "pane_preset_id": "builtin:volume", "weight": 3,
+                 "preset": chart_spec.builtin_preset("builtin:volume")},
+            ],
+        }
+    )
+    assert [p["pane_id"] for p in spec["panes"]] == ["main", "rs", "vol"]
+    assert spec["panes"][0]["preset"]["id"] == "builtin:candles", "Preispane wandert auf main"
     assert spec["panes"][2]["preset"]["role"] == "volume"
+    assert spec["panes"][2]["weight"] == 3, "Platz und Gewicht der Volume-Pane bleiben"
 
 
 def test_normalize_moves_price_role_to_main_slot():
@@ -238,15 +261,38 @@ def test_build_overlays_rs_monitor():
     types = [ov["type"] for ov in built["overlays"]]
     assert types.index("zone") < types.index("line")
 
-    # Panes-Metadaten + Volumen
-    assert [p["pane_id"] for p in built["panes"]] == ["main", "rs", "volume"]
+    # Panes-Metadaten: genau die Definition - kein implizites Volumen-Pane.
+    assert [p["pane_id"] for p in built["panes"]] == ["main", "rs"]
     assert built["panes"][1] == {"pane_id": "rs", "role": "value", "title": "RS-Monitor",
                                  "weight": 3, "scale": "linear", "preset_id": "rs_monitor"}
-    volume = by_id["volume_volume"]
-    assert volume["type"] == "histogram" and volume["pane"] == "volume"
-    assert len(volume["values"]) == len(rows)
-    assert built["pane_scales"] == {"main": "log", "rs": "linear", "volume": "linear"}
+    assert "volume_volume" not in by_id
+    assert built["pane_scales"] == {"main": "log", "rs": "linear"}
     assert built["missing"] == []
+
+
+def test_build_overlays_draws_volume_only_for_a_volume_pane():
+    """Das Histogramm entsteht aus der Definition (role=volume), nicht aus Gewohnheit."""
+    spec = chart_spec.normalize_chart_spec(
+        {
+            "id": "mit_volumen",
+            "panes": [
+                {"pane_id": "main", "pane_preset_id": "candles", "scale": "log", "weight": 7,
+                 "preset": {"id": "candles", "display_name": "Kerzen", "role": "price", "kind": "builtin",
+                            "series": [], "refs": [], "derives": [], "zones": []}},
+                {"pane_id": "vol", "pane_preset_id": "builtin:volume", "weight": 3,
+                 "preset": chart_spec.builtin_preset("builtin:volume")},
+            ],
+        }
+    )
+    rows = _rs_rows()
+    built = chart_spec.build_overlays(
+        spec, _bars(rows), rows, COL_IDX, _resolve_column, _no_calc, "NVDA", "1D", 2000
+    )
+    by_id = {ov["overlay_id"]: ov for ov in built["overlays"]}
+    volume = by_id["volume_vol"]
+    assert volume["type"] == "histogram" and volume["pane"] == "vol"
+    assert len(volume["values"]) == len(rows)
+    assert built["pane_scales"] == {"main": "log", "vol": "linear"}
 
 
 def test_build_overlays_reports_missing_series():

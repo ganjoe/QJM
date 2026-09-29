@@ -52,6 +52,12 @@ Regeln:
   genommen, bei Kollision mit Suffix `_2`.
 - `builtin:volume` ist ein virtuelles Pane (kein DB-Eintrag), das der Orchestrator
   mit dem Volumen-Histogramm des Fensters fuellt.
+- **Die Pane-Liste ist vollstaendig.** Sie beschreibt genau die Panes des Fensters;
+  es wird kein Volumen-Pane ergaenzt. `builtin:volume` wird nur gezeichnet, wenn
+  die Definition eine Pane mit role=volume enthaelt. Migration 040 hat es fuer
+  Altdaten einmalig explizit eingetragen - seitdem ist es eine normale, entfernbare
+  Pane. Zwei Stellen, die es frueher stillschweigend ergaenzten (Aufloesung und
+  Speichern), machten "Volumen entfernen" unmöglich und sind entfernt.
 - Altdaten `pca_feature_sets`/`pca_feature_set_members` werden einmalig migriert:
   je Feature-Set ein Chart-Preset (gleiche id), je (Set, pane-String) ein
   Pane-Preset mit id `<set_id>__<pane>`; identische Inhalte werden geteilt.
@@ -73,7 +79,12 @@ Kompatibilitaet (bleibt funktionsfaehig, liest/schreibt ueber die neuen Tabellen
                                      indicators:[{column,canonical_id,calc_type,mode,plot_type,pane,style,rules}],
                                      topbar_metrics, pane_scales}
 - POST/PUT/DELETE /api/presets... -> Adapter: flache Mitgliederliste (mit pane-Strings)
-                                     wird in Pane-Presets + Chart-Struktur uebersetzt
+                                     wird in Pane-Presets + Chart-Struktur uebersetzt.
+                                     Die Altform kennt keinen Zustand "ohne Volumen"
+                                     (der alte Viewer zeichnete es immer); bei der
+                                     Uebersetzung wird `builtin:volume` deshalb -
+                                     wie in Migration 040 - explizit angehaengt.
+                                     Ein Request mit `panes` schreibt exakt die Liste.
 - PATCH /api/presets/{id}/pane_scales -> Alias auf /api/charts/{id}/pane_scales
 
 ## 3. Snapshot (Server -> Client, msg_type=snapshot.full) - NEU
@@ -135,7 +146,13 @@ also nicht mehr.
 
 Ziel des Builders ist IMMER das fokussierte Fenster (klebrig: zuletzt aktives
 Chartfenster). Anwenden = Vorschau: jede Aenderung rendert sofort, gespeichert
-wird nur auf Wunsch. Ein nicht gespeichertes Chart traegt draft=true und wird im
+wird nur auf Wunsch.
+
+Die Liste "GESPEICHERTES CHART ANWENDEN" im Panel ist der **Chart-Katalog**
+(`list_charts`), nicht der Alt-Endpunkt `/api/presets`: anwendbar ist genau das,
+was der Builder als Chart kennt und in Panes zerlegen kann. Die Liste wird nach
+jedem Speichern neu geladen; ohne eigenen Override zeigt sie das Chart, das das
+Zielfenster gerade rendert. Ein nicht gespeichertes Chart traegt draft=true und wird im
 Panel als "• unbenannt" markiert; es stirbt mit dem Fenster.
 
 ### 4.1 Antwort-Envelope und Fehlercodes
@@ -191,11 +208,34 @@ nicht still verworfen.
 Symbol-/Timeframe-Wechsel rendert die gespeicherte Chart-Definition erneut
 (kein Preset-Parameter noetig).
 
+**Geometrie gehoert dem Client.** Der Ledger merkt sich die zuletzt gemeldete
+Position/Groesse je Fenster (Quelle: `window.geometry_changed`; der Client meldet
+sie auch nach jedem Oeffnen einmal aktiv). Daraus folgt:
+
+- **Ein Re-Render schickt keine Geometrie.** `build_display_stock` erfindet keine
+  Werte (kein `position or {...}`), `_render_window` und der Symbolwechsel haengen
+  keine an, und `open_window` nimmt `position`/`size` nur in die Nachricht, wenn
+  sie ausdruecklich angefordert wurden oder das Fenster neu angelegt wird.
+- **Platzieren darf der Agent** beim Anlegen eines Fensters (Startwerte
+  100,100 / 900x600) und auf ausdruecklichen Wunsch (`LOAD_SETUP`, `layout.restore`,
+  ein Kommando mit `position`/`size`).
+- Der Client setzt `move()`/`resize()` nur bei echter Aenderung (kein Flackern, ein
+  maximiertes Fenster wird nicht restauriert).
+
+Grund: Ein Default in der Aufloesung (100,100 / 1100x750) hat bei jedem Anwenden
+jedes Fenster auf dieselbe Stelle gezogen - unabhaengig davon, wo es stand.
+
 ## 6. Setup v2
 
 `windows[]`-Eintraege erhalten optional `chart_id`, `symbol`, `timeframe`.
 Alt-Eintraege ohne diese Felder laden weiter (Geometrie-only). Beim Laden wird
 ein Fenster mit chart_id + symbol + timeframe geoeffnet.
+
+`SAVE_SETUP` (MCP/Bridge) **schreibt immer**. Die Dedup-Bremse in
+`ChartAgent.save_setup` vergleicht nur die Geometrie (Fenster, Positionen,
+Monitore) und ist fuer den entprellten Autosave gedacht; ein explizites Speichern
+mit `force=True` umgeht sie, sonst waere "jetzt als default speichern" nach einem
+reinen Chart-/Symbolwechsel ein stiller No-op.
 
 `LIST_SETUPS` liefert je Variante die Bindungen mit (`windows`:
 `window_id/chart_id/symbol/timeframe`). Daran haengt der **DELETE_CHART-Schutz**:
@@ -244,13 +284,28 @@ wird ebenfalls nicht geloescht.
 
 **Im Viewer (Control Panel):** Abschnitt CHART-BUILDER.
 Ziel ist das fokussierte Chartfenster (klebrig). Preispane-Preset waehlen, mit "+" weitere
-Panes aus dem Dropdown anhaengen, sortieren, LIN/LOG schalten, Volumen zu-/abschalten.
-Pro markierter Pane: **Hoehe** (Gewicht) und **Titel** (landet als Override nur in diesem
-Chart), **⧉ Pane** dupliziert sie auf einen eigenen Slot; das Preispane ist geschuetzt.
+Panes aus dem Dropdown anhaengen (Enter im Feld oder "+"), sortieren, LIN/LOG schalten,
+Volumen zu-/abschalten (das Volumen-Pane ist eine normale Pane: was entfernt wird,
+bleibt entfernt - die Definition ist die Wahrheit). Das Hinzufuegen-Dropdown listet nur Presets ohne role=price - genau
+ein Preispane (Abschnitt 1) wechselt man oben; getippte Preispane-Namen werden abgewiesen.
+Pro markierter Pane: **Preset** (nur Nicht-Preispane; die Slot-Id bleibt, Gewicht und
+Titel-Override ebenso, die Skala zieht nur mit, wenn sie noch der Default des alten Presets
+war), **Hoehe** (Gewicht) und **Titel** (landet als Override nur in diesem Chart und schlaegt
+in der Liste den Preset-Namen), **⧉ Pane** dupliziert sie auf einen eigenen Slot; das
+Preispane ist geschuetzt. Die Builder-Zeilen teilen eine feste Label-Spalte
+(Preispane/Hinzufuegen/Preset/Hoehe/Titel).
 Jede Aenderung rendert sofort (Draft, im Panel als "• unbenannt"), **Speichern** schreibt
 in das aktuelle Chart, "Speichern unter..." legt ein neues an. Warnungen und
 uebersprungene Panes stehen in der Statuszeile. Ohne Fensterfokus ist der Builder
 deaktiviert.
+
+**Ablauf-Synchronitaet:** Der Builder liest seinen Stand aus `get_chart_state` und
+gilt nur so lange wie das Fenster. Er liest neu (a) nach dem Anwenden eines Charts
+ueber die Anwenden-Liste und (b) immer dann, wenn der Agent einen neuen Snapshot
+fuer das Zielfenster schickt - das deckt MCP-`APPLY_CHART`/`COMPOSE_CHART`,
+Symbolwechsel, `LOAD_SETUP` und Resync ab. Doppelte Anfragen fuer dasselbe Fenster
+werden zusammengefasst. Ohne diesen Abgleich zeigt der Builder die Bestandteile
+des vorherigen Charts, waehrend das Fenster schon ein anderes rendert.
 
 **Beispiel RS-Monitor:** Pane-Preset `rs_monitor` (Serien ibd_rs + rs_adr_neutral mit
 Schwellenfarben 30/80, Zonen aus der 30->80-Phase in 20 Bars, Referenzlinien 30 und 80)

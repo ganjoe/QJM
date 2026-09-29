@@ -28,9 +28,23 @@ WATCHLISTS = [
     {"name": "scan_latest", "editable": True},
 ]
 TICKERS = {"10_favorite": ["VICR", "HOOD"], "scan_latest": ["AMD"]}
-PRESETS = [
-    {"id": "default", "display_name": "Standard", "description": "", "indicator_count": 4},
-    {"id": "qmaggi", "display_name": "QMaggi", "description": "", "indicator_count": 10},
+# Der Chart-Katalog ist die einzige Quelle fuer "GESPEICHERTES CHART ANWENDEN"
+# und fuer den Builder (Vertrag: ein Chart-Bestand, keine Alias-Liste).
+CHARTS = [
+    {
+        "id": "default",
+        "display_name": "Standard",
+        "description": "",
+        "pane_count": 3,
+        "summary": "main=Chart · SMA 50 · volume=Volumen",
+    },
+    {
+        "id": "qmaggi",
+        "display_name": "QMaggi",
+        "description": "",
+        "pane_count": 4,
+        "summary": "main=Chart · SMA 10-200 · adr=Adr · volume=Volumen",
+    },
 ]
 SYMBOLS = [
     {"ticker": "NVDA", "type": "CS", "has_parquet": True},
@@ -80,8 +94,8 @@ class StubControlService:
             }
         if op == "mutate_watchlist":
             return self._mutate(params)
-        if op == "list_presets":
-            return {"presets": list(PRESETS), "count": len(PRESETS)}
+        if op == "list_charts":
+            return {"charts": [dict(c) for c in CHARTS], "count": len(CHARTS)}
         if op == "apply_preset":
             self.applied_presets.append(dict(params))
             return {
@@ -290,10 +304,10 @@ def test_pin_button_keeps_panel_visible_and_persists_state(qapp):
     assert settings.value("panel/pinned_v2", type=bool) is False
 
 
-def test_panel_reloads_watchlists_and_presets_on_connect(qapp):
+def test_panel_reloads_watchlists_and_charts_on_connect(qapp):
     agent, app, stub = _setup(qapp)
     assert "list_watchlists" in stub.ops()
-    assert "list_presets" in stub.ops()
+    assert "list_charts" in stub.ops()
     panel = app.control_panel
     assert panel.watchlist_combo.count() == 3
     assert panel.preset_combo.count() == 2
@@ -305,7 +319,7 @@ def test_panel_reloads_after_reconnect(qapp):
     app.control_panel.set_connection_state(False)
     app.control_panel.set_connection_state(True)
     assert len(stub.requests) > before
-    assert {"list_watchlists", "list_presets"} <= set(stub.ops()[before:])
+    assert {"list_watchlists", "list_charts"} <= set(stub.ops()[before:])
 
 
 # ── ticker search ──────────────────────────────────────────────────────────
@@ -444,7 +458,7 @@ def test_master_list_is_readonly(qapp):
 # ── presets ────────────────────────────────────────────────────────────────
 
 
-def test_preset_dropdown_and_apply(qapp):
+def test_chart_dropdown_and_apply(qapp):
     agent, app, stub = _setup(qapp)
     panel = app.control_panel
 
@@ -466,7 +480,10 @@ def test_preset_dropdown_and_apply(qapp):
 def test_symbol_activation_routes_to_flag_group_with_preset(qapp):
     agent, app, stub = _setup(qapp)
     recorded: List[tuple] = []
-    agent._handle_window_change_symbol = lambda window_id, symbol, preset=None: recorded.append(
+    # Der Agent nimmt den Symbolwechsel nur noch entgegen und rendert ihn auf
+    # einem Worker (der Empfangs-Thread darf nicht auf HTTP warten); hier zaehlt
+    # die Weiterleitung des Klicks.
+    agent.request_symbol_change = lambda window_id, symbol, preset=None: recorded.append(
         (window_id, symbol, preset)
     )
 
@@ -481,7 +498,7 @@ def test_symbol_activation_routes_to_flag_group_with_preset(qapp):
 def test_symbol_activation_creates_window_when_flag_group_is_empty(qapp):
     agent, app, stub = _setup(qapp)
     recorded: List[tuple] = []
-    agent._handle_window_change_symbol = lambda window_id, symbol, preset=None: recorded.append(
+    agent.request_symbol_change = lambda window_id, symbol, preset=None: recorded.append(
         (window_id, symbol, preset)
     )
 

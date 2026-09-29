@@ -79,6 +79,8 @@ class FakeControlService:
         self.requests: List[Dict[str, Any]] = []
         self.states: Dict[str, Dict[str, Any]] = {}
         self.charts: Dict[str, Dict[str, Any]] = {}
+        self.windows: List[Dict[str, Any]] = [dict(WINDOW)]
+        self.applied_presets: List[Dict[str, Any]] = []
         self.fail_ops: set = set()
         self.error_message = "kaputt"
 
@@ -152,7 +154,35 @@ class FakeControlService:
             return self._save(params)
         if op == "apply_chart":
             return self._apply(params)
+        if op == "apply_preset":
+            return self._apply_preset(params)
         return {}
+
+    def _apply_preset(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Wie der echte Server: wendet ein Chart auf alle Fenster der Flag an."""
+        preset_id = str(params.get("preset_id") or "")
+        flag = int(params.get("color_flag") or 0)
+        self.applied_presets.append(dict(params))
+        applied: List[str] = []
+        skipped: List[Dict[str, Any]] = []
+        for window in self.windows:
+            if int(window.get("color_flag") or 0) != flag:
+                continue
+            window_id = str(window.get("window_id") or "")
+            applied.append(window_id)
+            state = dict(self.state(window_id))
+            chart = self.charts.get(preset_id) or {}
+            if str(chart.get("id") or "") == preset_id:
+                state["panes"] = [dict(p) for p in chart.get("panes") or []]
+                state["draft"] = False
+            state["chart_id"] = preset_id
+            self.states[window_id] = state
+        return {
+            "preset_id": preset_id,
+            "color_flag": flag,
+            "applied": applied,
+            "skipped": skipped,
+        }
 
     def _compose(self, params: Dict[str, Any]) -> Dict[str, Any]:
         window_id = str(params.get("window_id") or "")
@@ -168,16 +198,18 @@ class FakeControlService:
                 pane_id = f"{base}_{suffix}"
                 suffix += 1
             used.add(pane_id)
-            panes.append(
-                {
-                    "pane_id": pane_id,
-                    "pane_preset_id": preset_id,
-                    "title": preset_id,
-                    "role": "",
-                    "scale": str(raw.get("scale") or "linear"),
-                    "weight": int(raw.get("weight") or 2),
-                }
-            )
+            entry = {
+                "pane_id": pane_id,
+                "pane_preset_id": preset_id,
+                "title": preset_id,
+                "role": "",
+                "scale": str(raw.get("scale") or "linear"),
+                "weight": int(raw.get("weight") or 2),
+            }
+            # Wie der echte Server: get_chart_state liefert die Overrides zurueck.
+            if raw.get("overrides"):
+                entry["overrides"] = dict(raw["overrides"])
+            panes.append(entry)
         state["panes"] = panes
         state["draft"] = bool(params.get("draft", True))
         if state["draft"]:
@@ -269,10 +301,18 @@ def test_catalog_fills_price_pane_and_add_dropdowns(qapp):
     assert price_ids == ["qmaggi__main", "rsi_14"], "only price|any presets belong in the price combo"
     assert panel.price_pane_combo.currentData() == "qmaggi__main"
 
+    # Preispane-Presets gehoeren nicht ins Hinzufuegen-Dropdown (Vertrag §1: genau
+    # ein Preispane) - sonst baut man doppelte SMA-Panes ins Fenster.
     add_ids = sorted(panel.add_pane_combo.itemData(i) for i in range(panel.add_pane_combo.count()))
-    assert add_ids == ["qmaggi__main", "rs_monitor", "rsi_14"]
+    assert add_ids == ["rs_monitor", "rsi_14"]
     labels = [panel.add_pane_combo.itemText(i) for i in range(panel.add_pane_combo.count())]
     assert "RS-Monitor — IBD RS + Revival" in labels
+    assert panel.add_pane_combo.lineEdit().placeholderText() == "Preset wählen…"
+
+    switch_ids = [
+        panel.pane_preset_combo.itemData(i) for i in range(panel.pane_preset_combo.count())
+    ]
+    assert switch_ids == ["rs_monitor", "rsi_14"], "Kandidaten fuer den Preset-Wechsel"
 
     rows = [panel.builder_pane_list.item(i).text() for i in range(panel.builder_pane_list.count())]
     assert rows == [
@@ -332,6 +372,125 @@ def test_price_pane_selection_replaces_main_preset(qapp):
     assert [p["pane_id"] for p in panes] == ["main", "rs_monitor"]
     assert panes[0]["pane_preset_id"] == "rsi_14"
     assert panes[0]["weight"] == 7, "the price pane keeps its weight"
+
+
+def test_selected_pane_preset_switch_keeps_slot_and_weight(qapp):
+    panel, fake = _panel(qapp)
+    panel.builder_pane_list.setCurrentRow(1)
+    qapp.processEvents()
+    assert panel.pane_preset_combo.currentData() == "rs_monitor"
+    assert panel.pane_preset_combo.isEnabled()
+
+    index = panel.pane_preset_combo.findData("rsi_14")
+    panel.pane_preset_combo.setCurrentIndex(index)
+    panel._on_pane_preset_activated(index)
+    qapp.processEvents()
+
+    panes = fake.last("compose_chart")["params"]["panes"]
+    assert [p["pane_id"] for p in panes] == ["main", "rs_monitor"], "die Slot-Id bleibt"
+    assert [p["pane_preset_id"] for p in panes] == ["qmaggi__main", "rsi_14"]
+    assert panes[1]["weight"] == 2, "das Gewicht bleibt"
+    assert panel.builder_pane_list.item(1).text() == "rs_monitor · RSI 14 · LIN · Gewicht 2"
+    assert panel.pane_preset_combo.currentData() == "rsi_14"
+
+
+def test_price_pane_shows_but_cannot_switch_its_preset(qapp):
+    panel, fake = _panel(qapp)
+
+    panel.builder_pane_list.setCurrentRow(0)
+    qapp.processEvents()
+    assert panel.pane_preset_combo.currentData() == "qmaggi__main"
+    assert panel.pane_preset_combo.isEnabled() is False
+
+    panel.builder_pane_list.setCurrentRow(1)
+    qapp.processEvents()
+    assert panel.pane_preset_combo.isEnabled() is True
+
+
+def test_preset_switch_follows_the_default_scale_only_when_untouched(qapp):
+    panel, fake = _panel(qapp)
+    panel._pane_catalog.append(
+        {
+            "id": "adr_log",
+            "display_name": "ADR% (log)",
+            "description": "",
+            "role": "value",
+            "kind": "indicator",
+            "default_scale": "log",
+            "member_count": 1,
+            "summary": "ADR% 1",
+        }
+    )
+    panel._rebuild_builder_widgets()
+    panel.builder_pane_list.setCurrentRow(1)
+    qapp.processEvents()
+
+    index = panel.pane_preset_combo.findData("adr_log")
+    assert index >= 0, "ein neues Katalog-Preset landet in der Combo"
+    panel.pane_preset_combo.setCurrentIndex(index)
+    panel._on_pane_preset_activated(index)
+    qapp.processEvents()
+
+    panes = fake.last("compose_chart")["params"]["panes"]
+    assert panes[1]["pane_preset_id"] == "adr_log"
+    assert panes[1]["scale"] == "log", "die Default-Skala des neuen Presets zieht mit"
+    assert "LOG" in panel.builder_pane_list.item(1).text()
+
+
+def test_preset_switch_keeps_a_deliberate_scale(qapp):
+    panel, fake = _panel(qapp)
+    panel.builder_pane_list.setCurrentRow(1)
+    qapp.processEvents()
+
+    panel.scale_toggle_btn.click()  # linear -> log: eine bewusste Wahl
+    qapp.processEvents()
+    assert fake.last("compose_chart")["params"]["panes"][1]["scale"] == "log"
+
+    index = panel.pane_preset_combo.findData("rsi_14")
+    panel.pane_preset_combo.setCurrentIndex(index)
+    panel._on_pane_preset_activated(index)
+    qapp.processEvents()
+
+    panes = fake.last("compose_chart")["params"]["panes"]
+    assert panes[1]["pane_preset_id"] == "rsi_14"
+    assert panes[1]["scale"] == "log", "eine bewusste LIN/LOG-Wahl bleibt stehen"
+
+
+def test_title_override_survives_the_state_refresh(qapp):
+    panel, fake = _panel(qapp)
+    panel.builder_pane_list.setCurrentRow(1)
+    qapp.processEvents()
+
+    panel.pane_title_edit.setText("RS neu")
+    panel.pane_title_edit.editingFinished.emit()
+    qapp.processEvents()
+
+    # get_chart_state liefert die Overrides zurueck - sie duerfen nicht verloren gehen.
+    assert panel._builder_panes[1]["overrides"] == {"title": "RS neu"}
+    assert "RS neu" in panel.builder_pane_list.item(1).text()
+
+    panel.volume_check.setChecked(True)  # erzwingt ein zweites Compose
+    qapp.processEvents()
+    assert fake.last("compose_chart")["params"]["panes"][1]["overrides"] == {"title": "RS neu"}
+
+
+def test_enter_in_the_add_combo_appends_the_pane(qapp):
+    panel, fake = _panel(qapp)
+    line = panel.add_pane_combo.lineEdit()
+    line.setText("rs_monitor")
+    line.returnPressed.emit()
+
+    panes = fake.last("compose_chart")["params"]["panes"]
+    assert [p["pane_preset_id"] for p in panes] == ["qmaggi__main", "rs_monitor", "rs_monitor"]
+
+
+def test_typed_price_preset_is_refused(qapp):
+    panel, fake = _panel(qapp)
+    panel.add_pane_combo.lineEdit().setText("SMA 10-200")
+    panel.add_pane_btn.click()
+
+    assert "Pane-Preset wählen" in panel.status_label.text()
+    assert "compose_chart" not in fake.ops()
 
 
 def test_remove_pane_keeps_price_pane(qapp):
@@ -526,6 +685,116 @@ def test_compose_warnings_and_skipped_land_in_the_status_line(qapp):
     assert "ibd_rs" in status and "ghost" in status
 
 
+# ── applying a saved chart ─────────────────────────────────────────────────
+
+
+APPLIED_PANES = [
+    {
+        "pane_id": "main",
+        "pane_preset_id": "qmaggi__main",
+        "title": "SMA 10-200",
+        "role": "price",
+        "scale": "linear",
+        "weight": 7,
+    },
+    {
+        "pane_id": "rsi_14",
+        "pane_preset_id": "rsi_14",
+        "title": "RSI 14",
+        "role": "any",
+        "scale": "linear",
+        "weight": 2,
+    },
+]
+
+
+def _register_saved_chart(fake, chart_id: str = "momentum_chart") -> None:
+    fake.charts[chart_id] = {
+        "id": chart_id,
+        "display_name": "Momentum",
+        "panes": [dict(p) for p in APPLIED_PANES],
+    }
+
+
+def test_applying_a_saved_chart_refreshes_the_builder_panes(qapp):
+    """Angewendetes Chart: der Builder zeigt sofort dessen Bestandteile.
+
+    Der Server rendert das Fenster neu; die Pane-Liste im Builder kommt aus
+    get_chart_state und muss danach neu gelesen werden - sonst zeigt sie weiter
+    das vorherige Chart.
+    """
+    panel, fake = _panel(qapp)
+    _register_saved_chart(fake)
+
+    panel.preset_combo.addItem("Momentum", "momentum_chart")
+    panel._on_preset_activated(panel.preset_combo.findData("momentum_chart"))
+    qapp.processEvents()
+
+    assert fake.last("apply_preset")["params"] == {"preset_id": "momentum_chart", "color_flag": 0}
+    assert [p["pane_id"] for p in panel._builder_panes] == ["main", "rsi_14"]
+    assert panel.builder_pane_list.count() == 2
+    assert "RSI 14" in panel.builder_pane_list.item(1).text()
+
+
+def test_saved_charts_are_offered_for_applying_after_save(qapp, monkeypatch):
+    """Die Anwenden-Liste ist der Chart-Katalog - kein zweiter Datenbestand."""
+    panel, fake = _panel(qapp)
+    assert panel.preset_combo.count() == 0
+
+    monkeypatch.setattr(panel, "_ask_chart_name", lambda default: "Mein Chart")
+    panel.save_chart_btn.click()
+    qapp.processEvents()
+
+    ids = [panel.preset_combo.itemData(i) for i in range(panel.preset_combo.count())]
+    assert ids == ["mein_chart"], "ein gespeichertes Chart ist sofort anwendbar"
+    assert panel.preset_combo.itemText(0) == "Mein Chart"
+
+
+def test_overlapping_chart_state_reads_are_merged(qapp):
+    """Zwei Ausloeser in derselben Runde ergeben eine Anfrage - plus einen Nachlauf.
+
+    Die erste Antwort kann einen Stand tragen, der vor der zweiten Aenderung
+    entstanden ist; sie darf nicht als "aktuell" stehen bleiben.
+    """
+    panel, fake = _panel(qapp)
+    deferred: List[Dict[str, Any]] = []
+
+    def capture(request_id, op, params):
+        fake.requests.append({"request_id": request_id, "op": op, "params": params or {}})
+        if op == "get_chart_state":
+            deferred.append({"request_id": request_id, "op": op, "params": params or {}})
+
+    panel.control_request.disconnect(fake.handle)
+    panel.control_request.connect(capture)
+
+    panel._refresh_chart_state()
+    panel._refresh_chart_state()
+    assert len(deferred) == 1, "eine laufende Anfrage wird nicht verdoppelt"
+
+    pending = deferred.pop(0)
+    panel.apply_response(
+        {
+            "request_id": pending["request_id"],
+            "op": "get_chart_state",
+            "ok": True,
+            "data": fake.state("win_nvda_1d"),
+            "error": None,
+        }
+    )
+    assert len(deferred) == 1, "nach der Antwort wird der neuere Stand nachgelesen"
+
+    panel.apply_response(
+        {
+            "request_id": deferred.pop(0)["request_id"],
+            "op": "get_chart_state",
+            "ok": True,
+            "data": fake.state("win_nvda_1d"),
+            "error": None,
+        }
+    )
+    assert deferred == [], "kein Nachlauf ohne weiteren Ausloeser"
+
+
 def test_derive_chart_id_slugifies_names():
     assert derive_chart_id("mein_chart") == "mein_chart"
     assert derive_chart_id("Mein Chart") == "mein_chart"
@@ -570,6 +839,7 @@ def test_builder_widgets_are_disabled_without_a_chart_window(qapp):
     for widget in (
         panel.builder_pane_list,
         panel.price_pane_combo,
+        panel.pane_preset_combo,
         panel.add_pane_combo,
         panel.add_pane_btn,
         panel.remove_pane_btn,
@@ -644,6 +914,8 @@ class _StubService:
     def __init__(self, agent: ChartAgent) -> None:
         self.agent = agent
         self.requests: List[Dict[str, Any]] = []
+        # Vom Fake-Server gelieferter Fensterinhalt (aendert sich beim Anwenden).
+        self.state_panes: List[Dict[str, Any]] = [dict(p) for p in INITIAL_PANES]
 
     def handle(self, request_id: str, op: str, params: Any) -> None:
         self.requests.append({"request_id": request_id, "op": op, "params": params or {}})
@@ -670,7 +942,7 @@ class _StubService:
                 "window_id": params.get("window_id"),
                 "chart_id": "",
                 "draft": True,
-                "panes": [dict(p) for p in INITIAL_PANES],
+                "panes": [dict(p) for p in self.state_panes],
             }
         return {}
 
@@ -729,3 +1001,31 @@ def test_app_forwards_window_activation_and_clears_the_target(qapp):
     qapp.processEvents()
     assert panel._builder_target == ""
     assert "kein Chartfenster" in panel.builder_target_label.text()
+
+
+def test_agent_snapshot_refreshes_the_builder_panes(qapp):
+    """Der Agent kann ein Fenster jederzeit neu rendern (MCP, Setup, Symbolwechsel).
+
+    Der Snapshot ist das Signal: der Builder muss den Fensterinhalt neu lesen,
+    sonst zeigt er die Bestandteile des vorherigen Charts.
+    """
+    agent, app, stub = _app(qapp)
+    agent.open_window("win_nvda_1d", "NVDA")
+    qapp.processEvents()
+    panel = app.control_panel
+    assert [p["pane_id"] for p in panel._builder_panes] == ["main", "rs_monitor"]
+
+    stub.state_panes = [dict(p) for p in APPLIED_PANES]
+    agent.send_snapshot(
+        "win_nvda_1d",
+        {
+            "symbol": "NVDA",
+            "chart": {"id": "momentum_chart", "display_name": "Momentum", "draft": False},
+            "panes": [dict(p) for p in APPLIED_PANES],
+        },
+    )
+    qapp.processEvents()
+
+    assert [p["pane_id"] for p in panel._builder_panes] == ["main", "rsi_14"]
+    assert panel.builder_pane_list.count() == 2
+    assert "RSI 14" in panel.builder_pane_list.item(1).text()

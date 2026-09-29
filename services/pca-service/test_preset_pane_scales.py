@@ -120,6 +120,7 @@ def test_assign_pane_ids_avoids_collisions():
 
 
 def test_legacy_members_become_pane_presets():
+    """Die flache Altform kann "ohne Volumen" nicht ausdruecken - sie bekommt es explizit."""
     db = FakeDB()
     originals = _install(db)
     original_auto = pa._auto_create_feature_if_missing
@@ -160,7 +161,32 @@ def test_chart_without_price_pane_gets_candles():
     panes = [p for p in db.tables["pca_chart_preset_panes"] if p["chart_preset_id"] == "only_rs"]
     assert panes[0]["pane_id"] == "main"
     assert panes[0]["pane_preset_id"] == pa.CANDLES_PANE_PRESET
-    assert [p["pane_id"] for p in panes] == ["main", "rs", "volume"]
+    # Die explizite Pane-Liste ist vollstaendig: kein implizites Volumen-Pane.
+    assert [p["pane_id"] for p in panes] == ["main", "rs"]
+
+
+def test_chart_without_volume_stays_without_volume():
+    """Ein entferntes Volumen-Pane kommt beim Speichern nicht zurueck."""
+    db = FakeDB()
+    originals = _install(db)
+    try:
+        db.post("pca_pane_presets", {"id": "demo__main", "display_name": "Chart", "role": "price", "default_scale": "linear"})
+        chart = pa.ChartPresetIn(
+            id="ohne_volumen", display_name="Ohne Volumen",
+            panes=[
+                pa.ChartPaneIn(pane_id="main", pane_preset_id="demo__main", weight=7),
+                pa.ChartPaneIn(pane_id="rs", pane_preset_id="demo__main"),
+            ],
+        )
+        asyncio.run(pa.create_chart(chart))
+        # Zweiter Schreibvorgang (Update ohne panes erbt die bestehende Struktur).
+        asyncio.run(pa.update_chart("ohne_volumen", pa.ChartPresetIn(id="ohne_volumen", display_name="Ohne Volumen")))
+    finally:
+        _restore(originals)
+
+    panes = [p for p in db.tables["pca_chart_preset_panes"] if p["chart_preset_id"] == "ohne_volumen"]
+    assert [p["pane_id"] for p in panes] == ["main", "rs"]
+    assert all(p["pane_preset_id"] != pa.VOLUME_PANE_PRESET for p in panes)
 
 
 def test_chart_full_resolves_series_and_zones():

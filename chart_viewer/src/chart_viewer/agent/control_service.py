@@ -119,6 +119,10 @@ class ControlService:
         self._executor = ThreadPoolExecutor(
             max_workers=self.config.max_workers, thread_name_prefix="cv-control"
         )
+        # Suche: eigener einreihiger Executor. Damit bleiben die Antworten in der
+        # Reihenfolge der Anfragen (der Client schickt ohnehin nur eine Suche
+        # gleichzeitig), ohne dass der WebSocket-Empfangs-Thread auf HTTP wartet.
+        self._search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cv-search")
         self._cache: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
         # Injectable for tests
@@ -183,20 +187,25 @@ class ControlService:
         return "internal", str(exc)
 
     def handle(self, request_id: str, op: str, params: Any) -> None:
-        """Handle one `control.request`. Search is answered inline (ordering!),
-        every network-bound op runs on the executor so the receive thread stays free."""
+        """Handle one `control.request` - niemals blockierend auf dem Aufrufer.
+
+        Der Aufrufer ist der WebSocket-Empfangs-Thread. Wartet der auf HTTP (die
+        Suche lief hier frueher inline), nimmt er keine Nachrichten mehr ab: der
+        Puffer laeuft voll, Keepalive-Pings bleiben unbeantwortet und die
+        Verbindung stirbt - genau das erzeugte "keine Antwort vom Agent" und den
+        Nachlauf der Klicks.
+        """
         clean_params = params if isinstance(params, dict) else {}
         handler = self._ops.get(op)
         if handler is None:
             self._respond_error(request_id, op, "invalid_request", f"Unknown control op '{op}'")
             return
-        if op == "search_symbols":
-            self._run_handler(request_id, op, handler, clean_params)
-        else:
-            self._executor.submit(self._run_handler, request_id, op, handler, clean_params)
+        executor = self._search_executor if op == "search_symbols" else self._executor
+        executor.submit(self._run_handler, request_id, op, handler, clean_params)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False)
+        self._search_executor.shutdown(wait=False)
 
     def _run_handler(
         self, request_id: str, op: str, handler: Callable[[Dict[str, Any]], Any], params: Dict[str, Any]
@@ -646,7 +655,13 @@ class ControlService:
         return specs
 
     def _render_window(self, window_id: str, extra: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
-        """Fenster mit einer Chart-Definition/Pane-Liste neu rendern (DISPLAY_STOCK)."""
+        """Fenster mit einer Chart-Definition/Pane-Liste neu rendern (DISPLAY_STOCK).
+
+        Ohne Geometrie: ein Re-Render (Compose, Chart anwenden, Speichern,
+        Verwerfen) verschiebt kein Fenster - Position und Groesse gehoeren dem
+        Client. Ausdrueckliche Platzierungen macht der Agent ueber LOAD_SETUP bzw.
+        layout.restore.
+        """
         info = self._ledger_chart(window_id)
         command: Dict[str, Any] = {
             "action": "DISPLAY_STOCK",
@@ -655,10 +670,6 @@ class ControlService:
             "timeframe_str": self._window_timeframe(info),
             "limit": 2000,
         }
-        if info.get("position"):
-            command["position"] = info.get("position")
-        if info.get("size"):
-            command["size"] = info.get("size")
         command.update({k: v for k, v in extra.items() if v is not None})
         return self._http_json(
             "POST", f"{self.config.control_api_url.rstrip('/')}/api/command", command, timeout=timeout

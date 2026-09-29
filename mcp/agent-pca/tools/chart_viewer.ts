@@ -414,14 +414,14 @@ export function registerChartViewerTools(server: McpServer) {
         "- CLOSE_WINDOW: Close an open chart window.\n" +
         "- STATUS: Get list of open windows and viewer connection state.\n" +
         "- SCREENSHOT: Capture 640x480 screenshots of all open chart windows (or target window_id), save to /dsh_playground, and return capture ID and filepaths for reference or visual UI debugging.\n" +
-        "- SAVE_SETUP: Save current window layout (positions, sizes, color flags) as a named setup. Requires `setup_name`. If no setup is loaded, 'default' is auto-saved on every geometry change.\n" +
+        "- SAVE_SETUP: Save current window layout (positions, sizes, color flags, Chart/Symbol/Timeframe je Fenster) as a named setup. Requires `setup_name`. Schreibt immer - die Entprellung (Dedup) betrifft nur den Autosave, der 'default' bei Geometrieaenderungen fortschreibt.\n" +
         "- LOAD_SETUP: Load a saved window layout. Reuses existing windows of matching type, closes excess windows, creates missing ones. Matches monitor count exactly or picks closest variant. Requires `setup_name`.\n" +
         "- LIST_SETUPS: List all saved setups with their monitor-count variants.\n" +
         "- DELETE_SETUP: Delete a setup or a specific monitor-count variant. Requires `setup_name`; optional `monitor_count`.\n" +
         "- RENAME_SETUP: Rename all variants of a setup. Requires `setup_name` and `new_setup_name`.\n" +
         "- SETUP_ASSIGN: Chart/Symbol/Timeframe eines gespeicherten Setup-Slots setzen (ohne Fenster zu oeffnen). Requires `setup_name` und `window_id` oder `slot` (1-basiert); optional `chart_id` (\"\" loest die Bindung), `symbol`, `timeframe`, `monitor_count`. SAVE_SETUP akzeptiert dafuer auch `windows` [{window_id|slot, chart_id, symbol, timeframe}].\n\n" +
         "- LIST_CHARTS: Listet die gespeicherten Chart-Definitionen (Ebene Chart: geordnete Panes + Topbar) als Tabelle (id, display_name, pane_count, summary).\n" +
-        "- COMPOSE_CHART: Baut den Inhalt eines offenen Fensters aus Pane-Presets zusammen (Draft/Vorschau im Viewer, nicht gespeichert). Erfordert `window_id` und `panes` [{pane_id?, pane_preset_id, scale?, weight?}], optional `topbar_metrics` und `base_chart_id`.\n" +
+        "- COMPOSE_CHART: Baut den Inhalt eines offenen Fensters aus Pane-Presets zusammen (Draft/Vorschau im Viewer, nicht gespeichert). Erfordert `window_id` und `panes` [{pane_id?, pane_preset_id, scale?, weight?}], optional `topbar_metrics` und `base_chart_id`. Die Pane-Liste ist vollstaendig: sie beschreibt genau die Panes des Fensters - ein weggelassenes builtin:volume wird NICHT ergaenzt.\n" +
         "- GET_CHART_STATE: Inhalt eines offenen Fensters lesen (Panes in Reihenfolge, chart_id, draft, topbar_metrics, x_axis_pane). Erfordert `window_id`. Grundlage fuer jedes inkrementelle Editing.\n" +
         "- LIST_WINDOWS: Alle offenen Fenster mit Symbol, Timeframe, chart_id, Draft-Status und Pane-Anzahl (Charts zuerst, Watchlist-Fenster danach).\n" +
         "- SAVE_CHART: Den aktuellen Fensterinhalt (Draft) als Chart-Definition speichern. Erfordert `window_id` und `chart_id`; optional `display_name`, `description` und `overwrite: false` gegen stilles Ueberschreiben.\n" +
@@ -527,7 +527,7 @@ export function registerChartViewerTools(server: McpServer) {
           scale: z.enum(["linear", "log"]).optional().describe("Y-Achsen-Skalierung dieses Panes. Fuer COMPOSE_CHART."),
           weight: z.number().optional().describe("Relative Hoehe des Panes (Default 2). Fuer COMPOSE_CHART."),
           overrides: z.record(z.string(), z.any()).optional().describe("Pane-spezifische Ueberschreibungen. Fuer COMPOSE_CHART."),
-        })).optional().describe("COMPOSE_CHART: geordnete Panes des Fensters (Slot -> Pane-Preset). Ohne pane_id nimmt der Service die pane_preset_id."),
+        })).optional().describe("COMPOSE_CHART: geordnete Panes des Fensters (Slot -> Pane-Preset), vollstaendig - was fehlt, wird nicht ergaenzt (auch kein builtin:volume). Ohne pane_id nimmt der Service die pane_preset_id."),
         topbar_metrics: z.array(z.string()).optional().describe("COMPOSE_CHART: Metriken fuer die Topbar des Fensters."),
         base_chart_id: z.string().optional().describe("COMPOSE_CHART: bestehendes Chart als Basis; seine Panes werden durch panes ersetzt; ohne base_chart_id startet der Draft leer."),
         chart_id: z.string().optional().describe("Id der Chart-Definition fuer SAVE_CHART und APPLY_CHART (Ebene Chart: geordnete Panes + Topbar)."),

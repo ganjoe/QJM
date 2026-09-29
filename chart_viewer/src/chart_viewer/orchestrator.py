@@ -15,7 +15,7 @@ import urllib.error
 from typing import Any, Dict, List, Optional
 
 from chart_viewer import chart_spec
-from chart_viewer.formatting import compact_number as _compact_number
+from chart_viewer.formatting import compact_de as _compact_de
 from chart_viewer.formatting import de_num as _de_num
 from chart_viewer.fundamentals import fundamental_topbar_parts
 from chart_viewer.models.validation import sanitize_pane_scales
@@ -45,6 +45,11 @@ PCA_SERVICE_URL = os.environ.get("PCA_SERVICE_URL", "http://127.0.0.1:8794")
 # Default candle limit for chart display (configurable via CV_CHART_LIMIT)
 DEFAULT_CHART_LIMIT = int(os.environ.get("CV_CHART_LIMIT", "2000"))
 
+# Timeout fuer die PCA-Service-Aufrufe des Renderpfads. Ohne Timeout konnte ein
+# haengender Service (blockierter Event-Loop, laufender Scan) den kompletten
+# Symbolwechsel blockieren - der Viewer wartete dann ewig auf seinen Snapshot.
+PCA_HTTP_TIMEOUT_SEC = float(os.environ.get("CV_PCA_HTTP_TIMEOUT_SEC", "30"))
+
 
 def _line_style(style: dict, default_color: str) -> dict:
     """Build an overlay line style from a preset style.
@@ -62,9 +67,9 @@ def _pca_get(path: str) -> Dict[str, Any]:
     """GET request to PCA-Service, returns parsed JSON."""
     url = f"{PCA_SERVICE_URL}{path}"
     try:
-        with urllib.request.urlopen(url) as resp:
+        with urllib.request.urlopen(url, timeout=PCA_HTTP_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, OSError) as e:
         logger.error("PCA-Service GET %s failed: %s", url, e)
         raise RuntimeError(f"PCA-Service unreachable at {url}: {e}") from e
 
@@ -75,9 +80,9 @@ def _pca_post(path: str, payload: dict) -> Dict[str, Any]:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=PCA_HTTP_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, OSError) as e:
         logger.error("PCA-Service POST %s failed: %s", url, e)
         raise RuntimeError(f"PCA-Service unreachable at {url}: {e}") from e
 
@@ -222,7 +227,8 @@ def _format_metric_value(col_name: str, calc_type: Optional[str], value: Any) ->
     ctype = (calc_type or "").upper()
 
     if "dollar_volume" in name or "volume" in name:
-        return _compact_number(num, currency=True)
+        # Stueckzahl und Umsatz in derselben k/M/G/T-Notation wie die Achsen.
+        return _compact_de(num, decimals=3)
     if ctype.startswith("ADR") or name.endswith("_pct"):
         return f"{_de_num(num)} %"
     # Ratings, Scores und Stueckzahlen (z. B. breadth_minervini ist eine Anzahl)
@@ -631,8 +637,12 @@ def build_display_stock(
         "symbol": symbol,
         "timeframe": {"unit": "D", "multiplier": 1},
         "sync_group_id": "stocks",
-        "position": position or {"x": 100, "y": 100},
-        "size": size or {"width": 1100, "height": 750},
+        # Geometrie nur durchreichen, wenn sie ausdruecklich angefordert wurde.
+        # Der Renderer erfindet keine Position/Groesse: ein Re-Render (Chart
+        # anwenden, Symbolwechsel, Compose) darf kein Fenster verschieben - sie
+        # gehoert dem Client. Startwerte setzt der Agent nur beim ANLEGEN.
+        "position": position,
+        "size": size,
         "bars": bars,
         "overlays": overlays,
         "annotations": [],

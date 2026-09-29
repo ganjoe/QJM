@@ -336,10 +336,94 @@ def test_orchestrator_prefers_the_chart_definition(monkeypatch):
     cmd = orch.build_display_stock("TEST", chart="demo", window_id="w1")
 
     assert cmd["chart"] == {"id": "demo", "display_name": "Demo", "draft": False}
-    assert [p["pane_id"] for p in cmd["panes"]] == ["main", "volume"]
+    # Genau die Definition: das frueher implizit ergaenzte Volumen-Pane ist weg.
+    assert [p["pane_id"] for p in cmd["panes"]] == ["main"]
     assert cmd["panes"][0]["role"] == "price" and cmd["panes"][0]["weight"] == 7
-    assert cmd["pane_scales"] == {"main": "log", "volume": "linear"}
-    assert all(ov["pane"] in ("main", "volume") for ov in cmd["overlays"])
+    assert cmd["pane_scales"] == {"main": "log"}
+    assert all(ov["pane"] == "main" for ov in cmd["overlays"])
+
+
+def test_orchestrator_composes_without_a_volume_pane(monkeypatch):
+    """Builder-Draft: entferntes Volumen-Pane darf im Render nicht zurueckkehren."""
+    import chart_viewer.orchestrator as orch
+
+    monkeypatch.setattr(
+        orch,
+        "fetch_chart_data",
+        lambda symbol, timeframe="1D", limit=2000: {
+            "status": "ok",
+            "columns": ["timestamp", "open", "high", "low", "close", "volume"],
+            "data": [[T0, 100.0, 101.0, 99.0, 100.5, 1_000_000.0]],
+            "features_stale": False,
+        },
+    )
+    monkeypatch.setattr(orch, "_pca_get", lambda path: {"features": []})
+    main_preset = {
+        "id": "demo__main", "display_name": "Chart", "role": "price", "kind": "indicator",
+        "default_scale": "linear",
+        "series": [
+            {"canonical_id": "close", "column": "close", "feature_id": "close",
+             "display_name": "Close", "plot_type": "overlay_line",
+             "style": {"color": "#FFF"}, "rules": {}},
+        ],
+        "refs": [], "derives": [], "zones": [],
+    }
+    monkeypatch.setattr(
+        orch, "_pca_get_soft", lambda path: main_preset if path.endswith("demo__main") else None
+    )
+
+    cmd = orch.build_display_stock(
+        "TEST",
+        panes=[
+            {"pane_id": "main", "pane_preset_id": "demo__main", "scale": "linear", "weight": 7},
+        ],
+        chart_meta={"id": "ohne_volumen", "display_name": "Ohne Volumen", "draft": True},
+        window_id="w1",
+    )
+
+    assert [p["pane_id"] for p in cmd["panes"]] == ["main"]
+    assert {ov["pane"] for ov in cmd["overlays"]} == {"main"}
+    assert "volume" not in cmd["pane_scales"]
+
+
+def test_orchestrator_does_not_invent_window_geometry(monkeypatch):
+    """Ohne ausdrueckliche Angabe bleibt die Geometrie leer.
+
+    Ein Default hier (100,100 / 1100x750) hat bei jedem Anwenden jedes Fenster auf
+    dieselbe Stelle gezogen - die Geometrie gehoert dem Client.
+    """
+    import chart_viewer.orchestrator as orch
+
+    monkeypatch.setattr(orch, "load_chart_spec", lambda chart_id: None)
+    monkeypatch.setattr(
+        orch,
+        "resolve_preset",
+        lambda name: {"indicators": [], "topbar_metrics": [], "pane_scales": {}},
+    )
+    monkeypatch.setattr(
+        orch,
+        "fetch_chart_data",
+        lambda symbol, timeframe="1D", limit=2000: {
+            "status": "ok",
+            "columns": ["timestamp", "open", "high", "low", "close", "volume"],
+            "data": [[T0, 100.0, 101.0, 99.0, 100.5, 1_000_000.0]],
+            "features_stale": False,
+        },
+    )
+    monkeypatch.setattr(orch, "_pca_get", lambda path: {"features": []})
+
+    without = orch.build_display_stock("TEST", preset="x", window_id="w1")
+    assert without["position"] is None and without["size"] is None
+
+    with_geometry = orch.build_display_stock(
+        "TEST",
+        preset="x",
+        window_id="w1",
+        position={"x": 7, "y": 8},
+        size={"width": 640, "height": 480},
+    )
+    assert with_geometry["position"] == {"x": 7, "y": 8}
+    assert with_geometry["size"] == {"width": 640, "height": 480}
 
 
 def test_orchestrator_without_preset_has_no_pane_scales(monkeypatch):

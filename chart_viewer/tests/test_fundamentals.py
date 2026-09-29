@@ -93,7 +93,7 @@ def test_parts_render_market_cap_shares_float_and_currency():
     parts = fund.build_fundamental_parts(200.0, _record(), now=NOW)
     assert parts == [
         "Mkt Cap: 3T USD",
-        "Shares Out: 15B",
+        "Shares Out: 15G",
         "Float: -",
         "Next Earnings: 29.10.2026",
     ]
@@ -188,7 +188,7 @@ def test_orchestrator_topbar_row(monkeypatch):
 
     assert content == (
         "AAPL | Last: $100.50 | ADR 20: 1,38 % | IBD-RS: 92 "
-        "| Mkt Cap: 1.5T USD | Shares Out: 15B | Float: - "
+        "| Mkt Cap: 1.508T USD | Shares Out: 15G | Float: - "
         "| Next Earnings: 29.10.2026 | Bars: 1"
     )
     assert "Overlays" not in content

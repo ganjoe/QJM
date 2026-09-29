@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, Qt, QSettings, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent
+from PySide6.QtGui import QCloseEvent, QFontMetrics, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -119,6 +119,16 @@ QPushButton#pinButton[pinned="true"] {
 BUILTIN_PANE_NAMES = {"builtin:volume": "Volumen"}
 
 
+def is_price_preset(preset: Dict[str, Any]) -> bool:
+    """Preispane-Presets gehoeren ins Preispane-Dropdown.
+
+    Der Vertrag erlaubt genau ein Pane mit role=price (chart-presets.md §1) - als
+    regulaere Pane angehaengt entstehen doppelte SMA-Panes oder ein zweites
+    Preispane, das der Resolver still in die Rest-Panes schiebt.
+    """
+    return str(preset.get("role") or "").strip().lower() == "price"
+
+
 def derive_chart_id(raw: str) -> str:
     """Turn a typed chart name into a valid chart id ('Mein Chart' -> 'mein_chart').
 
@@ -168,7 +178,12 @@ class ControlPanelWindow(QMainWindow):
         self._builder_panes: List[Dict[str, Any]] = []
         self._chart_state: Dict[str, Any] = {}
         self._builder_draft = False
+        # Eine get_chart_state-Antwort ist unterwegs, waehrend schon wieder ein
+        # neuer Stand angefragt wurde: nach dem Eintreffen einmal nachlesen.
+        self._chart_state_pending_more = False
         self._populating = False
+        # Breite der Label-Spalte im Builder (aus der Schrift berechnet, _field_label).
+        self._label_column_width = 0
         self._settings = QSettings("QJM", "ChartViewer")
         self._shutting_down = False
 
@@ -350,7 +365,7 @@ class ControlPanelWindow(QMainWindow):
 
         price_row = QHBoxLayout()
         price_row.setSpacing(6)
-        price_row.addWidget(QLabel("Preispane", root))
+        price_row.addWidget(self._field_label("Preispane", root))
         self.price_pane_combo = QComboBox(root)
         self.price_pane_combo.setToolTip("Pane-Preset für das Preispane (pane_id 'main')")
         self.price_pane_combo.activated.connect(self._on_price_pane_activated)
@@ -368,19 +383,23 @@ class ControlPanelWindow(QMainWindow):
 
         add_pane_row = QHBoxLayout()
         add_pane_row.setSpacing(6)
+        add_pane_row.addWidget(self._field_label("Hinzufügen", root))
         self.add_pane_combo = QComboBox(root)
         self.add_pane_combo.setEditable(True)
         self.add_pane_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.add_pane_combo.setToolTip("Pane-Preset wählen und mit ＋ ans Ende anhängen")
+        self.add_pane_combo.setToolTip("Pane-Preset wählen und mit ＋ ans Ende anhängen (Enter im Feld)")
         add_completer = self.add_pane_combo.completer()
         if add_completer is not None:
             add_completer.setFilterMode(Qt.MatchFlag.MatchContains)
             add_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
             add_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        if self.add_pane_combo.lineEdit() is not None:
+            self.add_pane_combo.lineEdit().setPlaceholderText("Preset wählen…")
+            self.add_pane_combo.lineEdit().returnPressed.connect(self._on_add_pane_clicked)
         add_pane_row.addWidget(self.add_pane_combo, 1)
         self.add_pane_btn = QPushButton("＋", root)
         self.add_pane_btn.setFixedWidth(28)
-        self.add_pane_btn.setToolTip("Pane ans Ende anhängen")
+        self.add_pane_btn.setToolTip("Pane ans Ende anhängen (Enter im Feld)")
         self.add_pane_btn.clicked.connect(self._on_add_pane_clicked)
         add_pane_row.addWidget(self.add_pane_btn)
         layout.addLayout(add_pane_row)
@@ -416,18 +435,31 @@ class ControlPanelWindow(QMainWindow):
         pane_actions.addStretch(1)
         layout.addLayout(pane_actions)
 
-        # Pane-Editor: Hoehe (Gewicht) und Titel der markierten Pane. Der Titel
-        # landet als Override in diesem Chart - das geteilte Preset bleibt sauber.
+        # Pane-Editor: Preset, Hoehe (Gewicht) und Titel der markierten Pane. Der
+        # Preset-Wechsel referenziert ein anderes geteiltes Preset, der Titel landet
+        # als Override nur in diesem Chart - das Preset selbst bleibt sauber.
+        pane_preset_row = QHBoxLayout()
+        pane_preset_row.setSpacing(6)
+        pane_preset_row.addWidget(self._field_label("Preset", root))
+        self.pane_preset_combo = QComboBox(root)
+        self.pane_preset_combo.setToolTip(
+            "Pane-Preset der markierten Pane wechseln - der Slot bleibt, das Preispane "
+            "wechselt oben"
+        )
+        self.pane_preset_combo.activated.connect(self._on_pane_preset_activated)
+        pane_preset_row.addWidget(self.pane_preset_combo, 1)
+        layout.addLayout(pane_preset_row)
+
         pane_edit_row = QHBoxLayout()
         pane_edit_row.setSpacing(6)
-        pane_edit_row.addWidget(QLabel("Höhe", root))
+        pane_edit_row.addWidget(self._field_label("Höhe", root))
         self.pane_weight_spin = QSpinBox(root)
         self.pane_weight_spin.setRange(1, 20)
         self.pane_weight_spin.setFixedWidth(52)
         self.pane_weight_spin.setToolTip("Gewicht der markierten Pane (sofort angewendet)")
         self.pane_weight_spin.editingFinished.connect(self._on_pane_weight_changed)
         pane_edit_row.addWidget(self.pane_weight_spin)
-        pane_edit_row.addWidget(QLabel("Titel", root))
+        pane_edit_row.addWidget(self._field_label("Titel", root))
         self.pane_title_edit = QLineEdit(root)
         self.pane_title_edit.setToolTip("Titel der markierten Pane (Override nur in diesem Chart)")
         self.pane_title_edit.editingFinished.connect(self._on_pane_title_changed)
@@ -484,6 +516,46 @@ class ControlPanelWindow(QMainWindow):
         label.setObjectName("sectionLabel")
         return label
 
+    def _field_label(self, text: str, parent: Optional[QWidget] = None) -> QLabel:
+        """Label einer Builder-Zeile in einer festen Spalte.
+
+        Eine feste Spalte haelt Combos und Spinboxen untereinander ausgerichtet und
+        kostet weniger Breite als ein Praefix-Label: das Panel ist nur ~360 px breit,
+        die Preset-Zusammenfassungen brauchen den Platz im Combo. Die Breite kommt
+        aus der Schrift, damit sie bei anderer Skalierung nicht abschneidet.
+        """
+        if self._label_column_width <= 0:
+            metrics = QFontMetrics(self.font())
+            self._label_column_width = (
+                max(
+                    metrics.horizontalAdvance(text)
+                    for text in ("Preispane", "Hinzufügen", "Preset", "Höhe", "Titel")
+                )
+                + 6
+            )
+        label = QLabel(text, parent)
+        label.setFixedWidth(self._label_column_width)
+        return label
+
+    def _pane_is_price(self, pane: Dict[str, Any]) -> bool:
+        """Preispane-Erkennung: Slot 'main' oder Rolle aus dem Katalog.
+
+        Die Serverantwort zu get_chart_state liefert keine Rolle mit; dann entscheidet
+        das referenzierte Pane-Preset.
+        """
+        if str(pane.get("pane_id") or "") == "main":
+            return True
+        role = str(pane.get("role") or "").strip().lower()
+        if not role:
+            preset = self._pane_preset(str(pane.get("pane_preset_id") or ""))
+            role = str(preset.get("role") or "").strip().lower()
+        return role == "price"
+
+    def _pane_preset_switchable(self) -> bool:
+        """Nur Nicht-Preis-Panes wechseln ihr Preset (Preispane: Dropdown oben)."""
+        pane = self._selected_pane()
+        return pane is not None and not self._pane_is_price(pane)
+
     # ── public API ─────────────────────────────────────────────────────────
 
     def set_connection_state(self, connected: bool) -> None:
@@ -534,8 +606,6 @@ class ControlPanelWindow(QMainWindow):
             self._on_watchlist_response(data)
         elif op == "mutate_watchlist":
             self._on_mutation_response(meta, data)
-        elif op == "list_presets":
-            self._on_presets_response(data)
         elif op == "apply_preset":
             self._on_apply_preset_response(data)
         elif op == "list_panes":
@@ -613,7 +683,6 @@ class ControlPanelWindow(QMainWindow):
 
     def refresh_all(self) -> None:
         self.refresh_watchlists()
-        self.refresh_presets()
         self.refresh_catalog()
 
     def refresh_watchlists(self, select: str = "") -> None:
@@ -624,13 +693,12 @@ class ControlPanelWindow(QMainWindow):
             self._select_after_refresh = select
         self._request("list_watchlists", {})
 
-    def refresh_presets(self) -> None:
-        if not self._connected:
-            return
-        self._request("list_presets", {})
-
     def refresh_catalog(self) -> None:
-        """Load the pane/chart catalog once - dropdowns never re-request it."""
+        """Load the pane/chart catalog once - dropdowns never re-request it.
+
+        Der Chart-Katalog speist seit dem Builder-Umbau auch die Anwenden-Liste:
+        anwendbar ist genau das, was der Builder als Chart kennt und zerlegen kann.
+        """
         if not self._connected:
             return
         self._request("list_panes", {})
@@ -1173,36 +1241,6 @@ class ControlPanelWindow(QMainWindow):
 
     # ── presets ────────────────────────────────────────────────────────────
 
-    def _on_presets_response(self, data: Dict[str, Any]) -> None:
-        presets = [p for p in (data.get("presets") or []) if isinstance(p, dict)]
-        wanted = self._preset_id or str(self._settings.value("panel/preset", "") or "")
-        self._populating = True
-        try:
-            self.preset_combo.clear()
-            for preset in presets:
-                preset_id = str(preset.get("id") or "")
-                if not preset_id:
-                    continue
-                label = str(preset.get("display_name") or preset_id)
-                self.preset_combo.addItem(label, preset_id)
-        finally:
-            self._populating = False
-
-        # Display a preset for orientation, but only keep it as an active override
-        # (`_preset_id`) when the user picked one; empty means "keep the preset the
-        # chart window already uses".
-        display_id = wanted or (str(presets[0].get("id") or "") if presets else "")
-        if display_id:
-            index = self.preset_combo.findData(display_id)
-            if index >= 0:
-                self._populating = True
-                try:
-                    self.preset_combo.setCurrentIndex(index)
-                finally:
-                    self._populating = False
-        if wanted:
-            self._preset_id = wanted
-
     def _on_preset_activated(self, index: int) -> None:
         if self._populating or index < 0:
             return
@@ -1225,6 +1263,10 @@ class ControlPanelWindow(QMainWindow):
         preset_id = str(data.get("preset_id") or self._preset_id)
         applied = data.get("applied") or []
         skipped = data.get("skipped") or []
+        # Das Fenster rendert jetzt ein anderes Chart: der Builder liest den neuen
+        # Stand (Panes/Overrides) sofort neu, statt das alte Chart weiterzuzeigen.
+        if self._builder_target and self._builder_target in applied:
+            self._refresh_chart_state()
         if applied:
             self._set_status(f"Preset {preset_id}: {len(applied)} Chart(s) aktualisiert")
         else:
@@ -1238,11 +1280,35 @@ class ControlPanelWindow(QMainWindow):
     # ── chart builder ──────────────────────────────────────────────────────
 
     def _refresh_chart_state(self) -> None:
-        """Re-read the server-side chart state (single source of truth)."""
+        """Re-read the server-side chart state (single source of truth).
+
+        Mehrere Ausloeser im selben Moment (Anwenden, Snapshot, Zielwechsel) ergeben
+        eine Anfrage; kommt waehrend der Antwort ein weiterer Ausloeser dazu, wird
+        danach genau einmal nachgelesen (siehe _chart_state_pending_more).
+        """
         target = self._builder_target
         if not target or not self._connected:
             return
+        for meta in self._pending.values():
+            if meta.get("op") == "get_chart_state" and meta.get("window_id") == target:
+                # Schon unterwegs - die Antwort kann aber einen Stand tragen, der
+                # vor der letzten Aenderung entstanden ist. Danach einmal nachlesen.
+                self._chart_state_pending_more = True
+                return
+        self._chart_state_pending_more = False
         self._request("get_chart_state", {"window_id": target}, {"window_id": target})
+
+    def notify_window_content_changed(self, window_id: str) -> None:
+        """A chart window got new content - re-read it if it is the builder target.
+
+        The agent rebuilds windows on its own (MCP apply/compose, symbol change,
+        setup restore). Without this the builder would keep showing the components
+        of the previously rendered chart, while the window already draws another.
+        """
+        window_id = str(window_id or "")
+        if not window_id or window_id != self._builder_target:
+            return
+        self._refresh_chart_state()
 
     def _on_panes_response(self, data: Dict[str, Any]) -> None:
         panes: List[Dict[str, Any]] = []
@@ -1258,11 +1324,60 @@ class ControlPanelWindow(QMainWindow):
         self._rebuild_builder_widgets()
 
     def _on_charts_response(self, data: Dict[str, Any]) -> None:
+        """Chart-Katalog: speist Anwenden-Liste und Builder aus derselben Quelle.
+
+        Die Liste "GESPEICHERTES CHART ANWENDEN" ist der Chart-Bestand - nicht ein
+        zweiter, aliasbehafteter Preset-Bestand. Dadurch gilt: was anwendbar ist,
+        kennt der Builder, und was der Builder speichert, ist sofort anwendbar.
+        """
         self._chart_catalog = [
             dict(c)
             for c in (data.get("charts") or [])
             if isinstance(c, dict) and str(c.get("id") or "")
         ]
+        previous = self._populating
+        self._populating = True
+        try:
+            self.preset_combo.clear()
+            for chart in self._chart_catalog:
+                chart_id = str(chart.get("id") or "")
+                label = str(chart.get("display_name") or chart_id)
+                self.preset_combo.addItem(label, chart_id)
+                summary = str(chart.get("summary") or "").strip()
+                tooltip = f"{chart_id} · {int(chart.get('pane_count') or 0)} Panes"
+                if summary:
+                    tooltip = f"{tooltip}\n{summary}"
+                self.preset_combo.setItemData(
+                    self.preset_combo.count() - 1, tooltip, Qt.ItemDataRole.ToolTipRole
+                )
+        finally:
+            self._populating = previous
+        self._show_active_chart_in_combo()
+
+    def _show_active_chart_in_combo(self) -> None:
+        """Anwenden-Liste auf das Chart stellen, das das Zielfenster zeigt.
+
+        Ein eigener Override (`_preset_id`) hat Vorrang - er gilt fuer den naechsten
+        Symbolwechsel. Ohne Override zeigt die Liste den Ist-Stand des Fensters,
+        damit Anwenden-Liste und Builder nicht auseinanderlaufen.
+        """
+        if not hasattr(self, "preset_combo"):
+            return
+        override = self._preset_id or str(self._settings.value("panel/preset", "") or "")
+        display_id = override or str(self._chart_state.get("chart_id") or "")
+        if not display_id and self.preset_combo.count():
+            display_id = str(self.preset_combo.itemData(0) or "")
+        index = self.preset_combo.findData(display_id) if display_id else -1
+        if index < 0:
+            return
+        previous = self._populating
+        self._populating = True
+        try:
+            self.preset_combo.setCurrentIndex(index)
+        finally:
+            self._populating = previous
+        if override:
+            self._preset_id = override
 
     def _on_chart_state_response(self, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
         window_id = str(data.get("window_id") or meta.get("window_id") or "")
@@ -1281,6 +1396,13 @@ class ControlPanelWindow(QMainWindow):
                 if isinstance(pane, dict)
             ]
         self._rebuild_builder_widgets()
+        self._show_active_chart_in_combo()
+
+        if self._chart_state_pending_more:
+            # Waehrend die Antwort lief, kam eine weitere Aenderung an: jetzt den
+            # aktuellen Stand nachlesen (einmal, kein Loop).
+            self._chart_state_pending_more = False
+            self._refresh_chart_state()
 
         if str(meta.get("intent") or "") == "discard":
             chart_id = str(self._chart_state.get("chart_id") or "")
@@ -1398,6 +1520,65 @@ class ControlPanelWindow(QMainWindow):
         self._rebuild_builder_widgets()
         self._compose()
 
+    def _on_pane_preset_activated(self, index: int) -> None:
+        """Pane-Preset der markierten Pane wechseln (Draft, Slot-Id bleibt)."""
+        if self._populating or index < 0:
+            return
+        row = self._selected_pane_index()
+        if row < 0:
+            return
+        pane_preset_id = str(self.pane_preset_combo.itemData(index) or "")
+        pane = self._builder_panes[row]
+        if not pane_preset_id or pane_preset_id == str(pane.get("pane_preset_id") or ""):
+            return
+        if self._pane_is_price(pane):
+            # Das Preispane wechselt ueber das Preispane-Dropdown; Auswahl zurueckdrehen.
+            self._sync_pane_editor()
+            self._set_status("⚠ das Preispane wird oben gewechselt", error=True)
+            return
+        preset = self._pane_preset(pane_preset_id)
+        if not preset:
+            self._set_status(f"⚠ Pane-Preset '{pane_preset_id}' unbekannt", error=True)
+            self._sync_pane_editor()
+            return
+        old_preset = self._pane_preset(str(pane.get("pane_preset_id") or ""))
+        panes = [dict(p) for p in self._builder_panes]
+        target = panes[row]
+        target["scale"] = self._scale_after_preset_swap(target, old_preset, preset)
+        # Slot-Id bleibt: sie ist der Schluessel in pca_chart_preset_panes, in den
+        # Overrides und in x_axis_pane. Nur das referenzierte Preset wandert.
+        target["pane_preset_id"] = pane_preset_id
+        target["role"] = str(preset.get("role") or "any")
+        overrides = dict(target.get("overrides") or {})
+        # Ein scale-Override beschreibt die Default-Skala des ALTEN Presets und faellt
+        # mit ihm. Titel und Serien-Overrides bleiben: Serien, die das neue Preset
+        # nicht mehr hat, melden sich als Warnung in der Statuszeile.
+        overrides.pop("scale", None)
+        target["title"] = str(overrides.get("title") or preset.get("display_name") or pane_preset_id)
+        if overrides:
+            target["overrides"] = overrides
+        else:
+            target.pop("overrides", None)
+        self._builder_panes = panes
+        self._rebuild_builder_widgets()
+        self._select_pane_row(row)
+        self._compose()
+
+    @staticmethod
+    def _scale_after_preset_swap(
+        pane: Dict[str, Any], old_preset: Dict[str, Any], new_preset: Dict[str, Any]
+    ) -> str:
+        """Skala beim Preset-Wechsel: nur mitziehen, wenn sie noch der Default war.
+
+        Hat der Nutzer LIN/LOG bewusst gesetzt, bleibt seine Wahl stehen.
+        """
+        current = str(pane.get("scale") or "linear").strip().lower()
+        old_default = str(old_preset.get("default_scale") or "linear").strip().lower()
+        if current != old_default:
+            return current if current in ("linear", "log") else "linear"
+        new_default = str(new_preset.get("default_scale") or "linear").strip().lower()
+        return new_default if new_default in ("linear", "log") else "linear"
+
     def _on_add_pane_clicked(self) -> None:
         pane_preset_id = self._resolve_add_pane_id()
         if not pane_preset_id:
@@ -1473,7 +1654,7 @@ class ControlPanelWindow(QMainWindow):
         self._sync_pane_editor()
 
     def _sync_pane_editor(self) -> None:
-        """Hoehe/Titel/Duplizieren an die markierte Pane anpassen."""
+        """Preset/Hoehe/Titel/Duplizieren an die markierte Pane anpassen."""
         if not hasattr(self, "pane_weight_spin"):
             return
         pane = self._selected_pane()
@@ -1487,15 +1668,41 @@ class ControlPanelWindow(QMainWindow):
                 self.pane_weight_spin.setEnabled(False)
                 self.pane_title_edit.setEnabled(False)
                 self.duplicate_pane_btn.setEnabled(False)
+                self._set_pane_preset_selection("")
                 return
             self.pane_weight_spin.setValue(int(pane.get("weight") or 2))
             self.pane_title_edit.setText(str(pane.get("title") or ""))
-            is_price = str(pane.get("role")) == "price" or str(pane.get("pane_id")) == "main"
+            is_price = self._pane_is_price(pane)
             self.pane_weight_spin.setEnabled(editable)
             self.pane_title_edit.setEnabled(editable)
             self.duplicate_pane_btn.setEnabled(editable and not is_price)
+            self._set_pane_preset_selection(
+                str(pane.get("pane_preset_id") or ""),
+                pane=pane,
+                selectable=editable and not is_price,
+            )
         finally:
             self._populating = previous
+
+    def _set_pane_preset_selection(
+        self,
+        pane_preset_id: str,
+        pane: Optional[Dict[str, Any]] = None,
+        selectable: bool = False,
+    ) -> None:
+        """Preset-Combo an die markierte Pane anpassen.
+
+        Ein archiviertes oder unbekanntes Preset bleibt als eigener Eintrag sichtbar -
+        sonst zeigt das Feld ein anderes Preset als das Chart rendert. Das Preispane
+        zeigt sein Preset nur an: gewechselt wird es oben.
+        """
+        combo = self.pane_preset_combo
+        index = combo.findData(pane_preset_id) if pane_preset_id else -1
+        if pane_preset_id and index < 0:
+            combo.addItem(self._pane_display_name(pane or {}), pane_preset_id)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+        combo.setEnabled(selectable)
 
     def _on_pane_weight_changed(self) -> None:
         if self._populating:
@@ -1670,6 +1877,13 @@ class ControlPanelWindow(QMainWindow):
         return ""
 
     def _pane_display_name(self, pane: Dict[str, Any]) -> str:
+        """Anzeigename der Pane: der Titel-Override schlaegt den Preset-Namen.
+
+        Sonst steht in der Zeile "RS-Monitor", waehrend das Chart "RS neu" rendert.
+        """
+        override = str((pane.get("overrides") or {}).get("title") or "").strip()
+        if override:
+            return override
         pane_preset_id = str(pane.get("pane_preset_id") or "")
         if pane_preset_id in BUILTIN_PANE_NAMES:
             return BUILTIN_PANE_NAMES[pane_preset_id]
@@ -1696,13 +1910,18 @@ class ControlPanelWindow(QMainWindow):
             weight = int(weight) if weight is not None else 2
         except (TypeError, ValueError):
             weight = 2
+        # Overrides reisen mit (get_chart_state liefert sie): ohne sie verliert das
+        # Panel Titel- und Serien-Overrides beim naechsten Compose still.
+        overrides = raw.get("overrides") if isinstance(raw.get("overrides"), dict) else {}
+        override_title = str(overrides.get("title") or "").strip()
         return {
             "pane_id": pane_id,
             "pane_preset_id": pane_preset_id,
-            "title": str(raw.get("title") or ""),
+            "title": override_title or str(raw.get("title") or ""),
             "role": str(raw.get("role") or ""),
             "scale": scale,
             "weight": weight,
+            "overrides": dict(overrides),
         }
 
     def _unique_pane_id(self, base: str) -> str:
@@ -1731,6 +1950,17 @@ class ControlPanelWindow(QMainWindow):
         summary = str(pane.get("summary") or "").strip()
         return f"{name} — {summary}" if summary else name
 
+    def _switchable_panes(self) -> List[Dict[str, Any]]:
+        """Presets, die als regulaere Pane angehaengt oder gewechselt werden koennen.
+
+        Ohne role=price (genau ein Preispane, Vertrag §1), nach Anzeigename sortiert -
+        Anhaengen- und Wechsel-Dropdown zeigen so dieselbe Reihenfolge.
+        """
+        return sorted(
+            (pane for pane in self._pane_catalog if not is_price_preset(pane)),
+            key=lambda p: str(p.get("display_name") or p.get("id") or "").lower(),
+        )
+
     def _populate_add_pane_combo(self) -> None:
         if not hasattr(self, "add_pane_combo"):
             return
@@ -1738,10 +1968,7 @@ class ControlPanelWindow(QMainWindow):
         self._populating = True
         try:
             self.add_pane_combo.clear()
-            for pane in sorted(
-                self._pane_catalog,
-                key=lambda p: str(p.get("display_name") or p.get("id") or "").lower(),
-            ):
+            for pane in self._switchable_panes():
                 pane_id = str(pane.get("id") or "")
                 if not pane_id:
                     continue
@@ -1761,10 +1988,12 @@ class ControlPanelWindow(QMainWindow):
         text = self.add_pane_combo.currentText().strip().split(" — ")[0].strip().lower()
         if not text:
             return ""
-        for pane in self._pane_catalog:
+        # Auch getippte Namen duerfen kein Preispane-Preset anhängen.
+        candidates = [pane for pane in self._pane_catalog if not is_price_preset(pane)]
+        for pane in candidates:
             if str(pane.get("display_name") or "").strip().lower() == text:
                 return str(pane.get("id") or "")
-        for pane in self._pane_catalog:
+        for pane in candidates:
             if text in str(pane.get("display_name") or "").strip().lower():
                 return str(pane.get("id") or "")
         found = self.add_pane_combo.findData(self.add_pane_combo.currentText().strip())
@@ -1807,6 +2036,15 @@ class ControlPanelWindow(QMainWindow):
                     index = self.price_pane_combo.count() - 1
                 self.price_pane_combo.setCurrentIndex(index)
 
+            # Kandidaten fuer den Preset-Wechsel der markierten Pane; das aktuelle
+            # Preset setzt _sync_pane_editor (inkl. Fallback fuer archivierte Presets).
+            self.pane_preset_combo.clear()
+            for pane in self._switchable_panes():
+                pane_id = str(pane.get("id") or "")
+                if not pane_id:
+                    continue
+                self.pane_preset_combo.addItem(str(pane.get("display_name") or pane_id), pane_id)
+
             self.builder_pane_list.clear()
             for pane in self._builder_panes:
                 row = QListWidgetItem(self._pane_row_text(pane))
@@ -1848,6 +2086,8 @@ class ControlPanelWindow(QMainWindow):
             self.discard_chart_btn,
         ):
             widget.setEnabled(enabled)
+        # Ausserhalb der Schleife: das Preispane hat kein wechselbares Preset.
+        self.pane_preset_combo.setEnabled(enabled and self._pane_preset_switchable())
         self.builder_reload_btn.setEnabled(bool(self._connected))
 
     # ── flag / pin / buttons ───────────────────────────────────────────────

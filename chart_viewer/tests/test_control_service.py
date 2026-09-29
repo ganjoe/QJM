@@ -51,13 +51,26 @@ def make_service(**overrides) -> tuple:
     return ControlService(agent, config=config), agent
 
 
-def wait_for_response(agent: FakeAgent, timeout: float = 2.0):
+def wait_for_response(agent: FakeAgent, timeout: float = 2.0, request_id: str = ""):
+    """Auf die control.response warten.
+
+    `request_id` ist Pflicht, sobald in einem Test mehrere Requests laufen:
+    sonst liefert der Helfer die Antwort des vorherigen Requests. Alle Ops
+    laufen asynchron (auch die Suche) - der Aufruf kehrt vor der Antwort zurueck.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if agent.transport.sent:
-            return agent.transport.sent[-1]
+        candidates = list(agent.transport.sent)
+        if request_id:
+            candidates = [
+                envelope
+                for envelope in candidates
+                if (envelope.payload or {}).get("request_id") == request_id
+            ]
+        if candidates:
+            return candidates[-1]
         time.sleep(0.01)
-    raise AssertionError("control service did not answer in time")
+    raise AssertionError(f"control service did not answer in time (request_id={request_id!r})")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -91,7 +104,7 @@ def test_search_symbols_builds_postgrest_prefix_query_and_caches():
     service._supabase_get = fake_get
     service.handle("req-1", "search_symbols", {"query": "nv", "limit": 20})
 
-    response = agent.transport.sent[-1]
+    response = wait_for_response(agent, request_id="req-1")
     assert response.type == "control.response"
     assert response.payload["request_id"] == "req-1"
     assert response.payload["ok"] is True
@@ -109,8 +122,9 @@ def test_search_symbols_builds_postgrest_prefix_query_and_caches():
 
     # Same query again -> served from the LRU cache, no second backend call
     service.handle("req-2", "search_symbols", {"query": "nv", "limit": 20})
+    second = wait_for_response(agent, request_id="req-2")
     assert len(calls) == 1
-    assert agent.transport.sent[-1].payload["data"]["results"][1]["ticker"] == "NVDA"
+    assert second.payload["data"]["results"][1]["ticker"] == "NVDA"
 
 
 def test_search_symbols_hoists_exact_match_and_falls_back_to_contains():
@@ -126,7 +140,7 @@ def test_search_symbols_hoists_exact_match_and_falls_back_to_contains():
     service._supabase_get = fake_get
     service.handle("req-3", "search_symbols", {"query": "maggi"})
 
-    data = agent.transport.sent[-1].payload["data"]
+    data = wait_for_response(agent, request_id="req-3").payload["data"]
     assert [r["ticker"] for r in data["results"]] == ["QMAGGI"]
     assert len(patterns) == 2
     assert "ticker=ilike.MAGGI%25" in patterns[0]
@@ -137,7 +151,7 @@ def test_search_symbols_empty_query_returns_no_backend_call():
     service, agent = make_service()
     service._supabase_get = lambda path: pytest.fail("backend must not be called")
     service.handle("req-4", "search_symbols", {"query": "   "})
-    data = agent.transport.sent[-1].payload["data"]
+    data = wait_for_response(agent, request_id="req-4").payload["data"]
     assert data == {"results": [], "match_count": 0, "source": "empty"}
 
 
@@ -525,7 +539,7 @@ def test_backend_error_is_mapped_to_backend_unreachable():
 
     service._supabase_get = boom
     service.handle("req-17", "search_symbols", {"query": "NV"})
-    payload = agent.transport.sent[-1].payload
+    payload = wait_for_response(agent, request_id="req-17").payload
     assert payload["ok"] is False
     assert payload["error"]["code"] == "backend_unreachable"
 
@@ -700,6 +714,25 @@ def test_apply_chart_renders_the_saved_chart(monkeypatch):
     wait_for_response(agent)
     assert posted[0]["chart"] == "rs_monitor_chart"
     assert "panes" not in posted[0]
+
+
+def test_rerender_does_not_carry_window_geometry(monkeypatch):
+    """Compose/Apply/Save rendern ein OFFENES Fenster neu - ohne position/size.
+
+    Die Geometrie gehoert dem Client; der Ledger ist nur die Erinnerung. Sonst
+    zieht jedes Anwenden das Fenster auf den (moeglicherweise veralteten)
+    Ledger-Stand.
+    """
+    service, agent = make_service()
+    info = _ledger_window(agent)
+    assert info["position"] and info["size"], "Vorbedingung: Ledger kennt eine Geometrie"
+    posted = []
+    monkeypatch.setattr(service, "_http_json", lambda method, url, payload=None, **kw: posted.append(payload) or {})
+
+    service.handle("req-geo", "apply_chart", {"window_id": "win_1", "chart_id": "rs_monitor_chart"})
+    wait_for_response(agent)
+
+    assert posted and "position" not in posted[0] and "size" not in posted[0]
 
 
 def test_save_chart_creates_when_missing(monkeypatch):

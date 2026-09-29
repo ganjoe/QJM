@@ -36,6 +36,9 @@ class ChartWindow(QMainWindow):
         self.config = config
         self.symbol: str = ""
         self.color_flag: int = 0
+        # Erst mit einem Snapshot (Bars) gilt das Fenster als gefuellt. Ein leeres
+        # Fenster darf einen erneuten Klick auf denselben Ticker nicht schlucken.
+        self.has_data: bool = False
         self._was_active: bool = False
 
         self.setWindowTitle(f"Chart Viewer — {window_id}")
@@ -76,6 +79,7 @@ class ChartWindow(QMainWindow):
 
     def bind_data(self, win_data: WindowData) -> None:
         self.symbol = win_data.symbol
+        self.has_data = bool(getattr(win_data, "bars", None))
         if hasattr(win_data, "color_flag"):
             self.color_flag = win_data.color_flag
             self.flag_btn.set_flag(self.color_flag)
@@ -104,8 +108,12 @@ class ChartWindow(QMainWindow):
 
         `preset` comes from the control panel; when it is set the chart is rebuilt
         even if the symbol did not change (preset switch on the same ticker).
+
+        Ein Fenster ohne Daten fragt immer nach: sonst schluckt der Gleichheits-
+        check den zweiten Klick auf denselben Ticker, und ein leer gebliebenes
+        Fenster bliebe leer.
         """
-        if self.symbol != new_symbol or preset is not None:
+        if self.symbol != new_symbol or preset is not None or not self.has_data:
             self.symbol_change_requested.emit(self.window_id, new_symbol, preset)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -143,6 +151,15 @@ class ChartWindow(QMainWindow):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._emit_geometry()
+
+    def report_geometry(self) -> None:
+        """Melde die aktuelle Fenstergeometrie an den Agenten.
+
+        Die Geometrie gehoert dem Client: der Agent merkt sich nur, was hier
+        gemeldet wird. Nach dem Oeffnen/Platzieren eines Fensters wird deshalb
+        einmal gemeldet, damit der Ledger nicht auf Startwerten stehen bleibt.
+        """
         self._emit_geometry()
 
     def _emit_geometry(self) -> None:

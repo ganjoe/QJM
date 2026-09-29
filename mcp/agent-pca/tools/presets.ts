@@ -28,7 +28,9 @@ export function registerPresetTools(server: McpServer) {
                 "`pane_id` ist die Slot-Id im Fenster ('main', 'rs', 'volume'); fehlt sie, nimmt der Service die " +
                 "Pane-Preset-Id (bei Kollision mit Suffix '_2'). Genau ein Pane hat role=price und pane_id='main'; " +
                 "fehlt eines, wird das erste Pane zum Preispane. 'builtin:volume' ist ein virtuelles Pane " +
-                "(eingebautes Volumen-Histogramm, kein DB-Eintrag).\n\n" +
+                "(eingebautes Volumen-Histogramm, kein DB-Eintrag). Die Pane-Liste ist VOLLSTAENDIG: ein " +
+                "fehlendes builtin:volume wird NICHT ergaenzt (sonst waere es nicht entfernbar); nur die " +
+                "flache Altform (members) bekommt es bei der Uebersetzung explizit.\n\n" +
                 "KOMPATIBILITAET (Altform): Wird `members` ohne `panes` geschickt, geht der Request an die alte " +
                 "flache API /api/presets (Adapter auf dieselben Tabellen); `members` (inkl. `pane`-String), " +
                 "`topbar_metrics` und `pane_scales` funktionieren dort unveraendert weiter. Sobald `panes` gesetzt " +

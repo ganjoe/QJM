@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from chart_viewer.agent.supabase import supabase_get
-from chart_viewer.formatting import compact_si
+from chart_viewer.formatting import compact_de
 
 logger = logging.getLogger("chart_viewer.fundamentals")
 
@@ -203,13 +203,13 @@ def build_fundamental_parts(
 
     parts: List[str] = []
     if cap is not None:
-        parts.append(f"Mkt Cap: {compact_si(cap)}{' ' + currency if currency else ''}")
+        parts.append(f"Mkt Cap: {compact_de(cap)}{' ' + currency if currency else ''}")
     elif currency:
         # Ohne Stueckzahl gibt es keine Market Cap - die Waehrung soll trotzdem
         # sichtbar sein, gerade bei nicht-US-Tickern.
         parts.append(f"Currency: {currency}")
     if shares is not None and shares > 0:
-        parts.append(f"Shares Out: {compact_si(shares)}")
+        parts.append(f"Shares Out: {compact_de(shares)}")
 
     # Ohne jeden echten Fundamentaldatenpunkt waere der Rest der Zeile nur
     # Rauschen ("Float: -"), also bleibt es bei dem, was da ist.
