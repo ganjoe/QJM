@@ -411,3 +411,18 @@ class ControlPanelWindow(QMainWindow):
 | Leere neue Watchlist | `pca_watchlists` speichert nur Ticker-Zeilen: eine leere Liste bleibt lokal (`_pending_watchlists`) und wird mit dem ersten Ticker in der DB materialisiert |
 | Tests | `test_watchlist_dialogs.py` (5), Panel-Tests +8, Control-Service-Tests +16 → Gesamtsuite **192 passed** |
 | Deployment | `docker restart qjm-chart-viewer-server` (liest `/app/src` per Bind-Mount, kein Rebuild nötig); Live-E2E über `control.request`: add/copy/move/copy_list/delete gegen temporäre Listen, Master-Schutz, danach aufgeräumt |
+
+---
+
+## 16. Nachtrag: Ergonomie – Tabs, aufklappbare Bereiche, C/V (2026-09-29)
+
+| Anforderung | Umsetzung |
+| :-- | :-- |
+| Weniger Scrollen, klare Gliederung | Fester Kopf (Flag, Zielfenster „→ Fenster · Symbol“, „● draft“, Pin), darunter Tabs **Symbols** (Ctrl+1) und **Chart** (Ctrl+2), unten eine Statuszeile. Aufklappbare Bereiche (`ui/collapsible.py`): Results, Template, Panes, Selected pane; Tab und Klappzustand liegen in QSettings (`panel/tab`, `panel/section/*`) |
+| Fenstergröße bleibt 360 × 720, nichts abgeschnitten | Kurze englische Beschriftungen (Open, Add, Remove, Copy, Move, Save, Save as…, Revert, Price, Preset, Title, Height); Werkzeugknöpfe nur mit Icon (▲ ▼ ⧉ ✕ ＋ ⟳ ⋯) und deutschem Tooltip. Lange Namen kürzen Combos, Pane-Liste und Kopfzeile mit „…“ (`_ElidingComboBox`, `_ElidedLabel`); die Tab-Seiten scrollen nur senkrecht. Test: `test_control_panel_fits_the_default_width` |
+| Trefferliste nur bei Bedarf | „Results (n)“ klappt beim Tippen auf und beim Leeren des Suchfelds zu; Ctrl+F springt ins Suchfeld |
+| Kopieren/Verschieben bequem | Feste Ziel-Watchlist „To“ unter der Liste (gemerkt in `panel/transfer_target`). In der Liste: **C** kopiert, **V** verschiebt ohne Dialog, **Shift+C/V** fragt nach dem Ziel, **T** öffnet die Zielauswahl, **Entf** entfernt. Danach steht die Markierung auf dem nächsten Ticker (der Chart lädt mit). Move nimmt die Zeile sofort heraus; schlägt er fehl, wird die Liste neu geladen. Rechtsklick: „Copy to ▸ / Move to ▸“ mit den zuletzt benutzten Zielen oben |
+| Seltene Watchlist-Aktionen | Menü `⋯` neben der Auswahl: New list…, Delete list…, Reload |
+| Preispane und Pane-Preset | bleiben getrennt: „Price“ im Bereich Panes, „Preset“ im Bereich Selected pane |
+| Tests | Panel-Tests +10 (C/V, Shift, Ctrl+C ignoriert, schreibgeschützte Liste, Kontextmenü, fehlgeschlagener Move, Trefferliste, Breite) → Gesamtsuite 439 passed; offen wie zuvor `test_benchmarks` (Zeitlimit) und `test_topbar_clipping` |
+

@@ -148,12 +148,12 @@ Ziel des Builders ist IMMER das fokussierte Fenster (klebrig: zuletzt aktives
 Chartfenster). Anwenden = Vorschau: jede Aenderung rendert sofort, gespeichert
 wird nur auf Wunsch.
 
-Die Liste "GESPEICHERTES CHART ANWENDEN" im Panel ist der **Chart-Katalog**
+Die Liste **Template → Load** (Tab "Chart") im Panel ist der **Chart-Katalog**
 (`list_charts`), nicht der Alt-Endpunkt `/api/presets`: anwendbar ist genau das,
 was der Builder als Chart kennt und in Panes zerlegen kann. Die Liste wird nach
 jedem Speichern neu geladen; ohne eigenen Override zeigt sie das Chart, das das
 Zielfenster gerade rendert. Ein nicht gespeichertes Chart traegt draft=true und wird im
-Panel als "• unbenannt" markiert; es stirbt mit dem Fenster.
+Panel-Kopf als "● draft" markiert; es stirbt mit dem Fenster.
 
 ### 4.1 Antwort-Envelope und Fehlercodes
 
@@ -283,20 +283,23 @@ wird ebenfalls nicht geloescht.
   akzeptiert `windows`, um Bindungen direkt mitzuschreiben, `LOAD_SETUP` warnt bei
   Waisen (geloeschtes Chart).
 
-**Im Viewer (Control Panel):** Abschnitt CHART-BUILDER.
-Ziel ist das fokussierte Chartfenster (klebrig). Preispane-Preset waehlen, mit "+" weitere
-Panes aus dem Dropdown anhaengen (Enter im Feld oder "+"), sortieren, LIN/LOG schalten,
+**Im Viewer (Control Panel):** Tab "Chart" (Ctrl+2) mit den aufklappbaren Bereichen
+Template, Panes und Selected pane.
+Ziel ist das fokussierte Chartfenster (klebrig, im Panel-Kopf als "→ Fenster · Symbol").
+Preispane-Preset waehlen (Price), mit "+" weitere
+Panes aus dem Dropdown anhaengen (Add; Enter im Feld oder "+"), sortieren (▲/▼ oder Alt+↑/↓),
+die Skala umschalten (Knopf zeigt LIN oder LOG),
 Volumen zu-/abschalten (das Volumen-Pane ist eine normale Pane: was entfernt wird,
 bleibt entfernt - die Definition ist die Wahrheit). Das Hinzufuegen-Dropdown listet nur Presets ohne role=price - genau
 ein Preispane (Abschnitt 1) wechselt man oben; getippte Preispane-Namen werden abgewiesen.
 Pro markierter Pane: **Preset** (nur Nicht-Preispane; die Slot-Id bleibt, Gewicht und
 Titel-Override ebenso, die Skala zieht nur mit, wenn sie noch der Default des alten Presets
 war), **Hoehe** (Gewicht) und **Titel** (landet als Override nur in diesem Chart und schlaegt
-in der Liste den Preset-Namen), **⧉ Pane** dupliziert sie auf einen eigenen Slot; das
-Preispane ist geschuetzt. Die Builder-Zeilen teilen eine feste Label-Spalte
-(Preispane/Hinzufuegen/Preset/Hoehe/Titel).
-Jede Aenderung rendert sofort (Draft, im Panel als "• unbenannt"), **Speichern** schreibt
-in das aktuelle Chart, "Speichern unter..." legt ein neues an. Warnungen und
+in der Liste den Preset-Namen), **⧉** dupliziert sie auf einen eigenen Slot, **✕** entfernt
+sie; das Preispane ist geschuetzt. Die Builder-Zeilen teilen eine feste Label-Spalte
+(Price/Add/Preset/Title/Height/Load).
+Jede Aenderung rendert sofort (Draft, im Panel-Kopf als "● draft"), **Save** (Ctrl+S)
+schreibt in das aktuelle Chart, "Save as..." legt ein neues an, "Revert" verwirft. Warnungen und
 uebersprungene Panes stehen in der Statuszeile. Ohne Fensterfokus ist der Builder
 deaktiviert.
 
